@@ -36,8 +36,17 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_name", type=str, default="amazon_beauty")
     parser.add_argument("--model", type=str, default=None,
-                        help="Override the model name from model.yaml/model_options.")
-    parser.add_argument("--data_dir", type=str, default=None)
+                         help="Override the model name from model.yaml/model_options.")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional dataset root. When set, task files are stored under "
+            "<data_dir>/<data_name>/data and std_test under "
+            "<data_dir>/<data_name>/std_test."
+        ),
+    )
     parser.add_argument(
         "--gpu_id", type=int, default=-1,
         help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.",
@@ -85,9 +94,16 @@ def _resolve_model_config(cfg, model_name=None):
     return cfg
 
 
+def _task_data_dir(data_name, data_dir=None):
+    if not data_dir:
+        return None
+    return os.path.join(os.path.abspath(data_dir), data_name, "data")
+
+
 def _std_test_dir(data_name, data_dir=None):
-    if data_dir:
-        return os.path.join(os.path.dirname(os.path.abspath(data_dir)), "std_test")
+    task_data_dir = _task_data_dir(data_name, data_dir)
+    if task_data_dir:
+        return os.path.join(os.path.dirname(task_data_dir), "std_test")
     return os.path.abspath(os.path.join(BASE_DIR, data_name, "std_test"))
 
 
@@ -135,7 +151,12 @@ def _ensure_std_test(args, cfg):
 
 def _train_rec(args, cfg, pre_process_yaml, device="cpu"):
     from dppbench.utils import get_data, get_model
-    data = get_data(args.data_name, args.data_dir, pre_process_yaml, cfg)
+    data = get_data(
+        args.data_name,
+        _task_data_dir(args.data_name, args.data_dir),
+        pre_process_yaml,
+        cfg,
+    )
     splits, feature_columns = data
     cfg.setdefault("model_params", {})["device"] = device
     model = get_model(feature_columns, cfg)
@@ -169,7 +190,7 @@ def _train_tabular(args, cfg, pre_process_yaml, device="cpu"):
     print("=" * 60)
 
     data_cls = _load_tabular_class(args.data_name)
-    data = data_cls(data_dir=args.data_dir)
+    data = data_cls(data_dir=_task_data_dir(args.data_name, args.data_dir))
     data.load_data()
     print(f"Loaded train: {data.train_df.shape}, "
           f"test: {data.test_df.shape if data.test_df is not None else None}")

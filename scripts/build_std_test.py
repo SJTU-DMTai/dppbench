@@ -119,9 +119,16 @@ def _import_class(dotted):
     return getattr(importlib.import_module(module_path), class_name)
 
 
+def _task_data_dir(task_name, data_dir=None):
+    if not data_dir:
+        return None
+    return os.path.join(os.path.abspath(data_dir), task_name, "data")
+
+
 def _std_test_dir(task_name, data_dir=None):
-    if data_dir:
-        base = os.path.dirname(os.path.abspath(data_dir))
+    task_data_dir = _task_data_dir(task_name, data_dir)
+    if task_data_dir:
+        base = os.path.dirname(task_data_dir)
     else:
         base = os.path.join(
             os.path.dirname(__file__), "..", "dppbench", "tasks", task_name
@@ -392,7 +399,7 @@ def run_for_task(task_name, dry_run, data_dir=None):
         )
     dotted, kind = TASK_REGISTRY[task_name]
     data_cls = _import_class(dotted)
-    data = data_cls(data_dir=data_dir)
+    data = data_cls(data_dir=_task_data_dir(task_name, data_dir))
     cfg = _load_model_config(task_name)
     if hasattr(data, "set_model_config"):
         data.set_model_config(cfg)
@@ -449,7 +456,11 @@ def parse_args():
         "--data_dir",
         type=str,
         default=None,
-        help="Optional raw data directory to pass to each task data class.",
+        help=(
+            "Optional dataset root. When set, task files are stored under "
+            "<data_dir>/<task>/data and std_test under "
+            "<data_dir>/<task>/std_test."
+        ),
     )
     return p.parse_args()
 

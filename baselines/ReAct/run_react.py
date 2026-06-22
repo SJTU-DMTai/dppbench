@@ -1,0 +1,148 @@
+"""Command line entry point for the ReAct baseline.
+
+Examples:
+
+    # Tabular smoke test (uses project apikeys.json)
+    python -m baselines.ReAct.run_react \
+        --data_name fraud_detection --llm_model deepseek-v4-flash \
+        --max_turns 3 --small_n 1000 --downstream_eval_n 500 --no_eval_full
+
+    # Recommendation smoke test
+    python -m baselines.ReAct.run_react \
+        --data_name movielens --llm_model deepseek-v4-flash \
+        --max_turns 3 --small_n 2000 --downstream_eval_n 1000 --no_eval_full
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from baselines.ReAct.react import ReAct  # noqa: E402
+
+
+BASE_DIR = os.path.join(_ROOT, "dppbench", "tasks")
+SUPPORTED = ["home_credit", "fraud_detection", "amazon_beauty",
+             "movielens", "yelp", "tenrec"]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="ReAct baseline runner")
+    parser.add_argument("--config", type=str, default=os.path.join(_HERE, "config.yaml"))
+    parser.add_argument("--data_name", type=str, default="movielens",
+                        choices=SUPPORTED)
+    parser.add_argument("--data_dir", type=str, default=None)
+
+    # ---- LLM ----
+    parser.add_argument("--llm_backend", type=str, default=None,
+                        choices=["api", "local"],
+                        help="api = OpenAI-compatible HTTP endpoint; "
+                             "local = HF transformers (lazy loaded).")
+    parser.add_argument("--llm_model", type=str, default=None,
+                        help="Model name (api) or local path / repo (local).")
+    parser.add_argument("--api_key", type=str, default=None,
+                        help="Disabled; credentials are loaded from apikeys.json.")
+    parser.add_argument("--base_url", type=str, default=None,
+                        help="Disabled; endpoint is loaded from apikeys.json.")
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--max_tokens", type=int, default=None)
+    parser.add_argument("--timeout", type=int, default=None)
+
+    # ---- ReAct loop ----
+    parser.add_argument("--max_turns", type=int, default=None,
+                        help="Max number of full-pipeline turns the LLM may "
+                             "submit (default 6).")
+    parser.add_argument("--max_retry_per_turn", type=int, default=None,
+                        help="Same-turn retry budget when the LLM's reply "
+                             "fails to parse (default 2).")
+    parser.add_argument("--max_err_cnt", type=int, default=None,
+                        help="Cumulative error budget across turns "
+                             "(default 5).")
+
+    # ---- Eval ----
+    parser.add_argument("--small_n", type=int, default=None,
+                        help="Subsample size used for the SANDBOX during the "
+                             "agent's exploration (0 disables; the final "
+                             "evaluation always uses the full dataset).")
+    parser.add_argument("--no_eval_full", dest="eval_full", action="store_false",
+                        default=None,
+                        help="Skip the final downstream-model evaluation.")
+    parser.add_argument("--downstream_eval_n", type=int, default=None,
+                        help="Subsample size used by the per-turn downstream "
+                             "evaluator (0 = full data, expensive).")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no_fast_train", dest="fast_train", action="store_false",
+                        default=None)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    task_dir = os.path.join(BASE_DIR, args.data_name)
+    if not os.path.isdir(task_dir):
+        raise SystemExit(f"Task directory not found: {task_dir}")
+
+    runner = ReAct(
+        task_dir=task_dir,
+        data_name=args.data_name,
+        data_dir=args.data_dir,
+        llm_backend=args.llm_backend,
+        llm_model=args.llm_model,
+        api_key=args.api_key,
+        base_url=args.base_url,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+        timeout=args.timeout,
+        max_turns=args.max_turns,
+        max_retry_per_turn=args.max_retry_per_turn,
+        max_err_cnt=args.max_err_cnt,
+        small_n=args.small_n,
+        eval_full=args.eval_full,
+        downstream_eval_n=args.downstream_eval_n,
+        seed=args.seed,
+        output_dir=args.output_dir,
+        verbose=not args.quiet,
+        fast_train=args.fast_train,
+        config_path=args.config,
+    )
+    result = runner.run()
+
+    print("\n" + "=" * 60)
+    print("ReAct Final Report")
+    print("=" * 60)
+    print(f"Dataset:          {args.data_name}")
+    print(f"Task type:        {result.get('task_type')}")
+    fit = result.get("best_fitness")
+    fit_str = f"{fit:.4f}" if isinstance(fit, float) else "n/a"
+    print(f"Downstream fit:   {fit_str}")
+    print(f"Downstream met:   {result.get('best_metrics')}")
+    in_loop_fit = result.get("best_fitness_in_loop")
+    in_loop_str = f"{in_loop_fit:.4f}" if isinstance(in_loop_fit, float) else "n/a"
+    print(f"In-loop best:     {in_loop_str} "
+          f"(turn={result.get('agent_best_turn')})")
+    print(f"In-loop metrics:  {result.get('best_metrics_in_loop')}")
+    if result.get("eval_error"):
+        print(f"Eval error:       {result.get('eval_error')}")
+    print(f"Agent success:    {result.get('agent_success')}")
+    print(f"Agent turns:      {result.get('agent_n_turns')}")
+    print(f"Agent errors:     {result.get('agent_n_errors')}")
+    print(f"Pipeline legal:   {result.get('is_legal')}")
+    print(f"Final ops:        {result.get('final_pipeline_ops')}")
+    print(f"Best pipeline:    {result.get('best_pipeline_path')}")
+    print(f"Agent log:        {result.get('agent_log_path')}")
+    print(f"Trajectory:       {result.get('trajectory_path')}")
+    print(f"Run summary:      {result.get('run_summary_path')}")
+    print(f"Duration:         {result.get('duration_seconds'):.1f}s")
+    print(f"Output dir:       {result.get('output_dir')}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,96 @@
+model: DIN
+model_params:
+  embedding_dim: 16
+  dnn_hidden_units: [256, 128]
+  att_hidden_size: [64, 16]
+  dnn_dropout: 0.3
+  l2_reg_embedding: 0.0001
+  seed: 42
+  task: binary
+  device: cpu
+
+feature:
+  seq_cols:
+    item_id_seq: item_id
+  seq_max_len: 20
+  target_col: stars
+  label_rule:
+    mode: ge
+    threshold: 3
+    positive_label: 1
+    negative_label: 0
+
+train:
+  optimizer: adam
+  lr: 0.001
+  weight_decay: 0.00001
+  batch_size: 512
+  epochs: 10
+  metrics: [auc]
+  early_stopping_monitor: auc
+  early_stopping_patience: 3
+
+model_options:
+  FNN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_dropout: 0.3
+      l2_reg_embedding: 0.0001
+      seed: 42
+      task: binary
+      device: cpu
+    train: &yelp_rec_train
+      optimizer: adam
+      lr: 0.001
+      weight_decay: 0.00001
+      batch_size: 512
+      epochs: 10
+      metrics: [auc]
+      early_stopping_monitor: auc
+      early_stopping_patience: 3
+  DeepFM:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_dropout: 0.3
+      l2_reg_embedding: 0.0001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *yelp_rec_train
+  DIN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      att_hidden_size: [64, 16]
+      dnn_dropout: 0.3
+      l2_reg_embedding: 0.0001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *yelp_rec_train
+  DIEN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      att_hidden_size: [64, 16]
+      gru_hidden_size: 16
+      dnn_dropout: 0.3
+      l2_reg_embedding: 0.0001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *yelp_rec_train
+  SIM:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      att_hidden_size: [64, 16]
+      sim_top_k: 10
+      dnn_dropout: 0.3
+      l2_reg_embedding: 0.0001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *yelp_rec_train

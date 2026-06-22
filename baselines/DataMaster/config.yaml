@@ -1,0 +1,56 @@
+# llm_backend (default: api): LLM backend, either api or local.
+llm_backend: api
+# llm_model (default: gpt-4o-mini): Model name or local model path.
+llm_model: gpt-4o-mini
+# api_key (default: null): Loaded from project apikeys.json; keep null.
+api_key: null
+# base_url (default: null): Loaded from project apikeys.json; keep null.
+base_url: null
+# temperature (default: 0.7): LLM sampling temperature.
+temperature: 0.7
+# max_tokens (default: 2048): Maximum tokens per LLM response.
+max_tokens: 2048
+# timeout (default: 600): LLM request timeout in seconds.
+timeout: 600
+# max_iterations (default: 5): Outer UCB select-and-expand iterations.
+max_iterations: 5
+# k_black (default: 3): Black children spawned per selected parent.
+k_black: 3
+# max_chain_len (default: 6): Maximum delta-chain length.
+max_chain_len: 6
+# max_depth (default: 6): Maximum tree depth.
+max_depth: 6
+# max_err_cnt (default: 6): Cumulative agent error budget.
+max_err_cnt: 6
+# max_solution_attempts (default: 2): LLM retries per child on rejection.
+max_solution_attempts: 2
+# c_initial (default: 1.414): Initial UCB exploration coefficient.
+c_initial: 1.414
+# c_lower_bound (default: 0.1): Lower bound for decayed exploration coefficient.
+c_lower_bound: 0.1
+# decay (default: linear): Exploration decay schedule.
+decay: linear
+# decay_alpha (default: 0.05): Linear decay decrement.
+decay_alpha: 0.05
+# decay_gamma (default: 0.95): Exponential decay multiplier.
+decay_gamma: 0.95
+# piecewise_t1 (default: 5): First piecewise decay boundary.
+piecewise_t1: 5
+# piecewise_t2 (default: 20): Second piecewise decay boundary.
+piecewise_t2: 20
+# reward_kind (default: fitness): Reward source used by UCB.
+reward_kind: fitness
+# memory_top_k (default: 3): Number of global best nodes injected into prompts.
+memory_top_k: 3
+# memory_max_chars (default: 4000): Maximum prompt chars from global memory.
+memory_max_chars: 4000
+# small_n (default: 0): Sandbox row subsample size; 0 disables.
+small_n: 0
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# downstream_eval_n (default: 3000): In-loop downstream eval subsample; 0 is full.
+downstream_eval_n: 3000
+# seed (default: 42): Random seed for agent and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

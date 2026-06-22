@@ -1,0 +1,68 @@
+from ..base_op import TabularOp
+
+
+class SortRows(TabularOp):
+    """Sort rows by one or more keys."""
+
+    def __init__(self, by=None, ascending=True, na_position="last", stable=True,
+                 reset_index=True):
+        super().__init__(name="SortRows")
+        self.by = by if isinstance(by, list) or by is None else [by]
+        self.ascending = ascending
+        if na_position not in ("first", "last"):
+            raise ValueError("na_position must be 'first' or 'last'")
+        self.na_position = na_position
+        self.stable = bool(stable)
+        self.reset_index = bool(reset_index)
+
+    def get_op_description(self):
+        description = """Operator name: SortRows
+
+Function description:
+Sort rows by one or more columns. This is useful before
+time-series lag/rolling features or sequence construction.
+
+Input:
+df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
+
+Parameters:
+by : str or list[str] — Sort keys.
+ascending : bool or list[bool] — Sort direction.
+na_position : str — 'first' or 'last'. Default 'last'.
+stable : bool — Use stable mergesort. Default True.
+reset_index : bool — Reset row index after sorting. Default True.
+
+Output:
+pd.DataFrame — Transformed table after applying the operator.
+
+Example:
+>>> df = pd.DataFrame({'user_id': [1, 1, 2], 'timestamp': [3, 1, 2]})
+>>> op = SortRows(by=['user_id', 'timestamp'], ascending=True)
+>>> op.transform(df)
+   user_id  timestamp
+0        1          1
+1        1          3
+2        2          2
+
+Example YAML:
+  - op: SortRows
+    target: both
+    params:
+      by: [user_id, timestamp]
+      ascending: true
+"""
+        return description.strip()
+
+    def transform(self, df):
+        if not self.by:
+            return df
+        by = [c for c in self.by if c in df.columns]
+        if not by:
+            return df
+        out = df.sort_values(
+            by=by,
+            ascending=self.ascending,
+            na_position=self.na_position,
+            kind="mergesort" if self.stable else "quicksort",
+        )
+        return out.reset_index(drop=True) if self.reset_index else out

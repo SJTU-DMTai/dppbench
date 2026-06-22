@@ -1,0 +1,20 @@
+# n_iters (default: 5): Number of Auto-Prep outer search iterations.
+n_iters: 5
+# beam (default: 4): Beam width used by the solver.
+beam: 4
+# n_candidates (default: 8): Number of candidate pipelines generated per round.
+n_candidates: 8
+# max_depth (default: 2): Maximum transformation-tree depth.
+max_depth: 2
+# small_n (default: 3000): Search-time row subsample size; 0 disables.
+small_n: 3000
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# eta (default: 0.5): Multiplicative-weights learning rate.
+eta: 0.5
+# early_stop_patience (default: 2): Stop after this many non-improving rounds.
+early_stop_patience: 2
+# seed (default: 42): Random seed for candidate generation and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

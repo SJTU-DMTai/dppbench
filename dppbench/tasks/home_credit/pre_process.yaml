@@ -1,0 +1,169 @@
+pipeline:
+- op: CustomClean
+  target: both
+  params:
+    cols:
+    - CODE_GENDER
+    - ORGANIZATION_TYPE
+    pattern: ^XNA$
+    replacement: ''
+    regex: true
+    mode: replace_text
+- op: CustomClean
+  target: both
+  params:
+    rules:
+    - col: DAYS_EMPLOYED
+      eq: 365243
+    - col: CODE_GENDER
+      eq: XNA
+    - col: ORGANIZATION_TYPE
+      eq: XNA
+    mode: map_values
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - AMT_CREDIT
+    - AMT_ANNUITY
+    output_col: NEW_CREDIT_TO_ANNUITY_RATIO
+    method: ratio
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - AMT_CREDIT
+    - AMT_GOODS_PRICE
+    output_col: NEW_CREDIT_TO_GOODS_RATIO
+    method: ratio
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - AMT_CREDIT
+    - AMT_INCOME_TOTAL
+    output_col: NEW_CREDIT_TO_INCOME_RATIO
+    method: ratio
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - AMT_ANNUITY
+    - AMT_INCOME_TOTAL
+    output_col: NEW_ANNUITY_TO_INCOME_RATIO
+    method: ratio
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - DAYS_EMPLOYED
+    - DAYS_BIRTH
+    output_col: NEW_EMPLOY_TO_BIRTH_RATIO
+    method: ratio
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - AMT_INCOME_TOTAL
+    - CNT_CHILDREN
+    output_col: NEW_INC_PER_CHILD
+    method: inc_ratio
+    method_kwargs:
+      offset: 1
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - EXT_SOURCE_1
+    - EXT_SOURCE_2
+    - EXT_SOURCE_3
+    output_col: NEW_SOURCES_MEAN
+    method: mean
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - EXT_SOURCE_1
+    - EXT_SOURCE_2
+    - EXT_SOURCE_3
+    output_col: NEW_SOURCES_STD
+    method: std
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - EXT_SOURCE_1
+    - EXT_SOURCE_2
+    - EXT_SOURCE_3
+    output_col: NEW_SOURCES_PROD
+    method: product
+- op: CreateFeature
+  target: both
+  params:
+    source_cols:
+    - FLAG_DOCUMENT_2
+    - FLAG_DOCUMENT_3
+    - FLAG_DOCUMENT_4
+    - FLAG_DOCUMENT_5
+    - FLAG_DOCUMENT_6
+    - FLAG_DOCUMENT_7
+    - FLAG_DOCUMENT_8
+    - FLAG_DOCUMENT_9
+    - FLAG_DOCUMENT_10
+    - FLAG_DOCUMENT_11
+    - FLAG_DOCUMENT_12
+    - FLAG_DOCUMENT_13
+    - FLAG_DOCUMENT_14
+    - FLAG_DOCUMENT_15
+    - FLAG_DOCUMENT_16
+    - FLAG_DOCUMENT_17
+    - FLAG_DOCUMENT_18
+    - FLAG_DOCUMENT_19
+    - FLAG_DOCUMENT_20
+    - FLAG_DOCUMENT_21
+    output_col: NEW_DOC_CNT
+    method: sum
+- op: JoinTable
+  target: both
+  params:
+    aux_df: $bureau
+    key_col: SK_ID_CURR
+    prefix: BUREAU
+    max_cols: 20
+    method: agg
+- op: JoinTable
+  target: both
+  params:
+    aux_df: $previous_application
+    key_col: SK_ID_CURR
+    prefix: PREV
+    max_cols: 20
+    method: agg
+- op: CustomProcess
+  target: both
+  params:
+    threshold: 0.7
+    mode: drop_high_null
+- op: LabelEncode
+  target: both
+- op: HandleMV
+  target: both
+  params:
+    method: median
+- op: SelectFeature
+  target: both
+  params:
+    threshold: 0.0001
+    target_col: $target_col
+    exclude_cols:
+    - SK_ID_CURR
+    method: variance
+- op: SelectFeature
+  target: both
+  params:
+    target_col: $target_col
+    k: 150
+    score_func: f_classif
+    exclude_cols:
+    - SK_ID_CURR
+    method: univariate

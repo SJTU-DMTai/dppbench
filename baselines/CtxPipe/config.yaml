@@ -1,0 +1,36 @@
+# n_episodes (default: 20): Number of DQN training episodes.
+n_episodes: 20
+# max_steps (default: 8): Maximum operators per generated pipeline.
+max_steps: 8
+# small_n (default: 5000): RL training row subsample size; 0 disables.
+small_n: 5000
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# gamma (default: 0.95): Discount factor for DQN updates.
+gamma: 0.95
+# eps_start (default: 1.0): Initial epsilon for exploration.
+eps_start: 1.0
+# eps_end (default: 0.1): Final epsilon after decay.
+eps_end: 0.1
+# eps_decay_episodes (default: null): Epsilon decay length; null derives from episodes.
+eps_decay_episodes: null
+# batch_size (default: 32): Replay minibatch size.
+batch_size: 32
+# target_update_every (default: 10): Episodes between target-network syncs.
+target_update_every: 10
+# min_buffer (default: 64): Minimum replay size before training steps.
+min_buffer: 64
+# hidden_dim (default: 128): DQN hidden-layer width.
+hidden_dim: 128
+# lr (default: 0.001): DQN optimizer learning rate.
+lr: 0.001
+# buffer_capacity (default: 10000): Replay buffer maximum transitions.
+buffer_capacity: 10000
+# illegal_penalty (default: -0.05): Reward for illegal intermediate actions.
+illegal_penalty: -0.05
+# failure_reward (default: -1.0): Terminal reward for failed evaluation.
+failure_reward: -1.0
+# seed (default: 42): Random seed for RL and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

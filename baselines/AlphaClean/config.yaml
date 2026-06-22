@@ -1,0 +1,24 @@
+# beam_width (default: 4): Number of pipelines kept in the beam.
+beam_width: 4
+# n_iters (default: 8): Number of AlphaClean search iterations.
+n_iters: 8
+# batch_per_iter (default: 6): Number of sampled repairs per iteration.
+batch_per_iter: 6
+# gamma (default: 8): Candidate budget knob kept for compatibility.
+gamma: 8
+# patience (default: 3): Stop after this many non-improving iterations.
+patience: 3
+# small_n (default: 3000): Search-time row subsample size; 0 disables.
+small_n: 3000
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# learned_pruning (default: true): Enable the learned repair pruner.
+learned_pruning: true
+# pruner_min_samples (default: 20): Minimum labeled samples before fitting.
+pruner_min_samples: 20
+# pruner_refit_every (default: 16): Refit pruner after this many new samples.
+pruner_refit_every: 16
+# seed (default: 42): Random seed for sampling and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

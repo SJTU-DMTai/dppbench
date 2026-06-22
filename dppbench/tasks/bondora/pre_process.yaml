@@ -1,0 +1,109 @@
+pipeline:
+- op: CustomProcess
+  target: train
+  params:
+    cols:
+    - early_repaid_at
+    - is_early_repaid_within_14_days
+    - loan_issued_at
+    - loan_last_recorded_action_date_local
+    - principal_balance
+    - principal_debt
+    - principal_paid_total
+    - interest_paid_total
+    - extra_interest_paid_total
+    - late_fee_paid_total
+    - maintenance_fee_paid_total
+    - is_default
+    - next_payment_nr
+    - next_payment_date_local
+    - debt_occured_date_local
+    - days_past_due_principal
+    - months_in_default
+    - months_on_book
+    - loan_status_risk
+    - repaid_amount_total
+    - has_default_within_12_months
+    - projected_npv_return
+    mode: drop_columns
+- op: CreateFeature
+  target: train
+  params:
+    source_cols:
+    - issued_amount
+    - combined_income
+    output_col: AMT_TO_INCOME
+    method: ratio
+- op: CreateFeature
+  target: train
+  params:
+    source_cols:
+    - issued_amount
+    - initial_loan_duration
+    output_col: PAYMENT_PER_MONTH
+    method: ratio
+- op: TransformPower
+  target: train
+  params:
+    cols:
+    - issued_amount
+    output_cols:
+    - AMT_LOG
+    method: log
+- op: ScaleFeature
+  target: train
+  params:
+    cols:
+    - issued_amount
+    - PAYMENT_PER_MONTH
+    method: robust
+- op: JoinTable
+  target: train
+  params:
+    aux_df: $country_stats
+    key_col: country
+    prefix: COUNTRY
+    max_cols: 20
+    method: agg
+- op: HandleError
+  target: train
+  params:
+    cols:
+    - country
+    rule: not_in
+    allowed_values:
+    - EE
+    - FI
+    - ES
+    - SK
+    action: repair
+    repair_method: set_missing
+- op: CustomProcess
+  target: train
+  params:
+    cols:
+    - country
+    - customer_risk_rating
+    mode: frequency_encode
+- op: CustomProcess
+  target: train
+  params:
+    threshold: 0.7
+    mode: drop_high_null
+- op: LabelEncode
+  target: train
+- op: HandleMV
+  target: train
+  params:
+    method: median
+- op: ScaleFeature
+  target: train
+  params:
+    pattern: COUNTRY_
+    method: maxabs
+- op: Undersample
+  target: train
+  params:
+    target_col: $target_col
+    n_neighbors: 3
+    method: enn

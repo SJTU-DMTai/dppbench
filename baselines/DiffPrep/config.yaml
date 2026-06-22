@@ -1,0 +1,36 @@
+# n_epochs (default: 5): Number of bilevel optimization epochs.
+n_epochs: 5
+# small_n (default: 3000): Search-time row subsample size; 0 disables.
+small_n: 3000
+# lr_w (default: 0.01): Inner-loop surrogate weight learning rate.
+lr_w: 0.01
+# lr_alpha (default: 0.001): Outer-loop architecture learning rate.
+lr_alpha: 0.001
+# eps_finite_diff (default: 0.001): Finite-difference epsilon for second order.
+eps_finite_diff: 0.001
+# flex (default: false): Enable DiffPrep-Flex operator order learning.
+flex: false
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# max_features (default: 32): Maximum numeric feature columns for surrogate.
+max_features: 32
+# batch_size (default: 256): Surrogate training minibatch size.
+batch_size: 256
+# val_ratio (default: 0.3): Validation split ratio for surrogate feedback.
+val_ratio: 0.3
+# continuous_init_scale (default: 0.001): Initial scale for architecture logits.
+continuous_init_scale: 0.001
+# second_order (default: false): Use second-order DiffPrep update path.
+second_order: false
+# sgd_momentum (default: 0.9): Momentum for surrogate weight SGD.
+sgd_momentum: 0.9
+# surrogate_hidden_dim (default: 32): Hidden width of tabular/rec surrogate MLP.
+surrogate_hidden_dim: 32
+# rec_emb_dim (default: 16): User/item embedding dimension for rec surrogate.
+rec_emb_dim: 16
+# gumbel_tau (default: 1.0): Gumbel-softmax temperature in continuous pipeline.
+gumbel_tau: 1.0
+# hard_sample (default: true): Use straight-through hard samples for hard slots.
+hard_sample: true
+# seed (default: 42): Random seed for training and discretization.
+seed: 42

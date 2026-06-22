@@ -1,0 +1,26 @@
+# Core data processing
+numpy
+pandas
+pyarrow
+PyYAML
+openpyxl
+xlrd
+
+# Classical ML and preprocessing operators
+scikit-learn
+scipy
+imbalanced-learn
+umap-learn
+lightgbm
+networkx
+
+# Neural models and differentiable baselines
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch
+
+# Dataset download helpers
+kaggle
+
+# LLM-based baselines
+openai
+transformers

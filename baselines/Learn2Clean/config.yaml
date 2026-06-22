@@ -1,0 +1,26 @@
+# n_episodes (default: 12): Number of tabular Q-learning episodes.
+n_episodes: 12
+# max_steps (default: 8): Maximum operators per pipeline episode.
+max_steps: 8
+# small_n (default: 3000): Training row subsample size; 0 disables.
+small_n: 3000
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# gamma (default: 0.9): Q-learning discount factor.
+gamma: 0.9
+# lr (default: 0.5): Q-table learning rate.
+lr: 0.5
+# temperature_init (default: 2.0): Initial Boltzmann exploration temperature.
+temperature_init: 2.0
+# temperature_final (default: 0.1): Final Boltzmann exploration temperature.
+temperature_final: 0.1
+# reward_max (default: 1.0): Magnitude for positive/negative step rewards.
+reward_max: 1.0
+# illegal_reward (default: -1.0): Reward assigned to illegal or failed actions.
+illegal_reward: -1.0
+# improvement_eps (default: 0.001): Minimum fitness delta treated as improvement.
+improvement_eps: 0.001
+# seed (default: 42): Random seed for Q-learning and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

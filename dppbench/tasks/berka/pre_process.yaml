@@ -1,0 +1,133 @@
+pipeline:
+- op: ParseDate
+  target: account
+  params:
+    cols:
+    - date
+    mode: int_yymmdd
+    out_features:
+    - days_since_epoch
+    drop_original: true
+- op: ParseDate
+  target: trans
+  params:
+    cols:
+    - date
+    mode: int_yymmdd
+    out_features:
+    - days_since_epoch
+    drop_original: true
+- op: ParseDate
+  target: client
+  params:
+    cols:
+    - birth_number
+    mode: berka_birth
+    out_features:
+    - year
+    - days_since_epoch
+    drop_original: true
+- op: ParseDate
+  target: card
+  params:
+    cols:
+    - issued
+    mode: int_yymmdd
+    out_features:
+    - days_since_epoch
+    drop_original: true
+- op: OrdinalEncode
+  target: card
+  params:
+    cols:
+    - type
+    ordering:
+      type:
+      - junior
+      - classic
+      - gold
+- op: ParseDate
+  target: train
+  params:
+    cols:
+    - date
+    mode: int_yymmdd
+    out_features:
+    - year
+    - month
+    - days_since_epoch
+    drop_original: true
+- op: CastType
+  target: train
+  params:
+    col_dtypes:
+      days_since_epoch: int32
+      year: int32
+      month: int32
+- op: CreateFeature
+  target: train
+  params:
+    source_cols:
+    - amount
+    - payments
+    output_col: AMOUNT_PAYMENTS_RATIO
+    method: ratio
+- op: TransformPower
+  target: train
+  params:
+    cols:
+    - amount
+    output_cols:
+    - AMOUNT_LOG
+    method: log
+- op: JoinTable
+  target: train
+  params:
+    aux_df: $account
+    key_col: account_id
+    prefix: ACC
+    max_cols: 30
+    method: agg
+- op: JoinTable
+  target: train
+  params:
+    aux_df: $trans
+    key_col: account_id
+    prefix: TRANS
+    max_cols: 30
+    method: agg
+- op: JoinTable
+  target: train
+  params:
+    aux_df: $order
+    key_col: account_id
+    prefix: ORD
+    max_cols: 30
+    method: agg
+- op: JoinTable
+  target: train
+  params:
+    aux_df: $disp
+    key_col: account_id
+    prefix: DISP
+    max_cols: 30
+    method: agg
+- op: CustomProcess
+  target: train
+  params:
+    threshold: 0.7
+    mode: drop_high_null
+- op: CrossFeature
+  target: train
+  params:
+    cols:
+    - account_id
+    - district_id
+    output_col: loan_key
+    separator: _
+- op: LabelEncode
+  target: train
+- op: HandleMV
+  target: train
+  params:
+    method: median

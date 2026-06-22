@@ -1,0 +1,132 @@
+pipeline:
+- op: ParseDate
+  target: train
+  params:
+    cols:
+    - tpep_pickup_datetime
+    mode: string
+- op: CustomClean
+  target: train
+  params:
+    cols:
+    - passenger_count
+    rules:
+    - lt: 0
+    - gt: 9
+    replace_with: null
+    mode: map_values
+- op: HandleError
+  target: train
+  params:
+    action: delete
+    rules:
+    - col: trip_distance
+      min: 0
+      max: 200
+    - col: fare_amount
+      min: 0
+      max: 1000
+    - col: total_amount
+      min: 0
+      max: 2000
+    - col: tpep_pickup_datetime
+      min: '2022-12-15'
+      max: '2023-02-15'
+- op: ExtractDateTimeFeature
+  target: train
+  params:
+    cols:
+    - tpep_pickup_datetime
+    features:
+    - dayofweek
+    - is_weekend
+    - dayofyear
+    drop_original: false
+- op: ResampleTimeSeries
+  target: train
+  params:
+    time_col: tpep_pickup_datetime
+    freq: H
+    group_cols:
+    - PULocationID
+    aggs:
+      trip_distance:
+      - mean
+      - sum
+      fare_amount:
+      - mean
+      - sum
+      tip_amount:
+      - mean
+      total_amount:
+      - mean
+      passenger_count:
+      - mean
+    count_col: trip_count
+- op: ExtractDateTimeFeature
+  target: train
+  params:
+    cols:
+    - _hour_ts
+    features:
+    - month
+    - day
+    - dayofweek
+    - is_weekend
+    - dayofyear
+    drop_original: true
+- op: CreateLagFeature
+  target: train
+  params:
+    target_col: trip_count
+    lags:
+    - 1
+    - 2
+    - 3
+    - 24
+    - 168
+    group_cols:
+    - PULocationID
+    time_col: _hour_idx
+- op: CreateRollingFeature
+  target: train
+  params:
+    target_col: trip_count
+    windows:
+    - 6
+    - 24
+    - 168
+    aggs:
+    - mean
+    - std
+    - min
+    - max
+    group_cols:
+    - PULocationID
+    time_col: _hour_idx
+- op: CustomProcess
+  target: train
+  params:
+    threshold: 0.7
+    mode: drop_high_null
+- op: HandleMV
+  target: train
+  params:
+    method: median
+- op: TransformPower
+  target: train
+  params:
+    cols:
+    - trip_distance_mean
+    - trip_distance_sum
+    - fare_amount_mean
+    - fare_amount_sum
+    output_distribution: normal
+    method: quantile
+- op: SortRows
+  target: train
+  params:
+    by:
+    - PULocationID
+    - _hour_idx
+    ascending: true

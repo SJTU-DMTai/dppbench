@@ -1,0 +1,26 @@
+# population_size (default: 12): Genetic algorithm population size.
+population_size: 12
+# n_generations (default: 5): Number of logical-search generations.
+n_generations: 5
+# top_k (default: 3): Number of top logical pipelines kept for tuning.
+top_k: 3
+# n_physical_trials (default: 5): Random physical-tuning trials per pipeline.
+n_physical_trials: 5
+# early_stop_patience (default: 3): Stop GA after this many stagnant generations.
+early_stop_patience: 3
+# mutation_rate (default: 0.5): Probability of mutating an offspring pipeline.
+mutation_rate: 0.5
+# crossover_rate (default: 0.6): Probability of applying crossover.
+crossover_rate: 0.6
+# tournament_size (default: 3): Tournament size for parent selection.
+tournament_size: 3
+# elitism_size (default: 2): Number of elite individuals copied forward.
+elitism_size: 2
+# random_pipeline_p_optional (default: 0.5): Probability to add optional ops.
+random_pipeline_p_optional: 0.5
+# small_n (default: 3000): Search-time row subsample size; 0 disables.
+small_n: 3000
+# seed (default: 42): Random seed for logical and physical search.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

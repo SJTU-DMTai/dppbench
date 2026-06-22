@@ -1,0 +1,35 @@
+# Data directories
+**/data/
+**/std_test/
+apikeys.json
+
+# Large dataset files
+*.parquet
+*.csv.gz
+*.zip
+
+# IDE
+.vscode/
+.idea/
+.trae/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.venv/
+venv/
+env/
+papers/
+outputs/
+logs/

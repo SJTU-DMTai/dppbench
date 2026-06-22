@@ -1,0 +1,48 @@
+# llm_backend (default: api): LLM backend, either api or local.
+llm_backend: api
+# llm_model (default: gpt-4o-mini): Model name or local model path.
+llm_model: gpt-4o-mini
+# api_key (default: null): Loaded from project apikeys.json; keep null.
+api_key: null
+# base_url (default: null): Loaded from project apikeys.json; keep null.
+base_url: null
+# temperature (default: 0.7): LLM sampling temperature.
+temperature: 0.7
+# max_tokens (default: 2048): Maximum tokens per LLM response.
+max_tokens: 2048
+# timeout (default: 600): LLM request timeout in seconds.
+timeout: 600
+# max_rollout_steps (default: 10): Maximum MCTS rollouts.
+max_rollout_steps: 10
+# max_depth (default: 5): Maximum MCTS tree depth.
+max_depth: 5
+# max_chain_len (default: 6): Maximum operator chain length proposed by LLM.
+max_chain_len: 6
+# exploration_constant (default: 1.0): UCB exploration constant.
+exploration_constant: 1.0
+# early_stop_n_paths (default: 2): Number of best terminal paths before early stop.
+early_stop_n_paths: 2
+# early_stop_eps (default: 0.001): Epsilon for near-perfect reward early stop.
+early_stop_eps: 0.001
+# reward_alpha (default: 0.4): Weight for BAT column-similarity reward.
+reward_alpha: 0.4
+# reward_beta (default: 0.5): Weight for downstream-model reward.
+reward_beta: 0.5
+# reward_gamma (default: 0.1): Weight for optional LLM-judge reward.
+reward_gamma: 0.1
+# use_downstream (default: true): Enable downstream-model reward channel.
+use_downstream: true
+# use_llm_judge (default: false): Enable optional LLM judge reward channel.
+use_llm_judge: false
+# columns_match_threshold (default: 0.99): Threshold for column-schema match.
+columns_match_threshold: 0.99
+# small_n (default: 0): Sandbox row subsample size; 0 disables.
+small_n: 0
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# downstream_eval_n (default: 3000): In-loop downstream eval subsample; 0 is full.
+downstream_eval_n: 3000
+# seed (default: 42): Random seed for MCTS and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

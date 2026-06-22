@@ -1,0 +1,126 @@
+model: DIN
+model_params:
+  embedding_dim: 16
+  dnn_hidden_units: [256, 128]
+  dnn_activation: dice
+  att_hidden_size: [80, 40]
+  att_activation: Dice
+  att_weight_normalization: false
+  dnn_dropout: 0.2
+  l2_reg_embedding: 0.000001
+  seed: 42
+  task: binary
+  device: cpu
+
+feature:
+  seq_cols:
+    item_id_seq: item_id
+  seq_max_len: 50
+  target_col: rating
+  label_rule:
+    mode: ge
+    threshold: 4
+    positive_label: 1
+    negative_label: 0
+
+train:
+  optimizer: adam
+  lr: 0.001
+  weight_decay: 0.00001
+  batch_size: 256
+  epochs: 20
+  val_ratio: 0.1
+  seed: 42
+  metrics: [auc]
+  early_stopping_monitor: auc
+  early_stopping_patience: 5
+  negative_sampling: &amazon_beauty_negative_sampling
+    enabled: true
+    user_col: user_id
+    item_col: item_id
+    sampler: random
+    num_negatives: 1
+    exclude_positive_only: true
+    seed: 42
+    item_feature_prefixes: [item_]
+    interaction_defaults:
+      vote: 0
+
+model_options:
+  FNN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_activation: dice
+      dnn_dropout: 0.2
+      l2_reg_embedding: 0.000001
+      seed: 42
+      task: binary
+      device: cpu
+    train: &amazon_beauty_rec_train
+      optimizer: adam
+      lr: 0.001
+      weight_decay: 0.00001
+      batch_size: 256
+      epochs: 20
+      val_ratio: 0.1
+      seed: 42
+      metrics: [auc]
+      early_stopping_monitor: auc
+      early_stopping_patience: 5
+      negative_sampling: *amazon_beauty_negative_sampling
+  DeepFM:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_activation: dice
+      dnn_dropout: 0.2
+      l2_reg_embedding: 0.000001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *amazon_beauty_rec_train
+  DIN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_activation: dice
+      att_hidden_size: [80, 40]
+      att_activation: Dice
+      att_weight_normalization: false
+      dnn_dropout: 0.2
+      l2_reg_embedding: 0.000001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *amazon_beauty_rec_train
+  DIEN:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_activation: dice
+      att_hidden_size: [80, 40]
+      att_activation: Dice
+      att_weight_normalization: false
+      gru_hidden_size: 16
+      dnn_dropout: 0.2
+      l2_reg_embedding: 0.000001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *amazon_beauty_rec_train
+  SIM:
+    model_params:
+      embedding_dim: 16
+      dnn_hidden_units: [256, 128]
+      dnn_activation: dice
+      att_hidden_size: [80, 40]
+      att_activation: Dice
+      att_weight_normalization: false
+      sim_top_k: 10
+      dnn_dropout: 0.2
+      l2_reg_embedding: 0.000001
+      seed: 42
+      task: binary
+      device: cpu
+    train: *amazon_beauty_rec_train

@@ -1,0 +1,30 @@
+# llm_backend (default: api): LLM backend, either api or local.
+llm_backend: api
+# llm_model (default: gpt-4o-mini): Model name or local model path.
+llm_model: gpt-4o-mini
+# api_key (default: null): Loaded from project apikeys.json; keep null.
+api_key: null
+# base_url (default: null): Loaded from project apikeys.json; keep null.
+base_url: null
+# temperature (default: 0.7): LLM sampling temperature.
+temperature: 0.7
+# max_tokens (default: 2048): Maximum tokens per LLM response.
+max_tokens: 2048
+# timeout (default: 600): LLM request timeout in seconds.
+timeout: 600
+# n_candidates (default: 2): CustomOp snippets generated per stage.
+n_candidates: 2
+# max_retry (default: 2): Retry budget when LLM replies fail to parse.
+max_retry: 2
+# stage_max_per_cat (default: 6): Max operator descriptions per category in prompts.
+stage_max_per_cat: 6
+# small_n (default: 0): Sandbox row subsample size; 0 disables.
+small_n: 0
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# downstream_eval_n (default: 3000): Per-candidate downstream eval subsample; 0 is full.
+downstream_eval_n: 3000
+# seed (default: 42): Random seed for agent and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

@@ -1,0 +1,43 @@
+pipeline:
+- op: JoinTable
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    user_df: $user_df
+    item_df: $item_df
+    how: left
+    method: rec
+- op: CustomProcess
+  target: interaction
+  params:
+    cols:
+    - user_zip_code
+    - item_title
+    mode: drop_columns
+- op: FilterSample
+  target: interaction
+  params:
+    subset:
+    - user_id
+    - item_id
+    - rating
+- op: FilterKCore
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    k: 5
+- op: CreateSequence
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    time_col: timestamp
+    seq_col: item_id_seq
+    max_len: 20
+- op: FilterSample
+  target: interaction
+  params:
+    subset:
+    - rating

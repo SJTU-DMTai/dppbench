@@ -1,0 +1,51 @@
+model: GraphSAGE
+model_params:
+  task: binary
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.5
+  lr: 0.01
+  weight_decay: 5.0e-4
+  epochs: 100
+  seed: 42
+
+train:
+  metrics: [auc, f1]
+  seed: 42
+
+model_options:
+  GCN:
+    model_params:
+      task: binary
+      hidden_dim: 128
+      num_layers: 2
+      dropout: 0.5
+      lr: 0.01
+      weight_decay: 5.0e-4
+      epochs: 100
+      seed: 42
+    train: &elliptic_graph_train
+      metrics: [auc, f1]
+      seed: 42
+  GraphSAGE:
+    model_params:
+      task: binary
+      hidden_dim: 128
+      num_layers: 2
+      dropout: 0.5
+      lr: 0.01
+      weight_decay: 5.0e-4
+      epochs: 100
+      seed: 42
+    train: *elliptic_graph_train
+  GAT:
+    model_params:
+      task: binary
+      hidden_dim: 128
+      num_layers: 2
+      dropout: 0.5
+      lr: 0.005
+      weight_decay: 5.0e-4
+      epochs: 100
+      seed: 42
+    train: *elliptic_graph_train

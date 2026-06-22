@@ -1,0 +1,69 @@
+model: LightGBM
+model_params:
+  task: binary
+  seed: 42
+  n_estimators: 5000
+  learning_rate: 0.05
+  num_leaves: 256
+  max_depth: -1
+  min_child_samples: 50
+  colsample_bytree: 0.6
+  subsample: 0.8
+  subsample_freq: 1
+  reg_alpha: 0.5
+  reg_lambda: 0.5
+
+train:
+  val_ratio: 0.2
+  metrics: [auc]
+  seed: 42
+
+model_options:
+  LightGBM: {}
+  MLP:
+    model_params:
+      task: binary
+      seed: 42
+      epochs: 10
+      batch_size: 1024
+      lr: 0.001
+      weight_decay: 0.00001
+      hidden_units: [256, 128]
+      dropout: 0.1
+      device: cpu
+    train: &fraud_detection_tabular_train
+      val_ratio: 0.2
+      metrics: [auc]
+      seed: 42
+  TabTransformer: &fraud_detection_tab_transformer
+    model_params:
+      task: binary
+      seed: 42
+      epochs: 10
+      batch_size: 1024
+      lr: 0.001
+      weight_decay: 0.00001
+      d_model: 32
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 64
+      dropout: 0.1
+      device: cpu
+    train: *fraud_detection_tabular_train
+  FTTransformer: *fraud_detection_tab_transformer
+  SAINT:
+    model_params:
+      task: binary
+      seed: 42
+      epochs: 10
+      batch_size: 1024
+      lr: 0.001
+      weight_decay: 0.00001
+      d_model: 32
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 64
+      dropout: 0.1
+      row_attention: false
+      device: cpu
+    train: *fraud_detection_tabular_train

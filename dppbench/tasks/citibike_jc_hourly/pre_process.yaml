@@ -1,0 +1,95 @@
+pipeline:
+- op: HandleOutlier
+  target: train
+  params:
+    cols:
+    - trip_duration
+    method: iqr
+    threshold: 3.0
+    action: delete
+    flag_col: trip_duration_outlier
+- op: HandleError
+  target: train
+  params:
+    action: delete
+    rules:
+    - col: trip_duration
+      min: 60
+      max: 86400
+    - col: started_at
+      min: '2022-12-15'
+      max: '2023-02-15'
+- op: ResampleTimeSeries
+  target: train
+  params:
+    time_col: started_at
+    freq: H
+    group_cols:
+    - start_station_id
+    aggs:
+      trip_duration:
+      - mean
+      - sum
+    count_col: rental_count
+- op: ExtractDateTimeFeature
+  target: train
+  params:
+    cols:
+    - _hour_ts
+    features:
+    - month
+    - day
+    - dayofweek
+    - is_weekend
+    - dayofyear
+    drop_original: true
+- op: CreateLagFeature
+  target: train
+  params:
+    target_col: rental_count
+    lags:
+    - 1
+    - 2
+    - 3
+    - 24
+    - 168
+    group_cols:
+    - start_station_id
+    time_col: _hour_idx
+- op: CreateRollingFeature
+  target: train
+  params:
+    target_col: rental_count
+    windows:
+    - 6
+    - 24
+    - 168
+    aggs:
+    - mean
+    - std
+    - min
+    - max
+    group_cols:
+    - start_station_id
+    time_col: _hour_idx
+- op: CustomProcess
+  target: train
+  params:
+    threshold: 0.7
+    mode: drop_high_null
+- op: LabelEncode
+  target: train
+  params:
+    cols:
+    - start_station_id
+- op: HandleMV
+  target: train
+  params:
+    method: median
+- op: SortRows
+  target: train
+  params:
+    by:
+    - start_station_id
+    - _hour_idx
+    ascending: true

@@ -58,7 +58,7 @@ home_credit, kuairec, movielens, nyc_taxi_hourly, polish_bankruptcy, yelp
 Build or refresh frozen standard test data:
 
 ```bash
-python scripts/build_std_test.py --data_name amazon_beauty
+python scripts/build_std_test.py --data_name amazon_beauty --data_dir /path/to/data --gpu_id 0
 ```
 
 Train and evaluate one task/model with its default DSL preparation pipeline:
@@ -70,6 +70,6 @@ python scripts/train_task_model.py --data_name amazon_beauty --model DIN --data_
 Evaluate one baseline on a task:
 
 ```bash
-python scripts/evaluate_baseline.py --baseline SAGA --data_name amazon_beauty --data_dir /path/to/data
+python scripts/evaluate_baseline.py --baseline SAGA --data_name amazon_beauty --data_dir /path/to/data --out_dir /path/to/output --gpu_id 0
 ```
 

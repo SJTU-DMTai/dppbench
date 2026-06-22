@@ -34,7 +34,7 @@ pipeline:
   params:
     user_col: user_id
     item_col: item_id
-    k: 2
+    k: 3
 - op: CreateSequence
   target: interaction
   params:

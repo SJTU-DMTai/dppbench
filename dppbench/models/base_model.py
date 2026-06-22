@@ -125,7 +125,7 @@ class BaseModel(nn.Module):
                 if do_val:
                     val_result = self.evaluate(val_x, val_y, batch_size)
                     for k, v in val_result.items():
-                        msg += f" - val_{k}: {v:.4f}"
+                        # msg += f" - val_{k}: {v:.4f}"
                         history.setdefault(f"val_{k}", []).append(v)
                 print(msg)
 

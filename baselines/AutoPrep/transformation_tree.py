@@ -30,7 +30,7 @@ from .transformation_model import TransformationModel
 # require multi-table semantics that don't apply to a single interaction df.
 _REC_INTERACTION = {
     # rec-only structural / mandatory
-    "JoinTable", "CreateSequence", "FilterSample",
+    "JoinTable", "CreateSequence", "FilterSample", "FilterKCore",
     "SampleNegative",
     # missing-value
     "HandleMV", "HandleMV", "HandleMV",

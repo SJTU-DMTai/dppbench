@@ -53,7 +53,6 @@ class OpSpec:
     valid_targets: tuple[str, ...] = ("both",)
     needs_context: bool = False
     mandatory: bool = False
-    searchable: bool = True
 
 
 CATALOG: dict[str, OpSpec] = {}
@@ -64,8 +63,7 @@ def _add(name: str, category: OpCategory, task_type: str = "both",
          param_space: dict[str, Any] | None = None,
          valid_targets: tuple[str, ...] = ("both",),
          needs_context: bool = False,
-         mandatory: bool = False,
-         searchable: bool = True) -> None:
+         mandatory: bool = False) -> None:
     CATALOG[name] = OpSpec(
         op_name=name,
         category=category,
@@ -75,7 +73,6 @@ def _add(name: str, category: OpCategory, task_type: str = "both",
         valid_targets=valid_targets,
         needs_context=needs_context,
         mandatory=mandatory,
-        searchable=searchable,
     )
 
 
@@ -157,8 +154,7 @@ _add("SampleNegative", OpCategory.SAMPLING, task_type="rec",
      valid_targets=("interaction",), needs_context=True)
 _add("FilterKCore", OpCategory.FILTER_ROW, task_type="rec",
      default_params={"k": 5}, param_space={"k": [3, 5, 10]},
-     valid_targets=("interaction",), needs_context=True,
-     searchable=False)
+     valid_targets=("interaction",), needs_context=True)
 _add("Undersample", OpCategory.IMBALANCE,
      default_params={"method": "random"},
      param_space={"method": ["random", "tomek", "enn"]},
@@ -211,8 +207,7 @@ def operators_for_task(task_type: str) -> list[str]:
         raise ValueError(f"Unknown task_type {task_type}")
     return [
         name for name, spec in CATALOG.items()
-        if spec.searchable
-        and (spec.task_type == task_type or spec.task_type == "both")
+        if spec.task_type == task_type or spec.task_type == "both"
     ]
 
 

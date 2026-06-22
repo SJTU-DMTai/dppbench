@@ -20,6 +20,13 @@ feature:
     positive_label: 1
     negative_label: 0
 
+std_test:
+  cold_start_user_filter:
+    min_train_interactions: 3  # Minimum user interactions in the frozen training window.
+    basis: >-
+      Yelp review data is long-tailed; 3 filters sparse cold-start users while
+      keeping enough temporal std-test coverage for recommendation metrics.
+
 train:
   optimizer: adam
   lr: 0.001

@@ -50,8 +50,25 @@ Supported formal tasks include:
 ```text
 amazon_beauty, beijing_air_quality, berka, bike_sharing, bondora,
 citibike_jc_hourly, default_credit, elliptic_bitcoin, fraud_detection,
-home_credit, kuairec, movielens, nyc_taxi_hourly, polish_bankruptcy, yelp
+home_credit, kuairec, movielens, nyc_taxi_hourly, polish_bankruptcy, tenrec,
+yelp
 ```
+
+## Recommendation Std-Test Filtering
+
+Recommendation std-test splits use a fixed global temporal split. A std-test
+user is treated as cold-start and removed when its interaction count in the
+frozen training window is below the task threshold configured in that task's
+`model.yaml` under `std_test.cold_start_user_filter`. This filtering is
+performed once by `scripts/build_std_test.py`, recorded in `meta.json`, and is
+independent of later pipeline operators such as `FilterKCore`.
+
+| Task | Min train interactions | Basis |
+|---|---:|---|
+| `amazon_beauty` | 2 | Configured in `dppbench/tasks/amazon_beauty/model.yaml`. |
+| `kuairec` | 3 | Configured in `dppbench/tasks/kuairec/model.yaml`. |
+| `movielens` | 3 | Configured in `dppbench/tasks/movielens/model.yaml`. |
+| `yelp` | 3 | Configured in `dppbench/tasks/yelp/model.yaml`. |
 
 ## Common Commands
 

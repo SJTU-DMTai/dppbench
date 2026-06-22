@@ -112,8 +112,7 @@ def operators_for_task(task_type: str) -> list[str]:
         raise ValueError(f"Unknown task_type {task_type}")
     return [
         n for n, spec in CATALOG.items()
-        if spec.searchable
-        and (spec.task_type == task_type or spec.task_type == "both")
+        if spec.task_type == task_type or spec.task_type == "both"
     ]
 
 

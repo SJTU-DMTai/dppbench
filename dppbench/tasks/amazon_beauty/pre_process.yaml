@@ -8,20 +8,6 @@ pipeline:
     item_df: $item_df
     how: left
     method: rec
-- op: CustomProcess
-  target: interaction
-  params:
-    cols:
-    - user_name
-    - item_name
-    mode: drop_columns
-- op: FilterSample
-  target: interaction
-  params:
-    subset:
-    - user_id
-    - item_id
-    - rating
 - op: HandleMV
   target: interaction
   params:
@@ -29,6 +15,12 @@ pipeline:
     - vote
     - item_price
     method: median
+- op: FilterKCore
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    k: 2
 - op: CreateSequence
   target: interaction
   params:

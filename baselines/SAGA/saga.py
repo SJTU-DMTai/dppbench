@@ -183,6 +183,7 @@ class SAGA:
         device: str = "cpu",
         small_n: Optional[int] = None,
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
         skip_final_eval: bool = False,
     ):
@@ -229,6 +230,7 @@ class SAGA:
         self.device = device
         self.small_n = int(small_n) if small_n else 0
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
         self.skip_final_eval = bool(skip_final_eval)
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "SAGA", data_name
@@ -259,6 +261,7 @@ class SAGA:
             device=self.device,
             small_n=self.small_n,
             seed=self.seed,
+            model_name=self.model_name,
         )
         if self.fast_train:
             evaluator.set_fast_mode(True)
@@ -334,6 +337,7 @@ class SAGA:
                     device=self.device,
                     small_n=0,
                     seed=self.seed,
+                    model_name=self.model_name,
                 )
                 ev = full_eval.evaluate(best.pipeline)
                 if ev.success:

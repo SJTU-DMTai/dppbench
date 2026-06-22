@@ -27,6 +27,7 @@ class CtxPipeEvaluator(PipelineEvaluator):
         small_n: Optional[int] = None,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -35,6 +36,7 @@ class CtxPipeEvaluator(PipelineEvaluator):
             metric_key=metric_key,
             verbose=verbose,
             device=device,
+            model_name=model_name,
         )
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)

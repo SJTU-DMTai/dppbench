@@ -43,14 +43,21 @@ class PipelineEvaluator:
 
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
                  metric_key: str = "auc", verbose: bool = False,
-                 device: str = "cpu"):
+                 device: str = "cpu", model_name: Optional[str] = None):
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
         self.metric_key = metric_key
         self.verbose = verbose
         self.device = device
-        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir, device=device)
+        self.model_name = model_name
+        self._executor = TrainingExecutor(
+            task_dir,
+            data_name=data_name,
+            data_dir=data_dir,
+            device=device,
+            model_name=model_name,
+        )
         self._cache: dict[str, EvaluationResult] = {}
 
     @property

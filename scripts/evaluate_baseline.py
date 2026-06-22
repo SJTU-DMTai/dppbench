@@ -35,11 +35,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import os
+import re
 import sys
 import time
 import traceback
 from typing import Any
+
+import yaml
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, ".."))
@@ -131,16 +135,51 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
-def _std_test_dir(task_name: str) -> str:
+def _task_data_dir(task_name: str, data_dir: str | None = None) -> str | None:
+    if not data_dir:
+        return None
+    return os.path.join(os.path.abspath(data_dir), task_name, "data")
+
+
+def _std_test_dir(task_name: str, data_dir: str | None = None) -> str:
+    if data_dir:
+        return os.path.join(os.path.abspath(data_dir), task_name, "std_test")
     return os.path.join(_ROOT, "dppbench", "tasks", task_name, "std_test")
 
 
-def _std_test_present(task_name: str) -> bool:
-    d = _std_test_dir(task_name)
+def _std_test_present(task_name: str, data_dir: str | None = None) -> bool:
+    d = _std_test_dir(task_name, data_dir=data_dir)
     if not os.path.isdir(d):
         return False
     # std_test.parquet is required for every task type.
     return os.path.isfile(os.path.join(d, "std_test.parquet"))
+
+
+def _task_model_name(task_name: str, model_name: str | None = None) -> str:
+    if model_name:
+        return model_name
+    path = os.path.join(_ROOT, "dppbench", "tasks", task_name, "model.yaml")
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    return cfg.get("model", "model")
+
+
+def _path_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_")
+    return token or "unknown"
+
+
+def _task_model_output_dir(
+    output_root: str,
+    baseline_name: str,
+    task_name: str,
+    model_name: str,
+) -> str:
+    return os.path.join(
+        os.path.abspath(output_root),
+        _path_token(baseline_name),
+        f"{_path_token(task_name)}_{_path_token(model_name)}",
+    )
 
 
 def parse_args():
@@ -165,7 +204,21 @@ def parse_args():
             "this script (default: SAGA)."
         ),
     )
-    parser.add_argument("--data_dir", type=str, default=None)
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help=(
+            "Override downstream model name from model.yaml/model_options. "
+            "When omitted, each task uses its default model."
+        ),
+    )
+    parser.add_argument(
+        "--data_dir", type=str, default=None,
+        help=(
+            "Optional dataset root. When set, task files are read from "
+            "<data_dir>/<data_name>/data and std_test from "
+            "<data_dir>/<data_name>/std_test."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output_dir", type=str,
@@ -173,7 +226,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output_csv", type=str, default=None,
-        help="Override CSV path (default: <output_dir>/results.csv).",
+        help="Override CSV path (default: <output_dir>/<baseline>/results.csv).",
     )
     parser.add_argument(
         "--skip_build", action="store_true",
@@ -204,19 +257,25 @@ def _resolve_device(gpu_id):
     return "cuda:0"
 
 
-def _ensure_std_test(task_name: str, skip_build: bool, quiet: bool) -> dict:
+def _ensure_std_test(
+    task_name: str,
+    data_dir: str | None,
+    skip_build: bool,
+    quiet: bool,
+) -> dict:
     """Build std-test for the task if missing. Returns a small status dict."""
-    if _std_test_present(task_name):
+    if _std_test_present(task_name, data_dir=data_dir):
         return {"built": False, "ok": True}
     if skip_build:
         raise FileNotFoundError(
-            f"std-test missing for '{task_name}' at {_std_test_dir(task_name)} "
+            f"std-test missing for '{task_name}' at "
+            f"{_std_test_dir(task_name, data_dir=data_dir)} "
             f"and --skip_build was passed; run scripts/build_std_test.py first."
         )
     if not quiet:
         print(f"[{task_name}] std-test not found; building now ...")
-    build_std_test_for_task(task_name, dry_run=False)
-    return {"built": True, "ok": _std_test_present(task_name)}
+    build_std_test_for_task(task_name, dry_run=False, data_dir=data_dir)
+    return {"built": True, "ok": _std_test_present(task_name, data_dir=data_dir)}
 
 
 def _run_baseline_and_eval(
@@ -241,13 +300,20 @@ def _run_baseline_and_eval(
         kwargs["eval_full"] = False
 
     task_dir = os.path.join(_ROOT, "dppbench", "tasks", task_name)
-    runner_output_dir = os.path.join(out_root, baseline_name, task_name)
+    task_data_dir = _task_data_dir(task_name, args.data_dir)
+    model_name = _task_model_name(task_name, args.model)
+    runner_output_dir = _task_model_output_dir(
+        out_root, baseline_name, task_name, model_name
+    )
     os.makedirs(runner_output_dir, exist_ok=True)
+
+    if "model_name" in inspect.signature(cls).parameters:
+        kwargs["model_name"] = model_name
 
     runner = cls(
         task_dir=task_dir,
         data_name=task_name,
-        data_dir=args.data_dir,
+        data_dir=task_data_dir,
         seed=args.seed,
         output_dir=runner_output_dir,
         verbose=not args.quiet,
@@ -277,8 +343,9 @@ def _run_baseline_and_eval(
     pipeline = Pipeline.from_yaml(pipeline_yaml)
     evaluator = PipelineEvaluator(
         task_dir=task_dir, data_name=task_name,
-        data_dir=args.data_dir, verbose=not args.quiet,
+        data_dir=task_data_dir, verbose=not args.quiet,
         device=args.device,
+        model_name=model_name,
     )
     eval_t0 = time.time()
     ev = evaluator.evaluate(pipeline)
@@ -316,6 +383,8 @@ def _run_baseline_and_eval(
     return {
         "task": task_name,
         "baseline": baseline_name,
+        "model": model_name,
+        "output_dir": runner_output_dir,
         "val_fitness": float(ev.fitness) if ev.success else None,
         "std_test_auc": float(std_test_auc) if std_test_auc is not None else None,
         "std_test_metric_name": std_test_primary_name,
@@ -351,7 +420,7 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
         print("(no rows)")
         return
     headers = [
-        "task", "baseline", "val_fitness",
+        "task", "baseline", "model", "val_fitness",
         "std_test_metric_name", "std_test_metric",
         "std_test_auc", "std_test_inference_seconds", "std_test_n_rows",
         "construct_time_s", "eval_time_s", "n_steps", "error",
@@ -382,7 +451,7 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
 def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
-        "task", "baseline", "val_fitness",
+        "task", "baseline", "model", "output_dir", "val_fitness",
         "std_test_metric_name", "std_test_metric",
         "std_test_auc", "std_test_inference_seconds", "std_test_n_rows",
         "construct_time_s", "eval_time_s", "n_steps", "ops",
@@ -416,24 +485,37 @@ def main():
 
     out_root = os.path.abspath(args.output_dir)
     os.makedirs(out_root, exist_ok=True)
-    csv_path = args.output_csv or os.path.join(out_root, "results.csv")
+    baseline_root = os.path.join(out_root, _path_token(args.baseline))
+    os.makedirs(baseline_root, exist_ok=True)
+    csv_path = args.output_csv or os.path.join(baseline_root, "results.csv")
+    model_names = {task: _task_model_name(task, args.model) for task in tasks}
 
     print("=" * 60)
     print(f"Std-test baseline evaluation")
     print(f"  baseline:  {args.baseline}")
     print(f"  tasks:     {tasks}")
-    print(f"  output:    {out_root}")
+    print(f"  models:    {model_names}")
+    print(f"  output:    {baseline_root}")
     print("=" * 60)
 
     rows: list[dict[str, Any]] = []
     for task_name in tasks:
+        model_name = model_names[task_name]
+        run_output_dir = _task_model_output_dir(
+            out_root, args.baseline, task_name, model_name
+        )
         print("\n" + "-" * 60)
-        print(f"[{task_name}] baseline = {args.baseline}")
+        print(f"[{task_name}] baseline = {args.baseline}, model = {model_name}")
         print("-" * 60)
 
-        row: dict[str, Any] = {"task": task_name, "baseline": args.baseline}
+        row: dict[str, Any] = {
+            "task": task_name,
+            "baseline": args.baseline,
+            "model": model_name,
+            "output_dir": run_output_dir,
+        }
         try:
-            _ensure_std_test(task_name, args.skip_build, args.quiet)
+            _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
             row.update(_run_baseline_and_eval(
                 task_name, args.baseline, args, out_root
             ))

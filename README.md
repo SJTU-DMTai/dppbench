@@ -58,18 +58,21 @@ home_credit, kuairec, movielens, nyc_taxi_hourly, polish_bankruptcy, yelp
 Build or refresh frozen standard test data:
 
 ```bash
-python scripts/build_std_test.py --data_name amazon_beauty --data_dir /path/to/data --gpu_id 0
+python scripts/build_std_test.py --data_names amazon_beauty --data_dir /path/to/datasets --gpu_id 0
 ```
 
 Train and evaluate one task/model with its default DSL preparation pipeline:
 
 ```bash
-python scripts/train_task_model.py --data_name amazon_beauty --model DIN --data_dir /path/to/data --gpu_id 0
+python scripts/train_task_model.py --data_name amazon_beauty --model DIN --data_dir /path/to/datasets --gpu_id 0
 ```
 
 Evaluate one baseline on a task:
 
 ```bash
-python scripts/evaluate_baseline.py --baseline SAGA --data_name amazon_beauty --data_dir /path/to/data --out_dir /path/to/output --gpu_id 0
+python scripts/evaluate_baseline.py --baseline SAGA --data_names amazon_beauty --model DIN --data_dir /path/to/datasets --output_dir /path/to/output --gpu_id 0
 ```
 
+The baseline evaluator writes artifacts under
+`<output_dir>/<baseline>/<data_name>_<model>/` and writes the default summary
+CSV to `<output_dir>/<baseline>/results.csv`.

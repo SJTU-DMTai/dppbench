@@ -132,13 +132,23 @@ def _ensure_std_test(args, cfg):
     if missing:
         rebuild_reason = f"missing {missing} under {std_dir}"
     elif args.data_name in REC_DATASETS:
+        meta = _load_std_test_meta(std_dir)
         expected_rule = cfg.get("feature", {}).get("label_rule")
-        actual_rule = _load_std_test_meta(std_dir).get("label_rule")
+        actual_rule = meta.get("label_rule")
         if actual_rule != expected_rule:
             rebuild_reason = (
                 f"label_rule changed for {args.data_name}; "
                 "rebuilding standard test data"
             )
+        else:
+            from scripts.build_std_test import canonical_data_protocol
+            expected_protocol = canonical_data_protocol(args.data_name)
+            actual_protocol = meta.get("canonical_data_protocol")
+            if expected_protocol and actual_protocol != expected_protocol:
+                rebuild_reason = (
+                    f"canonical data protocol changed for {args.data_name}; "
+                    "rebuilding standard test data"
+                )
 
     if rebuild_reason is None:
         print(f"[std_test] using standard test data from {std_dir}")

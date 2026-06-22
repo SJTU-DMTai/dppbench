@@ -54,6 +54,7 @@ if _ROOT not in sys.path:
 # don't duplicate task lists / baseline configs.
 from scripts.build_std_test import (  # noqa: E402
     TASK_REGISTRY as STD_TEST_TASKS,
+    canonical_data_protocol,
     run_for_task as build_std_test_for_task,
 )
 
@@ -153,6 +154,14 @@ def _std_test_present(task_name: str, data_dir: str | None = None) -> bool:
         return False
     # std_test.parquet is required for every task type.
     return os.path.isfile(os.path.join(d, "std_test.parquet"))
+
+
+def _load_std_test_meta(task_name: str, data_dir: str | None = None) -> dict:
+    meta_path = os.path.join(_std_test_dir(task_name, data_dir=data_dir), "meta.json")
+    if not os.path.exists(meta_path):
+        return {}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _task_model_name(task_name: str, model_name: str | None = None) -> str:
@@ -264,16 +273,27 @@ def _ensure_std_test(
     quiet: bool,
 ) -> dict:
     """Build std-test for the task if missing. Returns a small status dict."""
-    if _std_test_present(task_name, data_dir=data_dir):
+    rebuild_reason = None
+    if not _std_test_present(task_name, data_dir=data_dir):
+        rebuild_reason = "std-test not found"
+    else:
+        expected_protocol = canonical_data_protocol(task_name)
+        actual_protocol = _load_std_test_meta(
+            task_name, data_dir=data_dir
+        ).get("canonical_data_protocol")
+        if expected_protocol and actual_protocol != expected_protocol:
+            rebuild_reason = "canonical data protocol changed"
+
+    if rebuild_reason is None:
         return {"built": False, "ok": True}
     if skip_build:
         raise FileNotFoundError(
-            f"std-test missing for '{task_name}' at "
+            f"{rebuild_reason} for '{task_name}' at "
             f"{_std_test_dir(task_name, data_dir=data_dir)} "
             f"and --skip_build was passed; run scripts/build_std_test.py first."
         )
     if not quiet:
-        print(f"[{task_name}] std-test not found; building now ...")
+        print(f"[{task_name}] {rebuild_reason}; building std-test now ...")
     build_std_test_for_task(task_name, dry_run=False, data_dir=data_dir)
     return {"built": True, "ok": _std_test_present(task_name, data_dir=data_dir)}
 

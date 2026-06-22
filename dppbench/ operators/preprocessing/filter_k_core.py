@@ -5,7 +5,7 @@ class FilterKCore(RecOp):
     """Iteratively keep only users/items with at least k interactions."""
 
     APPLIES_TO_STD_TEST = False
-    FILTER_STD_TEST_TO_TRAIN_DOMAIN = True
+    FILTER_STD_TEST_TO_TRAIN_DOMAIN = False
 
     def __init__(self, user_col="user_id", item_col="item_id", k=5, max_iter=100):
         super().__init__(name="FilterKCore")

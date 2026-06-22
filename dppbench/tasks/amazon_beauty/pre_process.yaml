@@ -29,12 +29,6 @@ pipeline:
     - vote
     - item_price
     method: median
-- op: FilterKCore
-  target: interaction
-  params:
-    user_col: user_id
-    item_col: item_id
-    k: 3
 - op: CreateSequence
   target: interaction
   params:

@@ -27,6 +27,7 @@ class OpSpec:
     valid_targets: tuple = ("both",)
     needs_context: bool = False
     mandatory: bool = False
+    searchable: bool = True
     prior_features: dict = field(default_factory=dict)
     description: str = ""
 
@@ -148,6 +149,7 @@ def _adapt_spec(name: str) -> OpSpec:
         valid_targets=tuple(base.valid_targets),
         needs_context=base.needs_context,
         mandatory=base.mandatory,
+        searchable=base.searchable,
         prior_features=dict(extra.get("prior_features", {})),
         description=str(extra.get("description", "")),
     )

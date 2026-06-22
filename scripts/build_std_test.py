@@ -2,9 +2,10 @@
 baseline harness for fair, apples-to-apples evaluation.
 
 For each task this script:
-  * Calls ``data.load_data()`` to obtain the *raw*, *un-preprocessed*
-    DataFrames (so the std-test stays free of any pipeline-specific
-    feature engineering decisions).
+  * Calls ``data.load_data()`` to obtain the task's canonical DataFrames:
+    raw data plus any fixed dataset-level protocol such as Amazon Beauty's
+    k-core. The std-test stays free of pipeline-specific feature engineering
+    decisions.
   * Holds out a fixed slice of rows by a task-appropriate rule:
       - tabular binary classification: stratified random 20% (seed=42).
       - tabular time-series regression: chronological tail 20%.
@@ -29,6 +30,7 @@ files are byte-identical (modulo parquet metadata).
 """
 
 import argparse
+import copy
 import importlib
 import json
 import os
@@ -150,6 +152,15 @@ def _load_model_config(task_name):
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def canonical_data_protocol(task_name):
+    if task_name not in TASK_REGISTRY:
+        return None
+    dotted, _ = TASK_REGISTRY[task_name]
+    data_cls = _import_class(dotted)
+    protocol = getattr(data_cls, "CANONICAL_DATA_PROTOCOL", None)
+    return copy.deepcopy(protocol) if protocol else None
 
 
 def _save_meta(out_dir, meta):
@@ -421,11 +432,18 @@ def run_for_task(task_name, dry_run, data_dir=None):
     else:
         raise ValueError(f"Unknown kind '{kind}'")
 
+    canonical_protocol = (
+        getattr(data, "canonical_data_protocol", None)
+        or canonical_data_protocol(task_name)
+    )
+    if canonical_protocol:
+        meta["canonical_data_protocol"] = copy.deepcopy(canonical_protocol)
+
     label_rule = cfg.get("feature", {}).get("label_rule")
     if label_rule:
         meta["label_rule"] = label_rule
-        if not dry_run:
-            _save_meta(out_dir, meta)
+    if (canonical_protocol or label_rule) and not dry_run:
+        _save_meta(out_dir, meta)
 
     print(f"[{task_name}] meta: {json.dumps(meta, default=str)}")
     if dry_run:

@@ -86,7 +86,7 @@ class YelpData(RecData):
         extract_dir = self._download_and_extract()
 
         review_path = self._find_file(extract_dir, "yelp_academic_dataset_review.json")
-        self.interaction_df = self._load_json_lines(review_path, self.INTERACTION_FIELDS)[: 100000]
+        self.interaction_df = self._load_json_lines(review_path, self.INTERACTION_FIELDS)
         self.interaction_df = self.interaction_df.rename(columns=self.INTERACTION_RENAME)
         self.interaction_df["timestamp"] = (
             pd.to_datetime(self.interaction_df["date"], errors="coerce")

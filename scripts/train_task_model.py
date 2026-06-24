@@ -3,6 +3,7 @@ import os
 import argparse
 import json
 import copy
+import ast
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -52,6 +53,15 @@ def parse_args():
         "--gpu_id", type=int, default=-1,
         help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.",
     )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional output root. When set, logs and structured metrics are "
+            "written under <output_dir>/baseline/<data_name>/<model>."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -72,6 +82,77 @@ def _resolve_device(gpu_id):
 def _load_yaml(path):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+def _output_paths(output_dir, data_name, model_name):
+    if not output_dir:
+        return None
+    run_dir = os.path.join(
+        os.path.abspath(output_dir), "baseline", data_name, model_name
+    )
+    os.makedirs(run_dir, exist_ok=True)
+    return {
+        "run_dir": run_dir,
+        "log": os.path.join(run_dir, "stdout.log"),
+        "metrics": os.path.join(run_dir, "metrics.json"),
+        "config": os.path.join(run_dir, "run_config.json"),
+    }
+
+
+def _parse_metrics_from_log(log_path):
+    metrics = {}
+    if not log_path or not os.path.exists(log_path):
+        return metrics
+    prefixes = {"val:": "val", "std_test:": "std_test", "test:": "test"}
+    with open(log_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            for prefix, key in prefixes.items():
+                if line.startswith(prefix):
+                    payload = line[len(prefix):].strip()
+                    try:
+                        metrics[key] = ast.literal_eval(payload)
+                    except (SyntaxError, ValueError):
+                        metrics[key] = {"raw": payload}
+                    break
+    return metrics
+
+
+def _write_run_artifacts(paths, args, cfg, model_name, device, error=None):
+    if not paths:
+        return
+    run_config = {
+        "data_name": args.data_name,
+        "model": model_name,
+        "data_dir": args.data_dir,
+        "output_dir": args.output_dir,
+        "gpu_id": args.gpu_id,
+        "device": device,
+        "model_config": cfg,
+    }
+    if error is not None:
+        run_config["error"] = error
+    with open(paths["config"], "w", encoding="utf-8") as f:
+        json.dump(run_config, f, indent=2, ensure_ascii=False)
+    metrics = _parse_metrics_from_log(paths["log"])
+    if error is not None:
+        metrics["error"] = error
+    with open(paths["metrics"], "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
 
 
 def _resolve_model_config(cfg, model_name=None):
@@ -358,16 +439,34 @@ def main():
     cfg = _resolve_model_config(_load_yaml(model_yaml), args.model)
 
     model_name = cfg.get("model")
-    _ensure_std_test(args, cfg)
-    if model_name in {"LightGBM"} | SEQUENCE_MODELS | TABULAR_DEEP_MODELS | GRAPH_MODELS or args.data_name in TABULAR_REGISTRY:
-        _train_tabular(args, cfg, pre_process_yaml, device=device)
-    elif model_name in REC_MODELS or args.data_name in REC_DATASETS:
-        _train_rec(args, cfg, pre_process_yaml, device=device)
-    else:
-        raise ValueError(
-            f"Cannot route training for data_name='{args.data_name}', "
-            f"model='{model_name}'."
-        )
+    paths = _output_paths(args.output_dir, args.data_name, model_name)
+    old_stdout = sys.stdout
+    log_file = None
+    error = None
+    if paths:
+        log_file = open(paths["log"], "w", encoding="utf-8")
+        sys.stdout = _Tee(old_stdout, log_file)
+        print(f"[output] writing run artifacts to {paths['run_dir']}")
+    try:
+        _ensure_std_test(args, cfg)
+        if model_name in {"LightGBM"} | SEQUENCE_MODELS | TABULAR_DEEP_MODELS | GRAPH_MODELS or args.data_name in TABULAR_REGISTRY:
+            _train_tabular(args, cfg, pre_process_yaml, device=device)
+        elif model_name in REC_MODELS or args.data_name in REC_DATASETS:
+            _train_rec(args, cfg, pre_process_yaml, device=device)
+        else:
+            raise ValueError(
+                f"Cannot route training for data_name='{args.data_name}', "
+                f"model='{model_name}'."
+            )
+    except Exception as exc:
+        error = repr(exc)
+        raise
+    finally:
+        if paths:
+            sys.stdout.flush()
+            sys.stdout = old_stdout
+            log_file.close()
+            _write_run_artifacts(paths, args, cfg, model_name, device, error=error)
 
 
 if __name__ == "__main__":

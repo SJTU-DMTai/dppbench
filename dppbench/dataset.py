@@ -513,7 +513,7 @@ class RecData(BaseData):
             test = df.iloc[0:0].copy()
             train = df
 
-        print(f"Data split: train_pool={len(train)}, test={len(test)}")
+        # print(f"Data split: train_pool={len(train)}, test={len(test)}")
         return {"train": train, "test": test}
 
 

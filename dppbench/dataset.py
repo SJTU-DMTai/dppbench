@@ -215,22 +215,35 @@ class RecData(BaseData):
         for col, col_type in list(self.col_types.items()):
             if col_type != self.CATEGORICAL_LIST or col in already_remapped:
                 continue
+            has_list = False
+            list_sample_is_str = False
             for df_attr in ("interaction_df", "user_df", "item_df"):
                 df = getattr(self, df_attr, None)
                 if df is None or col not in df.columns:
                     continue
-                sample = None
                 for val in df[col]:
-                    if isinstance(val, list) and val:
-                        sample = val[0]
+                    if isinstance(val, (list, np.ndarray)) and len(val) > 0:
+                        has_list = True
+                        if not isinstance(val[0], (int, np.integer)):
+                            list_sample_is_str = True
                         break
-                if sample is None or isinstance(sample, (int, np.integer)):
+                if has_list:
+                    break
+            if not has_list or not list_sample_is_str:
+                continue
+            all_tokens = set()
+            for df_attr in ("interaction_df", "user_df", "item_df"):
+                df = getattr(self, df_attr, None)
+                if df is None or col not in df.columns:
                     continue
-                all_tokens = set()
                 for val in df[col]:
                     if isinstance(val, (list, np.ndarray)):
                         all_tokens.update(val)
-                tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
+            tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
+            for df_attr in ("interaction_df", "user_df", "item_df"):
+                df = getattr(self, df_attr, None)
+                if df is None or col not in df.columns:
+                    continue
                 df[col] = df[col].apply(
                     lambda x: [tok2idx.get(v, 0) for v in x] if isinstance(x, (list, np.ndarray)) else x
                 )
@@ -239,16 +252,25 @@ class RecData(BaseData):
         for col, col_type in list(self.col_types.items()):
             if col_type != self.CATEGORICAL or col in id_cols:
                 continue
-            sample = None
+            need_remap = False
             for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
                 df = getattr(self, df_attr, None)
                 if df is None or col not in df.columns:
                     continue
                 non_null = df[col].dropna()
-                if len(non_null) > 0:
-                    sample = non_null.iloc[0]
+                if len(non_null) == 0:
+                    continue
+                sample = non_null.iloc[0]
+                if not isinstance(sample, (int, np.integer)):
+                    need_remap = True
                     break
-            if sample is None or isinstance(sample, (int, np.integer)):
+                col_min = int(non_null.min())
+                col_max = int(non_null.max())
+                col_nunique = int(non_null.nunique())
+                if col_max - col_min + 1 > col_nunique * 2 + 10:
+                    need_remap = True
+                    break
+            if not need_remap:
                 continue
 
             all_tokens = set()

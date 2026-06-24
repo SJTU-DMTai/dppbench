@@ -277,7 +277,7 @@ def _ensure_std_test(
     """Build std-test for the task if missing. Returns a small status dict."""
     needs_build = not _std_test_present(task_name, data_dir=data_dir)
     rebuild_reason = "std-test not found" if needs_build else None
-    if not needs_build and STD_TEST_TASKS.get(task_name, (None, None))[1] == "rec_temporal":
+    if not needs_build and STD_TEST_TASKS.get(task_name, (None, None))[1] == "rec":
         meta = _load_std_test_meta(task_name, data_dir=data_dir)
         needs_build = meta.get("split_method") != REC_SPLIT_METHOD
         if needs_build:

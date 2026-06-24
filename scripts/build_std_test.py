@@ -91,15 +91,15 @@ TASK_REGISTRY = {
     # --- rec ----------------------------------------------------------
     "amazon_beauty": (
         "dppbench.tasks.amazon_beauty.amazon_beauty_data.AmazonBeautyData",
-        "rec_temporal",
+        "rec",
     ),
-    "kuairec": ("dppbench.tasks.kuairec.kuairec_data.KuairecData", "rec_temporal"),
+    "kuairec": ("dppbench.tasks.kuairec.kuairec_data.KuairecData", "rec"),
     "movielens": (
         "dppbench.tasks.movielens.movielens_data.MovielensData",
-        "rec_temporal",
+        "rec",
     ),
-    "yelp": ("dppbench.tasks.yelp.yelp_data.YelpData", "rec_temporal"),
-    "tenrec": ("dppbench.tasks.tenrec.tenrec_data.TenrecData", "rec_temporal"),
+    "yelp": ("dppbench.tasks.yelp.yelp_data.YelpData", "rec"),
+    "tenrec": ("dppbench.tasks.tenrec.tenrec_data.TenrecData", "rec"),
 }
 
 STD_TEST_SEED = 42
@@ -351,7 +351,7 @@ def _sample_rec_negatives(std_test, interaction_frozen, all_items, rng):
 # ---------------------------------------------------------------------------
 # Rec temporal split: global chronological tail becomes frozen std-test.
 # ---------------------------------------------------------------------------
-def build_rec_temporal(task_name, data, out_dir, dry_run):
+def build_rec(task_name, data, out_dir, dry_run):
     rng = np.random.default_rng(STD_TEST_SEED)
     df = data.interaction_df.copy().reset_index(drop=True)
     if "user_id" not in df.columns or "item_id" not in df.columns:
@@ -572,8 +572,8 @@ def run_for_task(task_name, dry_run, data_dir=None):
         meta = build_timeseries(task_name, data, out_dir, dry_run)
     elif kind == "graph":
         meta = build_graph(task_name, data, out_dir, dry_run)
-    elif kind == "rec_temporal":
-        meta = build_rec_temporal(task_name, data, out_dir, dry_run)
+    elif kind == "rec":
+        meta = build_rec(task_name, data, out_dir, dry_run)
     else:
         raise ValueError(f"Unknown kind '{kind}'")
 

@@ -23,12 +23,9 @@ class BerkaData(TabularData):
     ]
     ASC_BASE_URLS = [
         "https://raw.githubusercontent.com/zhouxu-ds/ds-projects/master/loan_default_prediction/data",
+        "https://raw.githubusercontent.com/anttttti/Berka-Dataset/master/data",
     ]
-    USER_AGENT = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+    USER_AGENT = "Wget/1.21.4"
     AUX_TABLES = ["account", "client", "disp", "card", "order", "trans", "district"]
     ASC_FILES = ["account", "card", "client", "disp", "district", "loan", "order", "trans"]
     MAIN_TABLE = "loan"
@@ -80,10 +77,37 @@ class BerkaData(TabularData):
         if self._all_asc_present():
             return
 
-        zip_path = os.path.join(self.data_dir, "data_berka.zip")
         attempts = []
 
-        # 1) Try zip candidates first.
+        # 1) Try per-file download from reliable GitHub mirrors first
+        #    (original Czech servers lisp.vse.cz / sorry.vse.cz are offline)
+        per_file_ok = True
+        for name in self.ASC_FILES:
+            target = os.path.join(self.data_dir, f"{name}.asc")
+            if os.path.exists(target):
+                continue
+            ok = False
+            for base in self.ASC_BASE_URLS:
+                url = f"{base}/{name}.asc"
+                print(f"Attempting Berka {name}.asc from {url} ...")
+                try:
+                    self._try_download_asc(base, name)
+                    print(f"  -> success: {target}")
+                    ok = True
+                    break
+                except Exception as e:
+                    attempts.append(f"{url}: {e}")
+                    if os.path.exists(target):
+                        os.remove(target)
+            if not ok:
+                per_file_ok = False
+                break
+
+        if self._all_asc_present():
+            return
+
+        # 2) Try zip download as fallback
+        zip_path = os.path.join(self.data_dir, "data_berka.zip")
         if not os.path.exists(zip_path):
             for url in self.ZIP_CANDIDATES:
                 print(f"Attempting Berka zip download from {url} ...")
@@ -107,31 +131,12 @@ class BerkaData(TabularData):
         if self._all_asc_present():
             return
 
-        # 2) Per-file fallback.
-        for name in self.ASC_FILES:
-            target = os.path.join(self.data_dir, f"{name}.asc")
-            if os.path.exists(target):
-                continue
-            ok = False
-            for base in self.ASC_BASE_URLS:
-                url = f"{base}/{name}.asc"
-                print(f"Attempting Berka {name}.asc from {url} ...")
-                try:
-                    self._try_download_asc(base, name)
-                    print(f"  -> success: {target}")
-                    ok = True
-                    break
-                except Exception as e:
-                    attempts.append(f"{url}: {e}")
-                    if os.path.exists(target):
-                        os.remove(target)
-            if not ok:
-                raise RuntimeError(
-                    f"Failed to download Berka {name}.asc. "
-                    f"Please place all 8 .asc files (account/card/client/"
-                    f"disp/district/loan/order/trans) under {self.data_dir} "
-                    f"manually. Attempts:\n" + "\n".join(attempts)
-                )
+        raise RuntimeError(
+            f"Failed to download Berka dataset. "
+            f"Please place all 8 .asc files (account/card/client/"
+            f"disp/district/loan/order/trans) under {self.data_dir} "
+            f"manually. Attempts:\n" + "\n".join(attempts)
+        )
 
     # ------------------------------------------------------------------
     # Reading helpers

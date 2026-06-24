@@ -23,12 +23,15 @@ class HomeCreditData(TabularData):
         "https://www.kaggle.com/competitions/home-credit-default-risk/data"
     )
     ENV_URLS = "DPPBENCH_HOME_CREDIT_URL"
-    USER_AGENT = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+    USER_AGENT = "Wget/1.21.4"
     ARCHIVE_NAME = "home-credit-default-risk.zip"
+
+    HF_BASE_URL = "https://huggingface.co/datasets/jamirc/home_credit_default_risk/resolve/main"
+    HF_FILE_MAP = {
+        "application_train.csv": "application_tr.csv",
+        "application_test.csv": "application_ts.csv",
+    }
+
     REQUIRED_FILES = (
         "application_train.csv",
         "application_test.csv",
@@ -133,6 +136,26 @@ class HomeCreditData(TabularData):
                 print(f"{self.name} mirror download failed: {type(exc).__name__}: {exc}")
         return False
 
+    def _try_download_huggingface(self):
+        required = list(self.REQUIRED_FILES) + list(self.AUX_FILES.values())
+        os.makedirs(self.data_dir, exist_ok=True)
+        for local_name in required:
+            target = os.path.join(self.data_dir, local_name)
+            if os.path.exists(target) and os.path.getsize(target) > 0:
+                continue
+            remote_name = self.HF_FILE_MAP.get(local_name, local_name)
+            url = f"{self.HF_BASE_URL}/{remote_name}"
+            print(f"{self.name} Downloading {local_name} from HuggingFace...")
+            try:
+                self._download_archive(url, local_name)
+            except Exception as e:
+                print(f"{self.name} HuggingFace download failed for {local_name}: {e}")
+                if os.path.exists(target):
+                    os.remove(target)
+                return False
+        self._promote_required_files()
+        return not self._missing_required_files()
+
     def _run_kaggle_download(self):
         os.makedirs(self.data_dir, exist_ok=True)
         kaggle = shutil.which("kaggle")
@@ -183,15 +206,17 @@ class HomeCreditData(TabularData):
 
         if self._try_download_from_urls():
             return
+        if self._try_download_huggingface():
+            return
         if self._run_kaggle_download():
             return
 
         missing = self._missing_required_files()
         raise RuntimeError(
             f"{self.name} data files are missing: {missing}. "
-            f"Set {self.ENV_URLS} to a direct archive URL, or install/configure "
-            f"Kaggle CLI and accept the competition rules at {self.COMPETITION_URL}. "
-            f"Then place/download the files under {self.data_dir}."
+            f"Set {self.ENV_URLS} to a direct archive URL, install/configure "
+            f"Kaggle CLI and accept the competition rules at {self.COMPETITION_URL}, "
+            f"or download the files manually from HuggingFace (jamirc/home_credit_default_risk)."
         )
 
     def load_data(self):

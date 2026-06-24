@@ -15,7 +15,8 @@ model_params:
 feature:
   seq_cols:
     item_id_seq: item_id
-  seq_max_len: 50
+    cate_id_seq: item_brand
+  seq_max_len: 20
   target_col: rating
   label_rule:
     mode: ge
@@ -25,10 +26,7 @@ feature:
 
 std_test:
   cold_start_user_filter:
-    min_train_interactions: 2  # Minimum user interactions in the frozen training window.
-    basis: >-
-      Amazon Beauty is sparse; 2 removes one-shot cold-start users from the
-      temporal std-test while preserving enough long-tail evaluation coverage.
+    min_train_interactions: 2
 
 train:
   optimizer: adam
@@ -41,17 +39,6 @@ train:
   metrics: [auc]
   early_stopping_monitor: auc
   early_stopping_patience: 5
-  negative_sampling: &amazon_beauty_negative_sampling
-    enabled: true
-    user_col: user_id
-    item_col: item_id
-    sampler: random
-    num_negatives: 1
-    exclude_positive_only: true
-    seed: 42
-    item_feature_prefixes: [item_]
-    interaction_defaults:
-      vote: 0
 
 model_options:
   FNN:
@@ -75,7 +62,11 @@ model_options:
       metrics: [auc]
       early_stopping_monitor: auc
       early_stopping_patience: 5
-      negative_sampling: *amazon_beauty_negative_sampling
+    feature:
+      seq_cols:
+        item_id_seq: item_id
+        cate_id_seq: item_brand
+      seq_max_len: 20
   DeepFM:
     model_params:
       embedding_dim: 16
@@ -87,6 +78,11 @@ model_options:
       task: binary
       device: cpu
     train: *amazon_beauty_rec_train
+    feature:
+      seq_cols:
+        item_id_seq: item_id
+        cate_id_seq: item_brand
+      seq_max_len: 20
   DIN:
     model_params:
       embedding_dim: 16
@@ -101,6 +97,11 @@ model_options:
       task: binary
       device: cpu
     train: *amazon_beauty_rec_train
+    feature:
+      seq_cols:
+        item_id_seq: item_id
+        cate_id_seq: item_brand
+      seq_max_len: 20
   DIEN:
     model_params:
       embedding_dim: 16
@@ -116,6 +117,11 @@ model_options:
       task: binary
       device: cpu
     train: *amazon_beauty_rec_train
+    feature:
+      seq_cols:
+        item_id_seq: item_id
+        cate_id_seq: item_brand
+      seq_max_len: 20
   SIM:
     model_params:
       embedding_dim: 16
@@ -131,3 +137,8 @@ model_options:
       task: binary
       device: cpu
     train: *amazon_beauty_rec_train
+    feature:
+      seq_cols:
+        item_id_seq: item_id
+        cate_id_seq: item_brand
+      seq_max_len: 20

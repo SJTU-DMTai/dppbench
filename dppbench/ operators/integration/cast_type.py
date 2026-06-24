@@ -14,12 +14,11 @@ class CastType(TabularOp):
         "datetime": "datetime64[ns]",
     }
 
-    def __init__(self, col_dtypes=None, dtype_mapping=None):
+    def __init__(self, col_dtypes):
         super().__init__(name="CastType")
-        mapping = col_dtypes if col_dtypes is not None else dtype_mapping
-        if not isinstance(mapping, dict):
+        if not isinstance(col_dtypes, dict):
             raise ValueError("col_dtypes must be a dict {col_name: dtype}")
-        self.col_dtypes = mapping
+        self.col_dtypes = col_dtypes
 
     def get_op_description(self):
         description = """Operator name: CastType

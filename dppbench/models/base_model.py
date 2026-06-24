@@ -2,7 +2,6 @@ import copy
 import time
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -184,137 +183,6 @@ class BaseModel(nn.Module):
                 self.train()
         return np.concatenate(preds).squeeze()
 
-    @staticmethod
-    def _sample_negative_item(rng, item_pool, seen, weights=None, max_tries=50):
-        n_items = len(item_pool)
-        if n_items == 0:
-            return None
-        for _ in range(max_tries):
-            if weights is None:
-                idx = int(rng.integers(0, n_items))
-            else:
-                idx = int(rng.choice(n_items, p=weights))
-            item = item_pool[idx]
-            if item not in seen:
-                return item
-        candidates = [item for item in item_pool if item not in seen]
-        if not candidates:
-            return None
-        return candidates[int(rng.integers(0, len(candidates)))]
-
-    @staticmethod
-    def _build_item_feature_map(df, item_col, item_feature_cols):
-        if not item_feature_cols:
-            return {}
-        item_df = df[[item_col] + item_feature_cols].drop_duplicates(
-            subset=[item_col], keep="first"
-        )
-        return item_df.set_index(item_col).to_dict(orient="index")
-
-    def _augment_with_negative_samples(self, train_df, test_df, cfg):
-        train_cfg = cfg.get("train", {})
-        neg_cfg = train_cfg.get("negative_sampling") or {}
-        if not neg_cfg or not bool(neg_cfg.get("enabled", False)):
-            return train_df
-
-        feat_cfg = cfg.get("feature", {})
-        target_col = feat_cfg.get("target_col")
-        if not target_col or target_col not in train_df.columns:
-            return train_df
-
-        user_col = neg_cfg.get("user_col", "user_id")
-        item_col = neg_cfg.get("item_col", "item_id")
-        if user_col not in train_df.columns or item_col not in train_df.columns:
-            return train_df
-
-        label_rule = feat_cfg.get("label_rule", {}) or {}
-        positive_label = label_rule.get("positive_label", 1)
-        negative_label = label_rule.get("negative_label", 0)
-        num_negatives = int(neg_cfg.get("num_negatives", 1))
-        if num_negatives <= 0:
-            return train_df
-
-        full_df = pd.concat([train_df, test_df], ignore_index=True, sort=False)
-        item_pool = pd.unique(full_df[item_col].dropna())
-        if len(item_pool) == 0:
-            return train_df
-
-        sampler = str(neg_cfg.get("sampler", "random")).lower()
-        weights = None
-        if sampler in {"popular", "popularity"}:
-            pop = full_df[item_col].value_counts()
-            alpha = float(neg_cfg.get("popularity_alpha", 0.75))
-            weights = np.array([float(pop.get(item, 0)) ** alpha for item in item_pool])
-            if weights.sum() > 0:
-                weights = weights / weights.sum()
-            else:
-                weights = None
-
-        seen_source = full_df
-        if bool(neg_cfg.get("exclude_positive_only", True)):
-            seen_source = seen_source[seen_source[target_col] == positive_label]
-        user_seen = (
-            seen_source.groupby(user_col)[item_col].apply(set).to_dict()
-        )
-
-        seq_cols = set(feat_cfg.get("seq_cols", {}).keys())
-        item_feature_cols = neg_cfg.get("item_feature_cols")
-        if item_feature_cols is None:
-            prefixes = tuple(neg_cfg.get("item_feature_prefixes", ["item_"]))
-            item_feature_cols = [
-                col for col in full_df.columns
-                if col != item_col and any(str(col).startswith(p) for p in prefixes)
-            ]
-        item_feature_cols = [
-            col for col in item_feature_cols
-            if col in full_df.columns and col not in seq_cols and col != target_col
-        ]
-        item_feature_map = self._build_item_feature_map(
-            full_df, item_col, item_feature_cols
-        )
-        interaction_defaults = neg_cfg.get("interaction_defaults", {}) or {}
-
-        anchors = train_df[train_df[target_col] == positive_label]
-        rng = np.random.default_rng(int(neg_cfg.get("seed", train_cfg.get("seed", 42))))
-        max_anchors = neg_cfg.get("max_anchors")
-        if max_anchors is not None and len(anchors) > int(max_anchors):
-            anchors = anchors.sample(
-                n=int(max_anchors),
-                random_state=int(neg_cfg.get("seed", train_cfg.get("seed", 42))),
-            )
-
-        neg_rows = []
-        for _, anchor in anchors.iterrows():
-            seen = set(user_seen.get(anchor[user_col], set()))
-            for _ in range(num_negatives):
-                neg_item = self._sample_negative_item(rng, item_pool, seen, weights=weights)
-                if neg_item is None:
-                    continue
-                seen.add(neg_item)
-                row = anchor.copy(deep=True)
-                row[item_col] = neg_item
-                row[target_col] = negative_label
-                for col, value in item_feature_map.get(neg_item, {}).items():
-                    row[col] = value
-                for col, value in interaction_defaults.items():
-                    if col in row.index:
-                        row[col] = value
-                neg_rows.append(row)
-
-        if not neg_rows:
-            return train_df
-
-        neg_df = pd.DataFrame(neg_rows, columns=train_df.columns)
-        augmented = pd.concat([train_df, neg_df], ignore_index=True, sort=False)
-        print(
-            "Added training negatives: "
-            f"{len(neg_df)} ({num_negatives} per positive, sampler={sampler})"
-        )
-        return augmented.sample(
-            frac=1.0,
-            random_state=int(neg_cfg.get("seed", train_cfg.get("seed", 42))),
-        ).reset_index(drop=True)
-
     def train_and_evaluate(self, train_df, test_df, feature_columns, cfg):
         """Train the model on ``train_df`` and evaluate on ``test_df``.
 
@@ -330,7 +198,7 @@ class BaseModel(nn.Module):
         val_ratio = float(train_cfg.get("val_ratio", 0.1))
         seed = int(train_cfg.get("seed", 42))
 
-        train_df = self._augment_with_negative_samples(train_df, test_df, cfg)
+        # print(f"Training pool before validation split: total={len(train_df)}")
 
         target_col = cfg.get("feature", {}).get("target_col")
         stratify = None
@@ -356,7 +224,11 @@ class BaseModel(nn.Module):
         val_x, val_y = df_to_input(val_split, feature_columns, cfg)
         test_x, test_y = df_to_input(test_df, feature_columns, cfg)
 
-        print(f"Train samples: {len(train_y)}, Val samples: {len(val_y)}, Test samples: {len(test_y)}")
+        print(
+            "Model fit split: "
+            f"train={len(train_y)}, val={len(val_y)}, test={len(test_y)} "
+            f"(val_ratio={val_ratio})"
+        )
 
         history = self.fit(
             train_x, train_y,

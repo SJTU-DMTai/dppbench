@@ -23,9 +23,6 @@ feature:
 std_test:
   cold_start_user_filter:
     min_train_interactions: 3  # Minimum user interactions in the frozen training window.
-    basis: >-
-      KuaiRec has dense user-video observations in its core setting; 3 keeps
-      std-test users warm-start without materially shrinking the test window.
 
 train:
   optimizer: adam

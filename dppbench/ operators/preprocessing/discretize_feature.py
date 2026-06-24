@@ -8,8 +8,7 @@ class DiscretizeFeature(TabularOp):
 
     FIT_ON_TRAIN_ONLY = True
 
-    def __init__(self, cols=None, boundaries=None, n_bins=5, strategy="manual",
-                 encode="ordinal"):
+    def __init__(self, cols=None, boundaries=None, n_bins=5, strategy="manual"):
         super().__init__(name="DiscretizeFeature")
         if strategy not in ("manual", "uniform", "quantile", "kmeans"):
             raise ValueError("strategy must be manual/uniform/quantile/kmeans")
@@ -17,7 +16,6 @@ class DiscretizeFeature(TabularOp):
         self.boundaries = boundaries or {}
         self.n_bins = int(n_bins)
         self.strategy = strategy
-        self.encode = encode
         self.bin_edges_ = {}
         self.fitted_ = False
         target_cols = self.cols or list(self.boundaries.keys())

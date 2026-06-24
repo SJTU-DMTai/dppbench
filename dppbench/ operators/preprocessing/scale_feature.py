@@ -8,21 +8,20 @@ class ScaleFeature(TabularOp):
 
     FIT_ON_TRAIN_ONLY = True
 
+    QUANTILE_LO = 25.0
+    QUANTILE_HI = 75.0
+    EPS = 1e-6
+    OUT_DTYPE = "float32"
+
     def __init__(self, cols=None, method="standard", pattern=None,
-                 auto_numeric=False, feature_range=(0.0, 1.0),
-                 quantile_range=(25.0, 75.0), eps=1e-6,
-                 out_dtype="float32"):
+                 feature_range=(0.0, 1.0)):
         super().__init__(name="ScaleFeature")
         if method not in ("standard", "minmax", "maxabs", "robust", "l2"):
             raise ValueError("method must be standard/minmax/maxabs/robust/l2")
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
         self.method = method
         self.pattern = pattern
-        self.auto_numeric = bool(auto_numeric)
         self.feature_range = tuple(feature_range)
-        self.quantile_range = tuple(quantile_range)
-        self.eps = float(eps)
-        self.out_dtype = out_dtype
         self.cols_ = []
         self.params_ = {}
         self.fitted_ = False
@@ -41,9 +40,7 @@ Parameters:
 cols : list[str] or None — Explicit numeric columns.
 method : str — standard/minmax/maxabs/robust/l2.
 pattern : str or None — Substring selector when cols is None.
-auto_numeric : bool — If True, select all numeric columns.
-feature_range : pair — Minmax output range.
-quantile_range : pair — Robust-scale quantile range.
+feature_range : pair — Minmax output range (default (0.0, 1.0)).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -71,8 +68,6 @@ Example YAML:
             return [c for c in self.cols if c in df.columns]
         if self.pattern is not None:
             return [c for c in df.columns if self.pattern in c]
-        if self.auto_numeric:
-            return df.select_dtypes(include=[np.number]).columns.tolist()
         return []
 
     def _fit_col(self, col, values):
@@ -83,9 +78,8 @@ Example YAML:
         elif self.method == "maxabs":
             self.params_[col] = values.abs().max()
         elif self.method == "robust":
-            q_lo, q_hi = self.quantile_range
             med = values.median()
-            scale = values.quantile(q_hi / 100.0) - values.quantile(q_lo / 100.0)
+            scale = values.quantile(self.QUANTILE_HI / 100.0) - values.quantile(self.QUANTILE_LO / 100.0)
             self.params_[col] = (med, scale if pd.notna(scale) and scale > 0 else 1.0)
 
     def transform(self, df):
@@ -98,7 +92,7 @@ Example YAML:
         if self.method == "l2":
             sub = df[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
             norm = np.sqrt((sub ** 2).sum(axis=1)).replace(0, 1.0)
-            df[cols] = sub.div(norm, axis=0).astype(self.out_dtype)
+            df[cols] = sub.div(norm, axis=0).astype(self.OUT_DTYPE)
             self.fitted_ = True
             return df
         for col in cols:
@@ -107,7 +101,7 @@ Example YAML:
                 self._fit_col(col, values)
             if self.method == "standard":
                 mean, std = self.params_.get(col, (0.0, 1.0))
-                std = std if pd.notna(std) and std >= self.eps else 1.0
+                std = std if pd.notna(std) and std >= self.EPS else 1.0
                 out = (values - mean) / std
             elif self.method == "minmax":
                 mn, mx = self.params_.get(col, (0.0, 0.0))
@@ -117,11 +111,11 @@ Example YAML:
                 )
             elif self.method == "maxabs":
                 mx = self.params_.get(col, 1.0)
-                mx = mx if pd.notna(mx) and mx >= self.eps else 1.0
+                mx = mx if pd.notna(mx) and mx >= self.EPS else 1.0
                 out = values / mx
             else:
                 med, scale = self.params_.get(col, (0.0, 1.0))
                 out = (values - med) / scale
-            df[col] = out.astype(self.out_dtype)
+            df[col] = out.astype(self.OUT_DTYPE)
         self.fitted_ = True
         return df

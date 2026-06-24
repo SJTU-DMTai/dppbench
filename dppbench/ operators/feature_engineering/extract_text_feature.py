@@ -7,8 +7,7 @@ class ExtractTextFeature(TextOp):
 
     FIT_ON_TRAIN_ONLY = True
 
-    def __init__(self, cols, method="tfidf", max_features=100,
-                 ngram_range=(1, 1), prefix=None, drop_source=False):
+    def __init__(self, cols, method="tfidf", max_features=100, ngram_range=(1, 1)):
         super().__init__(name="ExtractTextFeature")
         if method not in ("tfidf", "bow"):
             raise ValueError("method must be tfidf or bow")
@@ -16,8 +15,6 @@ class ExtractTextFeature(TextOp):
         self.method = method
         self.max_features = int(max_features)
         self.ngram_range = tuple(ngram_range)
-        self.prefix = prefix
-        self.drop_source = bool(drop_source)
         self.vectorizers_ = {}
         self.fitted_ = False
 
@@ -39,11 +36,11 @@ pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'review': ['good food', 'good service']})
->>> op = ExtractTextFeature(cols='review', method='bow', max_features=3, prefix='txt_')
+>>> op = ExtractTextFeature(cols='review', method='bow', max_features=3)
 >>> op.transform(df)
-        review  txt_food  txt_good  txt_service
-0    good food         1         1            0
-1 good service         0         1            1
+        review  review_bow_food  review_bow_good  review_bow_service
+0    good food                1                1                   0
+1 good service                0                1                   1
 
 Example YAML:
   - op: ExtractTextFeature
@@ -53,7 +50,6 @@ Example YAML:
       method: tfidf
       max_features: 100
       ngram_range: [1, 2]
-      prefix: review_tfidf_
 """
         return description.strip()
 
@@ -79,11 +75,9 @@ Example YAML:
             vec = self.vectorizers_[col]
             mat = vec.transform(text)
             names = vec.get_feature_names_out()
-            base = self.prefix or f"{col}_{self.method}_"
+            base = f"{col}_{self.method}_"
             dense = mat.toarray()
             for i, name in enumerate(names):
                 df[f"{base}{name}"] = dense[:, i]
-            if self.drop_source:
-                df = df.drop(columns=[col])
         self.fitted_ = True
         return df

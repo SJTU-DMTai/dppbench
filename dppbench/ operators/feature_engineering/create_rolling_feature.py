@@ -5,9 +5,9 @@ class CreateRollingFeature(TabularOp):
     """Create rolling aggregate features with one-step shift."""
 
     SUPPORTED_AGGS = {"mean", "std", "min", "max", "median", "sum"}
+    MIN_PERIODS = 1
 
-    def __init__(self, target_col, windows, aggs=None, group_cols=None,
-                 time_col=None, min_periods=1):
+    def __init__(self, target_col, windows, aggs=None, group_cols=None, time_col=None):
         super().__init__(name="CreateRollingFeature")
         self.target_col = target_col
         self.windows = windows if isinstance(windows, list) else [windows]
@@ -17,7 +17,6 @@ class CreateRollingFeature(TabularOp):
             raise ValueError(f"unsupported rolling aggs: {sorted(unknown)}")
         self.group_cols = group_cols or []
         self.time_col = time_col
-        self.min_periods = int(min_periods)
 
     def get_op_description(self):
         description = """Operator name: CreateRollingFeature
@@ -70,12 +69,12 @@ Example YAML:
             if group_cols:
                 shifted = df.groupby(group_cols)[self.target_col].shift(1)
                 roller = shifted.groupby([df[c] for c in group_cols]).rolling(
-                    int(window), min_periods=self.min_periods
+                    int(window), min_periods=self.MIN_PERIODS
                 )
                 result = roller.agg(self.aggs).reset_index(level=list(range(len(group_cols))), drop=True)
             else:
                 roller = df[self.target_col].shift(1).rolling(
-                    int(window), min_periods=self.min_periods
+                    int(window), min_periods=self.MIN_PERIODS
                 )
                 result = roller.agg(self.aggs)
             if len(self.aggs) == 1:

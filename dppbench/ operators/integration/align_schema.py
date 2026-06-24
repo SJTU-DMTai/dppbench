@@ -6,13 +6,12 @@ class AlignSchema(TabularOp):
     """Align column names and dtypes to a target schema."""
 
     def __init__(self, column_mapping=None, dtype_mapping=None, required_cols=None,
-                 fill_value=None, drop_extra=False):
+                 fill_value=None):
         super().__init__(name="AlignSchema")
         self.column_mapping = column_mapping or {}
         self.dtype_mapping = dtype_mapping or {}
         self.required_cols = required_cols or []
         self.fill_value = fill_value
-        self.drop_extra = bool(drop_extra)
         if not isinstance(self.column_mapping, dict):
             raise ValueError("column_mapping must be a dict {source: target}")
         if not isinstance(self.dtype_mapping, dict):
@@ -33,7 +32,6 @@ column_mapping : dict[str, str] — Source-to-target column name mapping.
 dtype_mapping : dict[str, str] — Target dtype per column.
 required_cols : list[str] — Columns that must exist after alignment.
 fill_value : any — Value used for missing required columns. Default None.
-drop_extra : bool — If True, keep only mapped / required / dtype columns.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -86,10 +84,4 @@ Example YAML:
                     df[col] = df[col].astype(dtype)
             except Exception as exc:
                 print(f"  [AlignSchema] failed to cast {col} -> {dtype}: {exc}")
-
-        if self.drop_extra:
-            keep = set(existing_mapping.values())
-            keep.update(self.required_cols)
-            keep.update(self.dtype_mapping.keys())
-            df = df[[c for c in df.columns if c in keep]]
         return df

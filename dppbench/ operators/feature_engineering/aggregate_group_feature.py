@@ -4,14 +4,11 @@ from ..base_op import TabularOp
 class AggregateGroupFeature(TabularOp):
     """Create group-by aggregate features and merge them back."""
 
-    def __init__(self, group_cols, agg_cols=None, agg_funcs=None, prefix=None,
-                 max_cols=None):
+    def __init__(self, group_cols, agg_cols=None, agg_funcs=None):
         super().__init__(name="AggregateGroupFeature")
         self.group_cols = group_cols if isinstance(group_cols, list) else [group_cols]
         self.agg_cols = agg_cols
         self.agg_funcs = agg_funcs or ["mean", "sum", "count", "std"]
-        self.prefix = prefix
-        self.max_cols = max_cols
 
     def get_op_description(self):
         description = """Operator name: AggregateGroupFeature
@@ -59,14 +56,9 @@ Example YAML:
             ]
         else:
             cols = [c for c in self.agg_cols if c in df.columns and c not in keys]
-        if self.max_cols is not None:
-            cols = cols[: self.max_cols]
         if not cols:
             return df
         grouped = df.groupby(keys)[cols].agg(self.agg_funcs)
-        grouped.columns = [
-            f"{self.prefix}_{col}_{func}" if self.prefix else f"{col}_{func}"
-            for col, func in grouped.columns
-        ]
+        grouped.columns = [f"{col}_{func}" for col, func in grouped.columns]
         grouped = grouped.reset_index()
         return df.merge(grouped, on=keys, how="left")

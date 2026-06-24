@@ -5,29 +5,29 @@ class FilterKCore(RecOp):
     """Iteratively keep only users/items with at least k interactions."""
 
     APPLIES_TO_STD_TEST = False
-    # K-core is a training-data operation. The frozen std-test is established
-    # by the split protocol and must not be re-sized by pipeline k changes.
     FILTER_STD_TEST_TO_TRAIN_DOMAIN = False
+    MAX_ITER = 100
 
-    def __init__(self, user_col="user_id", item_col="item_id", k=5, max_iter=100):
+    def __init__(self, user_col="user_id", item_col="item_id", k=5):
         super().__init__(name="FilterKCore")
         self.user_col = user_col
         self.item_col = item_col
         self.k = int(k)
-        self.max_iter = int(max_iter)
 
     def get_op_description(self):
         description = """Operator name: FilterKCore
 
 Function description:
-Recommendation k-core filtering. Iteratively removes
-users and items with fewer than k interactions until convergence.
+Recommendation k-core filtering. Iteratively removes users and items with
+fewer than k interactions until convergence (or 100 iterations).
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-See __init__ signature for supported parameters and defaults.
+user_col : str — User identifier column.
+item_col : str — Item identifier column.
+k : int — Minimum interactions per user/item.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -57,7 +57,7 @@ Example YAML:
         prev_len = -1
         if not self.user_col and not self.item_col:
             return df.reset_index(drop=True)
-        for _ in range(self.max_iter):
+        for _ in range(self.MAX_ITER):
             keep = None
             if self.user_col:
                 user_counts = df[self.user_col].value_counts()

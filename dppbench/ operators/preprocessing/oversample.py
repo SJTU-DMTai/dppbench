@@ -4,43 +4,41 @@ from ..base_op import TabularOp
 
 
 class Oversample(TabularOp):
-    """Increase minority classes by random, SMOTE, SMOTE-NC, or ADASYN."""
+    """Increase minority classes by random duplication, SMOTE, or ADASYN."""
 
     APPLIES_TO_STD_TEST = False
+    RANDOM_STATE = 42
 
-    def __init__(self, target_col, method="random", random_state=42,
-                 sampling_strategy="auto", n_neighbors=5,
-                 categorical_features=None):
+    def __init__(self, target_col, method="random", n_neighbors=5):
         super().__init__(name="Oversample")
-        if method not in ("random", "smote", "adasyn", "smote_nc"):
-            raise ValueError("method must be random/smote/adasyn/smote_nc")
+        if method not in ("random", "smote", "adasyn"):
+            raise ValueError("method must be random/smote/adasyn")
         self.target_col = target_col
         self.method = method
-        self.random_state = int(random_state)
-        self.sampling_strategy = sampling_strategy
         self.n_neighbors = int(n_neighbors)
-        self.categorical_features = categorical_features
 
     def get_op_description(self):
         description = """Operator name: Oversample
 
 Function description:
-Oversample minority labels with random duplication,
-SMOTE, SMOTE-NC, or ADASYN. Falls back to random oversampling if imblearn is
-unavailable or the selected synthetic method cannot run.
+Oversample minority labels with random duplication, SMOTE, or ADASYN. Falls
+back to random oversampling if imblearn is unavailable or the selected
+synthetic method cannot run.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-See __init__ signature for supported parameters and defaults.
+target_col : str — Label column.
+method : str — random/smote/adasyn (default 'random').
+n_neighbors : int — k_neighbors for SMOTE/ADASYN (default 5).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'x': [1, 2, 3], 'label': [0, 0, 1]})
->>> op = Oversample(target_col='label', method='random', random_state=0)
+>>> op = Oversample(target_col='label', method='random')
 >>> op.transform(df)
    x  label
 0  1      0
@@ -54,12 +52,11 @@ Example YAML:
     params:
       target_col: label
       method: random
-      random_state: 42
 """
         return description.strip()
 
     def _random(self, df):
-        rng = np.random.RandomState(self.random_state)
+        rng = np.random.RandomState(self.RANDOM_STATE)
         groups = list(df.groupby(self.target_col))
         if not groups:
             return df
@@ -78,25 +75,14 @@ Example YAML:
         if self.method == "smote":
             from imblearn.over_sampling import SMOTE
             sampler = SMOTE(
-                random_state=self.random_state,
-                sampling_strategy=self.sampling_strategy,
+                random_state=self.RANDOM_STATE,
                 k_neighbors=self.n_neighbors,
-            )
-        elif self.method == "adasyn":
-            from imblearn.over_sampling import ADASYN
-            sampler = ADASYN(
-                random_state=self.random_state,
-                sampling_strategy=self.sampling_strategy,
-                n_neighbors=self.n_neighbors,
             )
         else:
-            from imblearn.over_sampling import SMOTENC
-            cat = self.categorical_features or []
-            sampler = SMOTENC(
-                categorical_features=cat,
-                random_state=self.random_state,
-                sampling_strategy=self.sampling_strategy,
-                k_neighbors=self.n_neighbors,
+            from imblearn.over_sampling import ADASYN
+            sampler = ADASYN(
+                random_state=self.RANDOM_STATE,
+                n_neighbors=self.n_neighbors,
             )
         xr, yr = sampler.fit_resample(x, y)
         out = pd.DataFrame(xr, columns=feat_cols)

@@ -4,12 +4,11 @@ from ..base_op import TabularOp
 class RenameColumn(TabularOp):
     """Rename columns by an explicit mapping."""
 
-    def __init__(self, rename_map=None, column_mapping=None):
+    def __init__(self, rename_map):
         super().__init__(name="RenameColumn")
-        mapping = rename_map if rename_map is not None else column_mapping
-        if not isinstance(mapping, dict):
+        if not isinstance(rename_map, dict):
             raise ValueError("rename_map must be dict {old_name: new_name}")
-        self.rename_map = mapping
+        self.rename_map = rename_map
 
     def get_op_description(self):
         description = """Operator name: RenameColumn

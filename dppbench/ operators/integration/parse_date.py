@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 from datetime import date
 from ..base_op import TabularOp
@@ -8,19 +7,16 @@ class ParseDate(TabularOp):
     """Parse date-like columns from strings or YYMMDD integers."""
 
     EPOCH = date(1970, 1, 1)
+    ERRORS = "coerce"
 
-    def __init__(self, cols, mode="string", target_format=None, infer=True,
-                 errors="coerce", out_features=None, drop_original=False):
+    def __init__(self, cols, mode="string", target_format=None,
+                 out_features=None, drop_original=False):
         super().__init__(name="ParseDate")
         self.cols = cols if isinstance(cols, list) else [cols]
         if mode not in ("string", "int_yymmdd", "berka_birth"):
             raise ValueError("mode must be 'string', 'int_yymmdd', or 'berka_birth'")
         self.mode = mode
         self.target_format = target_format
-        self.infer = bool(infer)
-        if errors not in ("coerce", "raise", "ignore"):
-            raise ValueError("errors must be 'coerce', 'raise' or 'ignore'")
-        self.errors = errors
         self.out_features_explicit = out_features is not None
         self.out_features = out_features or [
             "year", "month", "day", "days_since_epoch"
@@ -43,8 +39,6 @@ Parameters:
 cols : str or list[str] — Date columns.
 mode : str — 'string' / 'int_yymmdd' / 'berka_birth'.
 target_format : str or None — strftime format for string mode.
-infer : bool — Use pandas mixed-format inference in string mode.
-errors : str — 'coerce' / 'raise' / 'ignore'.
 out_features : list[str] — Integer-date derived columns: year/month/day/
 days_since_epoch/day_of_week.
 drop_original : bool — Drop source column after parsing.
@@ -107,7 +101,7 @@ Example YAML:
         return d, gender
 
     def _add_date_features(self, df, col, dates):
-        parsed = pd.to_datetime(dates, errors="coerce")
+        parsed = pd.to_datetime(dates, errors=self.ERRORS)
         if "year" in self.out_features:
             df[f"{col}_year"] = parsed.dt.year
         if "month" in self.out_features:
@@ -123,15 +117,9 @@ Example YAML:
 
     def _parse_string(self, df, col):
         try:
-            parsed = pd.to_datetime(
-                df[col],
-                errors=self.errors,
-                format="mixed" if self.infer else None,
-            )
+            parsed = pd.to_datetime(df[col], errors=self.ERRORS, format="mixed")
         except ValueError:
-            if not self.infer:
-                raise
-            parsed = pd.to_datetime(df[col], errors=self.errors)
+            parsed = pd.to_datetime(df[col], errors=self.ERRORS)
         if self.target_format is not None:
             df[col] = parsed.dt.strftime(self.target_format)
         else:

@@ -1,4 +1,3 @@
-import pandas as pd
 import numpy as np
 from ..base_op import RecOp
 
@@ -7,8 +6,7 @@ class CreateSequence(RecOp):
     USES_TRAIN_HISTORY_FOR_STD_TEST = True
 
     def __init__(self, user_col="user_id", item_col="item_id",
-                 time_col="timestamp", seq_col="item_id_seq",
-                 max_len=50, feature_cols=None):
+                 time_col="timestamp", seq_col="item_id_seq", max_len=50):
         super().__init__(name="CreateSequence")
 
         if max_len < 1:
@@ -19,7 +17,6 @@ class CreateSequence(RecOp):
         self.time_col = time_col
         self.seq_col = seq_col
         self.max_len = max_len
-        self.feature_cols = feature_cols
         self.output_col_types = {seq_col: "categorical_list"}
 
     def get_op_description(self):
@@ -89,11 +86,7 @@ Example YAML:
             df = df.sort_values([self.user_col, self.time_col]).reset_index(drop=True)
 
         users = df[self.user_col].values
-
-        if self.feature_cols is not None:
-            elements = df[self.feature_cols].to_dict("records")
-        else:
-            elements = df[self.item_col].values
+        elements = df[self.item_col].values
 
         sequences = [None] * len(df)
         user_hist = {}

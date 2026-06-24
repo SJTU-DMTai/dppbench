@@ -314,17 +314,17 @@ class RecData(BaseData):
     def load_std_test_frozen(self):
         """Merge the frozen std-test interactions into ``self.interaction_df``.
 
-        Looks for ``<task>/std_test/std_test.parquet`` and (optionally)
-        ``std_test_negatives.parquet`` and ``interaction_frozen.parquet``.
-        When found:
+        Looks for ``<task>/std_test/std_test.parquet`` and
+        ``interaction_frozen.parquet``. When found:
           * If ``interaction_frozen.parquet`` exists, it replaces the
             current ``interaction_df`` (these are the rows with the
             std-test holdout already removed).
-          * The std-test interactions are appended with ``__split__`` set
-            to ``"std_test"``, so they survive every subsequent step.
-          * Optional fixed negative samples per std-test positive are
-            stored on ``self.std_test_negatives_df`` for downstream
-            evaluation harnesses to consume.
+          * ``std_test.parquet`` contains held-out positives **plus** fixed
+            sampled negatives, already materialized with full columns by
+            ``scripts/build_std_test.py``. Those rows are appended with
+            ``__split__`` set to ``"std_test"`` so train-only ops leave
+            them untouched.
+
         Returns ``True`` if a std-test was loaded.
         """
         std_dir = self._std_test_dir(getattr(self, "data_dir", None))
@@ -338,28 +338,12 @@ class RecData(BaseData):
         if os.path.exists(frozen_path):
             self.interaction_df = pd.read_parquet(frozen_path)
 
-        std_df = pd.read_parquet(std_test_path)
-        std_df = std_df.copy()
+        std_df = pd.read_parquet(std_test_path).copy()
         std_df["__split__"] = "std_test"
-        n_holdout = len(std_df)
-
-        neg_path = os.path.join(std_dir, "std_test_negatives.parquet")
-        if os.path.exists(neg_path):
-            neg_df = pd.read_parquet(neg_path).copy()
-            feat_cfg = self.model_cfg.get("feature", {}) if self.model_cfg else {}
-            target_col = feat_cfg.get("target_col")
-            label_rule = feat_cfg.get("label_rule", {}) or {}
-            negative_label = label_rule.get("negative_label", 0)
-            if target_col:
-                neg_df[target_col] = negative_label
-            neg_df["__split__"] = "std_test"
-            self.std_test_negatives_df = neg_df.copy()
-            std_df = pd.concat([std_df, neg_df], ignore_index=True, sort=False)
 
         base = self.interaction_df.copy()
         if "__split__" not in base.columns:
             base["__split__"] = "train"
-        # Align columns so concat doesn't introduce NaN due to ordering
         for c in std_df.columns:
             if c not in base.columns:
                 base[c] = pd.NA
@@ -371,11 +355,19 @@ class RecData(BaseData):
         )
 
         self._has_std_test = True
-        print(
-            f"  [std_test] loaded {n_holdout} held-out interactions"
-            + (f" + {len(self.std_test_negatives_df)} negatives"
-               if self.std_test_negatives_df is not None else "")
-        )
+        feat_cfg = self.model_cfg.get("feature", {}) if self.model_cfg else {}
+        target_col = feat_cfg.get("target_col")
+        n_total = len(std_df)
+        if target_col and target_col in std_df.columns:
+            label_rule = feat_cfg.get("label_rule", {}) or {}
+            pos_lbl = label_rule.get("positive_label", 1)
+            n_pos = int((std_df[target_col] == pos_lbl).sum())
+            n_neg = n_total - n_pos
+            print(
+                f"  [std_test] loaded {n_pos} held-out interactions + {n_neg} negatives"
+            )
+        else:
+            print(f"  [std_test] loaded {n_total} held-out rows")
         return True
 
     def _filter_std_test_to_train_domain(self, std_test_df, train_df, op_name, op):
@@ -411,86 +403,97 @@ class RecData(BaseData):
             )
         return filtered.reset_index(drop=True)
 
+    def _run_pipeline_step(self, step, step_idx, total_steps):
+        op_name = step["op"]
+        target = step.get("target", "interaction")
+        raw_params = step.get("params", {}) or {}
+        params = {k: self._resolve_param(v) for k, v in raw_params.items()}
+        op_cls = self._load_op(op_name)
+        op = op_cls(**params)
+        applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
+        uses_train_history = getattr(op, "USES_TRAIN_HISTORY_FOR_STD_TEST", False)
+        attr = f"{target}_df"
+        if not hasattr(self, attr) or getattr(self, attr) is None:
+            raise ValueError(f"Target '{target}' has no DataFrame on {self.name}")
+        df = getattr(self, attr)
+
+        if "__split__" in df.columns and uses_train_history:
+            new_df = op.transform(df)
+        elif "__split__" in df.columns:
+            parts = []
+            std_test_pre = df[df["__split__"] == "std_test"]
+            deferred_std_test = None
+            transformed_train = None
+            for split_name in ["train", "val", "test", "std_test"]:
+                group = df[df["__split__"] == split_name]
+                if len(group) == 0:
+                    continue
+                if split_name == "std_test" and not applies_to_std_test:
+                    deferred_std_test = group.copy()
+                    continue
+                group = group.drop(columns="__split__")
+                transformed = op.transform(group)
+                if split_name == "train":
+                    transformed_train = transformed.copy()
+                transformed["__split__"] = split_name
+                parts.append(transformed)
+            if deferred_std_test is not None:
+                if (
+                    getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
+                    and transformed_train is not None
+                ):
+                    deferred_std_test = self._filter_std_test_to_train_domain(
+                        deferred_std_test, transformed_train, op_name, op
+                    )
+                parts.append(deferred_std_test)
+            new_df = pd.concat(parts, ignore_index=True)
+            if (
+                len(std_test_pre) > 0
+                and (new_df["__split__"] == "std_test").sum() == 0
+                and not getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
+            ):
+                print(
+                    f"  [std_test] op {op_name} would drop all "
+                    f"{len(std_test_pre)} std_test rows; "
+                    "preserving them untouched."
+                )
+                new_df = pd.concat([new_df, std_test_pre.copy()], ignore_index=True)
+        else:
+            new_df = op.transform(df)
+
+        setattr(self, attr, new_df)
+
+        if hasattr(op, 'output_col_types') and op.output_col_types:
+            self.register_col_types(op.output_col_types)
+
+        if hasattr(op, 'drop_col_types') and op.drop_col_types:
+            for col_name in op.drop_col_types:
+                self.col_types.pop(col_name, None)
+
+        print(f"Step {step_idx}/{total_steps}: {op_name} on {target}_df, shape: {df.shape} -> {new_df.shape}")
+
     def run_pre_process(self, yaml_path):
         if not self._has_std_test:
             self.load_std_test_frozen()
-        self._remap_ids()
         with open(yaml_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         steps = config.get("pipeline", [])
-        for i, step in enumerate(steps, start=1):
-            op_name = step["op"]
-            target = step.get("target", "interaction")
-            raw_params = step.get("params", {}) or {}
-            params = {k: self._resolve_param(v) for k, v in raw_params.items()}
-            op_cls = self._load_op(op_name)
-            op = op_cls(**params)
-            applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
-            uses_train_history = getattr(op, "USES_TRAIN_HISTORY_FOR_STD_TEST", False)
-            attr = f"{target}_df"
-            if not hasattr(self, attr) or getattr(self, attr) is None:
-                raise ValueError(f"Target '{target}' has no DataFrame on {self.name}")
-            df = getattr(self, attr)
 
-            if "__split__" in df.columns and uses_train_history:
-                new_df = op.transform(df)
-            elif "__split__" in df.columns:
-                parts = []
-                std_test_pre = df[df["__split__"] == "std_test"]
-                deferred_std_test = None
-                transformed_train = None
-                for split_name in ["train", "val", "test", "std_test"]:
-                    group = df[df["__split__"] == split_name]
-                    if len(group) == 0:
-                        continue
-                    if split_name == "std_test" and not applies_to_std_test:
-                        # Pass std-test rows through untouched (train-only op).
-                        deferred_std_test = group.copy()
-                        continue
-                    group = group.drop(columns="__split__")
-                    transformed = op.transform(group)
-                    if split_name == "train":
-                        transformed_train = transformed.copy()
-                    transformed["__split__"] = split_name
-                    parts.append(transformed)
-                if deferred_std_test is not None:
-                    if (
-                        getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
-                        and transformed_train is not None
-                    ):
-                        deferred_std_test = self._filter_std_test_to_train_domain(
-                            deferred_std_test, transformed_train, op_name, op
-                        )
-                    parts.append(deferred_std_test)
-                new_df = pd.concat(parts, ignore_index=True)
-                # Safety net: if an op silently dropped *all* std_test rows
-                # (e.g. row-level filter that wasn't tagged
-                # ``APPLIES_TO_STD_TEST = False``), keep the original
-                # std_test slice so we never lose the held-out test set.
-                if (
-                    len(std_test_pre) > 0
-                    and (new_df["__split__"] == "std_test").sum() == 0
-                    and not getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
-                ):
-                    print(
-                        f"  [std_test] op {op_name} would drop all "
-                        f"{len(std_test_pre)} std_test rows; "
-                        "preserving them untouched."
-                    )
-                    new_df = pd.concat([new_df, std_test_pre.copy()], ignore_index=True)
-            else:
-                new_df = op.transform(df)
+        pre_remap_targets = {"item", "user"}
+        pre_steps = [s for s in steps if s.get("target", "interaction") in pre_remap_targets]
+        post_steps = [s for s in steps if s.get("target", "interaction") not in pre_remap_targets]
 
-            setattr(self, attr, new_df)
+        total = len(steps)
+        step_no = 0
+        for step in pre_steps:
+            step_no += 1
+            self._run_pipeline_step(step, step_no, total)
 
-            if hasattr(op, 'output_col_types') and op.output_col_types:
-                self.register_col_types(op.output_col_types)
+        self._remap_ids()
 
-            if hasattr(op, 'drop_col_types') and op.drop_col_types:
-                for col_name in op.drop_col_types:
-                    self.col_types.pop(col_name, None)
-
-            print(f"Step {i}/{len(steps)}: {op_name} on {target}_df, shape: {df.shape} -> {new_df.shape}")
+        for step in post_steps:
+            step_no += 1
+            self._run_pipeline_step(step, step_no, total)
 
     def split(self):
         """Return ``{"train": ..., "test": ...}``.
@@ -510,7 +513,7 @@ class RecData(BaseData):
             test = df.iloc[0:0].copy()
             train = df
 
-        print(f"Split: train={len(train)}, test={len(test)}")
+        print(f"Data split: train_pool={len(train)}, test={len(test)}")
         return {"train": train, "test": test}
 
 

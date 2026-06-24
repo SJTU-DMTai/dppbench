@@ -4,16 +4,13 @@ from ..base_op import TabularOp
 class SortRows(TabularOp):
     """Sort rows by one or more keys."""
 
-    def __init__(self, by=None, ascending=True, na_position="last", stable=True,
-                 reset_index=True):
+    KIND = "mergesort"
+    NA_POSITION = "last"
+
+    def __init__(self, by=None, ascending=True):
         super().__init__(name="SortRows")
         self.by = by if isinstance(by, list) or by is None else [by]
         self.ascending = ascending
-        if na_position not in ("first", "last"):
-            raise ValueError("na_position must be 'first' or 'last'")
-        self.na_position = na_position
-        self.stable = bool(stable)
-        self.reset_index = bool(reset_index)
 
     def get_op_description(self):
         description = """Operator name: SortRows
@@ -27,10 +24,7 @@ df : pd.DataFrame — Input table accepted by transform; required columns are li
 
 Parameters:
 by : str or list[str] — Sort keys.
-ascending : bool or list[bool] — Sort direction.
-na_position : str — 'first' or 'last'. Default 'last'.
-stable : bool — Use stable mergesort. Default True.
-reset_index : bool — Reset row index after sorting. Default True.
+ascending : bool or list[bool] — Sort direction. Default True.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -62,7 +56,7 @@ Example YAML:
         out = df.sort_values(
             by=by,
             ascending=self.ascending,
-            na_position=self.na_position,
-            kind="mergesort" if self.stable else "quicksort",
+            na_position=self.NA_POSITION,
+            kind=self.KIND,
         )
-        return out.reset_index(drop=True) if self.reset_index else out
+        return out.reset_index(drop=True)

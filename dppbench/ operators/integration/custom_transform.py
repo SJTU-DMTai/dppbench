@@ -6,12 +6,13 @@ from ..custom_op import CustomOp
 class CustomTransform(TabularOp):
     """Run a sandboxed user-defined transformation function."""
 
-    def __init__(self, code=None, entry="pipeline", func=None):
+    ENTRY = "pipeline"
+
+    def __init__(self, code=None, func=None):
         super().__init__(name="CustomTransform")
         self.code = code
-        self.entry = entry or "pipeline"
         self.func = func
-        self._custom = CustomOp(code=code, entry=self.entry) if code else None
+        self._custom = CustomOp(code=code, entry=self.ENTRY) if code else None
 
     def get_op_description(self):
         description = """Operator name: CustomTransform
@@ -25,8 +26,7 @@ Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-code : str or None — Sandboxed Python source defining the entry function.
-entry : str — Entry function name. Default pipeline.
+code : str or None — Sandboxed Python source defining a ``pipeline(df)`` entry function.
 func : callable or None — Direct callable for programmatic use.
 
 Output:
@@ -51,7 +51,6 @@ Example YAML:
         def pipeline(df):
             df["amount2"] = df["amount"] * 2
             return df
-      entry: pipeline
 """
         return description.strip()
 

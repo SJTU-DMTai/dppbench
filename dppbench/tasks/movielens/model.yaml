@@ -23,9 +23,6 @@ feature:
 std_test:
   cold_start_user_filter:
     min_train_interactions: 3  # Minimum user interactions in the frozen training window.
-    basis: >-
-      MovieLens users are already activity-filtered in the source data; 3 keeps
-      the temporal std-test warm-start while retaining sufficient test rows.
 
 train:
   optimizer: adam

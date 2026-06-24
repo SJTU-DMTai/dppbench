@@ -1,17 +1,17 @@
-import pandas as pd
 from ..base_op import TabularOp
 
 
 class ExtractGraphFeature(TabularOp):
     """Extract simple graph structural features from an edge table."""
 
+    PREFIX = "graph_"
+
     def __init__(self, source_col="src", target_col="dst", features=None,
-                 prefix="graph_", directed=False):
+                 directed=False):
         super().__init__(name="ExtractGraphFeature")
         self.source_col = source_col
         self.target_col = target_col
         self.features = features or ["degree", "pagerank"]
-        self.prefix = prefix
         self.directed = bool(directed)
 
     def get_op_description(self):
@@ -32,12 +32,12 @@ pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'src': ['u1', 'u1', 'u2'], 'dst': ['i1', 'i2', 'i2']})
->>> op = ExtractGraphFeature(source_col='src', target_col='dst', features=['degree'], prefix='g_')
+>>> op = ExtractGraphFeature(source_col='src', target_col='dst', features=['degree'])
 >>> op.transform(df)
-  src dst  g_src_degree  g_dst_degree
-0  u1  i1             2             1
-1  u1  i2             2             2
-2  u2  i2             1             2
+  src dst  graph_src_degree  graph_dst_degree
+0  u1  i1                 2                 1
+1  u1  i2                 2                 2
+2  u2  i2                 1                 2
 
 Example YAML:
   - op: ExtractGraphFeature
@@ -46,7 +46,6 @@ Example YAML:
       source_col: user_id
       target_col: item_id
       features: [degree, pagerank]
-      prefix: graph_
 """
         return description.strip()
 
@@ -68,7 +67,7 @@ Example YAML:
             pagerank = {}
         for node_col in (self.source_col, self.target_col):
             if "degree" in self.features:
-                df[f"{self.prefix}{node_col}_degree"] = df[node_col].map(degree).fillna(0)
+                df[f"{self.PREFIX}{node_col}_degree"] = df[node_col].map(degree).fillna(0)
             if "pagerank" in self.features:
-                df[f"{self.prefix}{node_col}_pagerank"] = df[node_col].map(pagerank).fillna(0.0)
+                df[f"{self.PREFIX}{node_col}_pagerank"] = df[node_col].map(pagerank).fillna(0.0)
         return df

@@ -7,8 +7,7 @@ class TargetEncode(TabularOp):
 
     FIT_ON_TRAIN_ONLY = True
 
-    def __init__(self, cols, target_col="rating", smoothing=1.0,
-                 drop_original=False):
+    def __init__(self, cols, target_col="rating", smoothing=1.0):
         super().__init__(name="TargetEncode")
         if isinstance(cols, str):
             cols = [cols]
@@ -17,7 +16,6 @@ class TargetEncode(TabularOp):
         self.cols = cols
         self.target_col = target_col
         self.smoothing = float(smoothing)
-        self.drop_original = bool(drop_original)
         self.encoding_map_ = {}
         self.global_mean_ = None
         self.fitted_ = False
@@ -26,17 +24,16 @@ class TargetEncode(TabularOp):
         description = """Operator name: TargetEncode
 
 Function description:
-Encode categorical values by smoothed target mean,
-useful for high-cardinality categorical columns.
+Encode categorical values by smoothed target mean, useful for high-cardinality
+categorical columns. Adds a "<col>_<target_col>" column per encoded column.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-cols : str/list[str] — Categorical columns.
+cols : str/list[str] — Categorical columns to encode.
 target_col : str — Label/target column.
 smoothing : float — Shrink category means toward the global mean.
-drop_original : bool — Drop source categorical columns.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -45,10 +42,10 @@ Example:
 >>> df = pd.DataFrame({'city': ['A', 'A', 'B'], 'label': [1, 0, 1]})
 >>> op = TargetEncode(cols=['city'], target_col='label', smoothing=1.0)
 >>> op.transform(df)
-  city  label  city_te
-0    A      1     0.50
-1    A      0     0.50
-2    B      1     0.75
+  city  label  city_label
+0    A      1        0.50
+1    A      0        0.50
+2    B      1        0.75
 
 Example YAML:
   - op: TargetEncode
@@ -83,6 +80,4 @@ Example YAML:
             if col not in df.columns:
                 continue
             df[f"{col}_{self.target_col}"] = df[col].map(enc).fillna(self.global_mean_)
-            if self.drop_original:
-                df = df.drop(columns=[col])
         return df.reset_index(drop=True)

@@ -76,64 +76,41 @@ BUILTIN_METHODS = {
 
 
 class CreateFeature(BaseOp):
-    """Create one new column from `source_cols` via a built-in or user-defined
-    algorithm. Replaces the old DeriveFeatures + CreateFeature operators.
-    """
+    """Create one new column from `source_cols` via a built-in or user-defined algorithm."""
 
-    def __init__(
-        self,
-        source_cols,
-        output_col,
-        method="mean",
-        method_kwargs=None,
-        col_type="numeric",
-        # Backwards-compatible aliases:
-        input_cols=None,
-        func=None,
-    ):
+    def __init__(self, source_cols, output_col, method="mean", method_kwargs=None):
         super().__init__(name="CreateFeature")
         self.op_type = "tabular op"
-
-        if source_cols is None and input_cols is not None:
-            source_cols = input_cols
         if isinstance(source_cols, str):
             source_cols = [source_cols]
         if not source_cols:
             raise ValueError("CreateFeature: source_cols must be a non-empty list")
-
-        if method == "mean" and func is not None:
-            method = func
-
         self.source_cols = list(source_cols)
         self.output_col = output_col
         self.method = method
         self.method_kwargs = dict(method_kwargs or {})
-        self.col_type = col_type
-        self.output_col_types = {output_col: col_type}
+        self.output_col_types = {output_col: "numeric"}
 
     def get_op_description(self):
         description = """Operator name: CreateFeature
 
 Function description:
-Create one new column from `source_cols` by applying a built-in or user-supplied algorithm. Combines the old DeriveFeatures (templated arithmetic / aggregation) and CreateFeature (UDF) into a single op.
+Create one new column from `source_cols` by applying a built-in algorithm or a user-supplied callable.
 
 Input:
-df : pd.DataFrame - DataFrame containing source_cols.
+df : pd.DataFrame — DataFrame containing source_cols.
 
 Parameters:
-source_cols : list[str] - Source column names (>=1).
-output_col  : str       - Name of the new column.
-method      : str | callable, default 'mean'
-Built-in str values: mean, sum, std, min, max, median, product, diff, ratio, inc_ratio, concat, identity.
-Callable: either f(row: pd.Series, **kwargs) -> scalar (row UDF)
-or f(df, source_cols, **kwargs) -> pd.Series (vectorized UDF);
-the form is auto-detected via the first parameter name.
-method_kwargs : dict, optional - extra kwargs for the method (e.g.
-offset for inc_ratio, sep for concat).
-col_type    : str, default 'numeric' - Output dtype hint.
+source_cols : list[str] — Source column names (>=1).
+output_col : str — Name of the new column.
+method : str | callable, default 'mean'
+    Built-in str values: mean, sum, std, min, max, median, product, diff, ratio, inc_ratio, concat, identity.
+    Callable: f(row, **kwargs) -> scalar (row UDF) or f(df, source_cols, **kwargs) -> pd.Series (vectorized UDF);
+    auto-detected via the first parameter name.
+method_kwargs : dict, optional — Extra kwargs forwarded to the method (e.g. offset for inc_ratio, sep for concat).
 
 Output:
-pd.DataFrame - Original DataFrame with an additional output_col.
+pd.DataFrame — Original DataFrame with an additional output_col.
 
 Example:
 >>> df = pd.DataFrame({'a': [1, 2, 3], 'b': [10, 20, 30]})
@@ -154,29 +131,6 @@ Example YAML:
 """
         return description.strip()
 
-    @classmethod
-    def from_features(cls, features):
-        """Build a list of CreateFeature ops from a DeriveFeatures-style spec.
-
-        ``features`` is a list of dicts with keys ``name``, ``op`` and either
-        ``cols`` or ``pattern``. ``offset`` (for inc_ratio) is forwarded.
-        ``pattern`` is resolved against an optional ``columns`` argument.
-        """
-        ops = []
-        for feat in features:
-            ops.append(
-                cls(
-                    source_cols=feat.get("cols") or [],
-                    output_col=feat["name"],
-                    method=feat["op"],
-                    method_kwargs={
-                        k: v for k, v in feat.items()
-                        if k in ("offset", "sep")
-                    },
-                )
-            )
-        return ops
-
     def _resolve_callable(self, df, source_cols):
         method = self.method
         try:
@@ -187,7 +141,6 @@ Example YAML:
             first = ""
         if first in ("df", "frame", "data"):
             return method(df, source_cols, **self.method_kwargs)
-        # Row-wise UDF.
         if len(source_cols) == 1:
             return df[source_cols[0]].apply(
                 lambda x: method(x, **self.method_kwargs)

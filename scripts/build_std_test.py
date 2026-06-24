@@ -16,10 +16,10 @@ For each task this script:
         negative items per std-test positive with seed=42 so that ranking
         metrics are stable across baselines.
   * Writes raw artefacts to ``dppbench/tasks/<task>/std_test/``:
-      - ``std_test.parquet``          (the held-out rows, with labels)
-      - ``train_frozen.parquet``      (tabular only — the rest of train)
-      - ``interaction_frozen.parquet`` (rec only — interactions w/o std-test)
-      - ``std_test_negatives.parquet`` (rec only — fixed negatives)
+      - ``std_test.parquet``            (held-out rows — positives + fixed
+                                         sampled negatives — with labels)
+      - ``train_frozen.parquet``        (tabular only — the rest of train)
+      - ``interaction_frozen.parquet``  (rec only — interactions w/o std-test)
       - ``meta.json``
 
 Run once::
@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # ---------------------------------------------------------------------------
 # Task registry: (task_name, dotted_class, kind)
-# kind ∈ {"binary", "timeseries", "graph", "rec_temporal"}.
+# kind ∈ {"binary", "timeseries", "graph", "rec"}.
 # ---------------------------------------------------------------------------
 TASK_REGISTRY = {
     # --- tabular binary classification ---------------------------------
@@ -104,14 +104,8 @@ TASK_REGISTRY = {
 
 STD_TEST_SEED = 42
 STD_TEST_FRAC = 0.20
-REC_NUM_NEGATIVES = 100
+REC_NUM_NEGATIVES = 1
 REC_SPLIT_METHOD = "global_temporal_tail_train_domain_cold_user_filter"
-
-REC_COLD_START_USER_FILTER_DEFINITION = (
-    "A std-test user is cold-start if its interaction count in "
-    "interaction_frozen.parquet is below min_train_interactions."
-)
-
 
 def rec_cold_start_user_filter(task_name, model_cfg=None):
     cfg = model_cfg or _load_model_config(task_name)
@@ -140,19 +134,7 @@ def rec_cold_start_user_filter(task_name, model_cfg=None):
             f"got {min_train_interactions}"
         )
 
-    basis = filter_cfg.get("basis")
-    if not basis:
-        raise ValueError(
-            f"{task_name}: std_test.cold_start_user_filter.basis is required "
-            "in model.yaml"
-        )
-
-    cfg = {
-        "min_train_interactions": min_train_interactions,
-        "basis": str(basis),
-    }
-    cfg["definition"] = REC_COLD_START_USER_FILTER_DEFINITION
-    return cfg
+    return {"min_train_interactions": min_train_interactions}
 
 # Time-series tasks expose a numeric chronological column on
 # ``self._sort_col`` after ``load_data()`` (except citibike & nyc_taxi
@@ -437,40 +419,39 @@ def build_rec_temporal(task_name, data, out_dir, dry_run):
     )
     std_test = std_test.drop(columns="__row_idx__").reset_index(drop=True)
 
-    # Fixed negatives per std-test positive: sample 100 items from the
+    # Fixed negatives per std-test positive: sample items from the
     # training item pool that the user has not interacted with in the
-    # frozen interactions. Use a single rng + per-user item-set to keep
-    # determinism without blowing up memory.
+    # frozen interactions. Negatives are materialized with full columns
+    # (user static attributes back-filled, interaction feedback zeroed,
+    # item features left to JoinTable downstream) so downstream pipelines
+    # see exactly the same columns as positives.
     all_items = pd.unique(interaction_frozen["item_id"].dropna()).tolist()
-    negatives = _sample_rec_negatives(std_test, interaction_frozen, all_items, rng)
+    negatives_raw = _sample_rec_negatives(std_test, interaction_frozen, all_items, rng)
+
+    negative_label = label_rule.get("negative_label", 0)
+    neg_rows = _materialize_rec_negatives(
+        negatives_raw, std_test, interaction_frozen, data,
+        target_col, negative_label,
+    )
+    std_test_combined = pd.concat(
+        [std_test, neg_rows[std_test.columns]], ignore_index=True
+    )
+
+    n_pos = int((std_test_combined[target_col] == positive_label).sum()) if target_col else len(std_test)
+    n_neg = len(std_test_combined) - n_pos
 
     time_col = "timestamp" if "timestamp" in df.columns else "__row_idx__"
     cut_value = future.iloc[0][time_col]
 
     meta = {
         "task": task_name,
-        "kind": "rec_temporal",
+        "kind": "rec",
         "split_method": REC_SPLIT_METHOD,
         "seed": STD_TEST_SEED,
         "test_size": STD_TEST_FRAC,
-        "time_col": "timestamp" if "timestamp" in data.interaction_df.columns else "row_order",
-        "cut_value": cut_value.item() if hasattr(cut_value, "item") else cut_value,
+        "std_test_positives": n_pos,
+        "std_test_negatives": n_neg,
         "cold_start_user_filter": user_filter,
-        "train_users": int(train_frozen["user_id"].nunique()),
-        "eligible_test_users": int(len(eligible_users)),
-        "num_negatives_per_positive": REC_NUM_NEGATIVES,
-        "interaction_frozen_rows": len(interaction_frozen),
-        "future_rows": len(future),
-        "future_positive_rows": len(std_candidates),
-        "std_test_rows": len(std_test),
-        "dropped_cold_user_std_test_rows": int((~user_keep).sum()),
-        "dropped_unseen_item_std_test_rows": int((user_keep & ~item_keep).sum()),
-        "dropped_cold_std_test_rows": int(len(std_candidates) - len(std_test)),
-        "negatives_rows": len(negatives),
-        "users_with_holdout": int(std_test["user_id"].nunique()),
-        "min_train_interactions_in_std_test": int(
-            train_user_counts.loc[std_test["user_id"].unique()].min()
-        ),
     }
     if dry_run:
         return meta
@@ -478,10 +459,90 @@ def build_rec_temporal(task_name, data, out_dir, dry_run):
     interaction_frozen.to_parquet(
         os.path.join(out_dir, "interaction_frozen.parquet")
     )
-    std_test.to_parquet(os.path.join(out_dir, "std_test.parquet"))
-    negatives.to_parquet(os.path.join(out_dir, "std_test_negatives.parquet"))
+    std_test_combined.to_parquet(os.path.join(out_dir, "std_test.parquet"))
     _save_meta(out_dir, meta)
     return meta
+
+
+def _is_time_col(col):
+    lc = str(col).lower()
+    return "time" in lc or "date" in lc or "timestamp" in lc
+
+
+def _materialize_rec_negatives(negatives_raw, std_positives, interaction_frozen,
+                               data, target_col, negative_label):
+    """Build full negative rows whose schema matches std_test positives.
+
+    * ``user_id``/``item_id`` come from the sampler.
+    * ``target_col`` is set to ``negative_label``.
+    * ``user_*`` static attributes are looked up from ``data.user_df`` (if
+      present) or from the first non-null occurrence in ``interaction_frozen``.
+    * Interaction-level numeric columns (e.g. vote, review helpfulness) are
+      set to 0 — this mirrors what ``SampleNegative`` does for in-train
+      negatives and prevents downstream ``HandleMV`` from imputing them with
+      positive-only statistics (which would flip AUC).
+    * ``item_*`` columns are intentionally left out: they will be merged in
+      by the ``JoinTable`` pipeline step against ``item_df``, identical to
+      how positives are treated.
+    * ``timestamp`` is left as null (no interaction event occurred);
+      ``CreateSequence`` treats std_test rows as evaluation-only and does
+      not add them to user history.
+    """
+    if negatives_raw.empty:
+        return negatives_raw.copy()
+
+    base_cols = list(std_positives.columns)
+    neg_rows = negatives_raw.copy()
+    for c in base_cols:
+        if c not in neg_rows.columns:
+            neg_rows[c] = pd.NA
+
+    if target_col:
+        neg_rows[target_col] = negative_label
+
+    user_col = "user_id"
+    user_attr_cols = [
+        c for c in base_cols
+        if c.startswith("user_") and c != user_col and c != target_col
+    ]
+    if user_attr_cols and user_col in neg_rows.columns:
+        user_lookup_src = None
+        user_df = getattr(data, "user_df", None)
+        if user_df is not None and user_col in user_df.columns:
+            user_lookup_src = user_df
+        else:
+            user_lookup_src = interaction_frozen
+        if user_lookup_src is not None:
+            lookup = (
+                user_lookup_src[user_attr_cols + [user_col]]
+                .dropna(subset=user_attr_cols, how="all")
+                .drop_duplicates(subset=[user_col])
+                .set_index(user_col)
+            )
+            if not lookup.empty:
+                fill_df = neg_rows[[user_col]].merge(
+                    lookup, left_on=user_col, right_index=True, how="left"
+                )
+                for c in user_attr_cols:
+                    mask = neg_rows[c].isna().values if hasattr(neg_rows[c], "isna") else pd.isna(neg_rows[c])
+                    neg_rows.loc[mask, c] = fill_df.loc[mask, c].values
+
+    protected = {user_col, "item_id", target_col}
+    if target_col:
+        protected.add(target_col)
+    for c in base_cols:
+        if c in protected:
+            continue
+        if c.startswith("user_") or c.startswith("item_"):
+            continue
+        if str(c).endswith("_seq"):
+            continue
+        if _is_time_col(c):
+            continue
+        if pd.api.types.is_numeric_dtype(std_positives[c]):
+            neg_rows[c] = 0
+
+    return neg_rows
 
 
 # ---------------------------------------------------------------------------

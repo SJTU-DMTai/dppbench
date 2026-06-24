@@ -7,40 +7,42 @@ class AugmentMixup(TabularOp):
     """Append Mixup synthetic samples for numeric columns."""
 
     APPLIES_TO_STD_TEST = False
+    RANDOM_STATE = 42
 
-    def __init__(self, label_col, cols=None, alpha=0.2, n_samples=None,
-                 random_state=42):
+    def __init__(self, label_col, cols=None, alpha=0.2, n_samples=None):
         super().__init__(name="AugmentMixup")
         self.label_col = label_col
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
         self.alpha = float(alpha)
         self.n_samples = n_samples
-        self.random_state = int(random_state)
 
     def get_op_description(self):
         description = """Operator name: AugmentMixup
 
 Function description:
-Generate Mixup rows by convex-combining pairs of rows
-and labels. Non-numeric columns in synthetic rows are left missing.
+Generate Mixup rows by convex-combining pairs of rows and labels. Non-numeric
+columns in synthetic rows are left missing.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-See __init__ signature for supported parameters and defaults.
+label_col : str — Label column.
+cols : list[str] or None — Numeric columns to mix. None = all numeric.
+alpha : float — Beta distribution parameter (default 0.2).
+n_samples : int or None — Synthetic row count. None = len(df).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'x': [0.0, 10.0], 'label': [0, 1]})
->>> op = AugmentMixup(label_col='label', cols=['x'], alpha=0.5, n_samples=1, random_state=0)
+>>> op = AugmentMixup(label_col='label', cols=['x'], alpha=0.5, n_samples=1)
 >>> op.transform(df)
-           x     label
-0   0.000000  0.000000
-1  10.000000  1.000000
-2   5.000000  0.500000
+       x  label
+0    0.0    0.0
+1   10.0    1.0
+2    5.0    0.5
 
 Example YAML:
   - op: AugmentMixup
@@ -56,7 +58,7 @@ Example YAML:
     def transform(self, df):
         if self.label_col not in df.columns or len(df) < 2:
             return df
-        rng = np.random.RandomState(self.random_state)
+        rng = np.random.RandomState(self.RANDOM_STATE)
         cols = (
             df.select_dtypes(include=[np.number]).columns.tolist()
             if self.cols is None else [c for c in self.cols if c in df.columns]

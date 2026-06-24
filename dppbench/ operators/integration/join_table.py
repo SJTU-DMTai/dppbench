@@ -16,9 +16,10 @@ class JoinTable(TabularOp):
         ``item_col`` (recommendation interaction enrichment).
     """
 
+    SUFFIXES = ("", "_aux")
+
     def __init__(self, method="key",
                  aux_df=None, key_col=None, how="left",
-                 suffixes=("", "_aux"),
                  agg_funcs=None, prefix=None, max_cols=None,
                  user_col="user_id", item_col="item_id",
                  user_df=None, item_df=None):
@@ -31,7 +32,6 @@ class JoinTable(TabularOp):
         self.aux_df = aux_df
         self.key_col = key_col
         self.how = how
-        self.suffixes = tuple(suffixes) if suffixes is not None else ("", "_aux")
         self.agg_funcs = agg_funcs or ["mean", "max", "min"]
         self.prefix = prefix
         self.max_cols = max_cols
@@ -59,7 +59,6 @@ method : str — 'key' (default) / 'agg' / 'rec'.
 aux_df : pd.DataFrame — Auxiliary table (key/agg modes; $name in YAML).
 key_col : str — Join/group key (key/agg modes).
 how : str — Merge strategy. Default 'left'.
-suffixes : tuple[str,str] — Overlap suffixes (key mode). Default ("", "_aux").
 agg_funcs : list[str] — Numeric aggregations (agg mode). Default [mean,max,min].
 prefix : str — Column prefix for aggregated features (agg mode).
 max_cols : int or None — Cap on aggregated columns (agg mode).
@@ -119,9 +118,9 @@ Example YAML:
         ).astype(str)
         overlap_cols = [c for c in aux.columns if c != self.key_col and c in df.columns]
         aux = aux.drop(columns=[self.key_col])
-        result = df.merge(aux, on=tmp_key, how=self.how, suffixes=self.suffixes)
+        result = df.merge(aux, on=tmp_key, how=self.how, suffixes=self.SUFFIXES)
         result = result.drop(columns=[tmp_key])
-        right_suffix = self.suffixes[1] if len(self.suffixes) > 1 else "_aux"
+        right_suffix = self.SUFFIXES[1]
         for col in overlap_cols:
             aux_col = f"{col}{right_suffix}"
             if aux_col not in result.columns:

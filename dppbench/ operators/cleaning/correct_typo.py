@@ -4,22 +4,20 @@ from ..base_op import TabularOp
 class CorrectTypo(TabularOp):
     """Correct common text typos using exact mapping or fuzzy matching."""
 
-    def __init__(self, cols, mapping=None, vocabulary=None, threshold=90,
-                 output_suffix=None):
+    def __init__(self, cols, mapping=None, vocabulary=None, threshold=90):
         super().__init__(name="CorrectTypo")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.mapping = mapping or {}
         self.vocabulary = vocabulary or []
         self.threshold = int(threshold)
-        self.output_suffix = output_suffix
 
     def get_op_description(self):
         description = """Operator name: CorrectTypo
 
 Function description:
-Correct misspellings in text columns. Applies explicit
-mapping first; if rapidfuzz is installed and vocabulary is supplied, performs
-fuzzy nearest-vocabulary correction above threshold.
+Correct misspellings in text columns. Applies explicit mapping first; if
+rapidfuzz is installed and vocabulary is supplied, performs fuzzy
+nearest-vocabulary correction above threshold. Replacement is in place.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
@@ -29,7 +27,6 @@ cols : str/list[str] — Text columns.
 mapping : dict — Exact replacement map.
 vocabulary : list[str] — Valid terms for fuzzy matching.
 threshold : int — Fuzzy score cutoff.
-output_suffix : str or None — If set, write corrected text to col+suffix.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -73,6 +70,5 @@ Example YAML:
         for col in self.cols:
             if col not in df.columns:
                 continue
-            out_col = f"{col}{self.output_suffix}" if self.output_suffix else col
-            df[out_col] = df[col].apply(self._correct_value)
+            df[col] = df[col].apply(self._correct_value)
         return df

@@ -10,12 +10,11 @@ class ExtractDateTimeFeature(TabularOp):
         "is_weekend", "dayofyear",
     ]
 
-    def __init__(self, cols, features=None, drop_original=False, unit=None):
+    def __init__(self, cols, features=None, drop_original=False):
         super().__init__(name="ExtractDateTimeFeature")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.features = features or self.DEFAULT_FEATURES
         self.drop_original = bool(drop_original)
-        self.unit = unit
 
     def get_op_description(self):
         description = """Operator name: ExtractDateTimeFeature
@@ -56,9 +55,7 @@ Example YAML:
             if col not in df.columns:
                 continue
             series = df[col]
-            if self.unit is not None:
-                ts = pd.to_datetime(series, unit=self.unit, errors="coerce")
-            elif pd.api.types.is_numeric_dtype(series):
+            if pd.api.types.is_numeric_dtype(series):
                 ts = pd.to_datetime(series, unit="s", errors="coerce")
             else:
                 ts = pd.to_datetime(series, errors="coerce")

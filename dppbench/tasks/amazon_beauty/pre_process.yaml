@@ -1,4 +1,15 @@
 pipeline:
+- op: Deduplicate
+  target: item
+  params:
+    subset: [item_id]
+    keep: first
+- op: HandleMV
+  target: item
+  params:
+    cols: [item_brand]
+    na_values: [""]
+    action: mark
 - op: JoinTable
   target: interaction
   params:
@@ -11,10 +22,10 @@ pipeline:
 - op: HandleMV
   target: interaction
   params:
-    cols:
-    - vote
-    - item_price
-    method: median
+    cols: [item_brand]
+    method: constant
+    fill_value: 0
+    action: impute
 - op: FilterKCore
   target: interaction
   params:
@@ -29,3 +40,21 @@ pipeline:
     time_col: timestamp
     seq_col: item_id_seq
     max_len: 20
+- op: CreateSequence
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_brand
+    time_col: timestamp
+    seq_col: cate_id_seq
+    max_len: 20
+- op: SampleNegative
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    target_col: rating
+    n_negatives: 1
+    positive_label: 1
+    negative_label: 0
+    seed: 42

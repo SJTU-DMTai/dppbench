@@ -7,37 +7,37 @@ class Undersample(TabularOp):
     """Reduce majority classes by random, Tomek Links, or ENN."""
 
     APPLIES_TO_STD_TEST = False
+    RANDOM_STATE = 42
 
-    def __init__(self, target_col, method="random", random_state=42,
-                 sampling_strategy="auto", n_neighbors=3):
+    def __init__(self, target_col, method="random", n_neighbors=3):
         super().__init__(name="Undersample")
         if method not in ("random", "tomek", "enn"):
             raise ValueError("method must be random/tomek/enn")
         self.target_col = target_col
         self.method = method
-        self.random_state = int(random_state)
-        self.sampling_strategy = sampling_strategy
         self.n_neighbors = int(n_neighbors)
 
     def get_op_description(self):
         description = """Operator name: Undersample
 
 Function description:
-Undersample imbalanced labels with random undersampling,
-Tomek Links, or Edited Nearest Neighbours.
+Undersample imbalanced labels with random undersampling, Tomek Links, or
+Edited Nearest Neighbours.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-See __init__ signature for supported parameters and defaults.
+target_col : str — Label column.
+method : str — random/tomek/enn (default 'random').
+n_neighbors : int — Neighbours for ENN (default 3).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'x': [1, 2, 3], 'label': [0, 0, 1]})
->>> op = Undersample(target_col='label', method='random', random_state=0)
+>>> op = Undersample(target_col='label', method='random')
 >>> op.transform(df)
    x  label
 0  2      0
@@ -49,7 +49,6 @@ Example YAML:
     params:
       target_col: label
       method: random
-      random_state: 42
 """
         return description.strip()
 
@@ -60,7 +59,7 @@ Example YAML:
         return x[cols].fillna(0.0).values, y
 
     def _random(self, df):
-        rng = np.random.RandomState(self.random_state)
+        rng = np.random.RandomState(self.RANDOM_STATE)
         groups = list(df.groupby(self.target_col))
         if not groups:
             return df
@@ -79,13 +78,10 @@ Example YAML:
         try:
             if self.method == "tomek":
                 from imblearn.under_sampling import TomekLinks
-                sampler = TomekLinks(sampling_strategy=self.sampling_strategy)
+                sampler = TomekLinks()
             else:
                 from imblearn.under_sampling import EditedNearestNeighbours
-                sampler = EditedNearestNeighbours(
-                    n_neighbors=self.n_neighbors,
-                    sampling_strategy=self.sampling_strategy,
-                )
+                sampler = EditedNearestNeighbours(n_neighbors=self.n_neighbors)
             x, y = self._numeric_xy(df)
             sampler.fit_resample(x, y)
             return df.iloc[sampler.sample_indices_].reset_index(drop=True)

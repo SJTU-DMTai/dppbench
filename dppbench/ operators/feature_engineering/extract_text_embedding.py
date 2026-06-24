@@ -7,14 +7,11 @@ class ExtractTextEmbedding(TextOp):
 
     FIT_ON_TRAIN_ONLY = True
 
-    def __init__(self, cols, method="hash", dim=32, prefix=None, drop_source=False,
-                 model_name=None):
+    def __init__(self, cols, method="hash", dim=32, model_name=None):
         super().__init__(name="ExtractTextEmbedding")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.method = method
         self.dim = int(dim)
-        self.prefix = prefix
-        self.drop_source = bool(drop_source)
         self.model_name = model_name
 
     def get_op_description(self):
@@ -35,11 +32,11 @@ pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'review': ['good food', 'bad service']})
->>> op = ExtractTextEmbedding(cols='review', method='hash', dim=1, prefix='rev_emb_')
+>>> op = ExtractTextEmbedding(cols='review', method='hash', dim=1)
 >>> op.transform(df)
-        review  rev_emb_0
-0    good food        1.0
-1  bad service        1.0
+        review  review_emb_0
+0    good food           1.0
+1  bad service           1.0
 
 Example YAML:
   - op: ExtractTextEmbedding
@@ -48,7 +45,6 @@ Example YAML:
       cols: review
       method: hash
       dim: 32
-      prefix: review_emb_
 """
         return description.strip()
 
@@ -65,10 +61,8 @@ Example YAML:
         for col in self.cols:
             if col not in df.columns:
                 continue
-            base = self.prefix or f"{col}_emb_"
+            base = f"{col}_emb_"
             emb = np.vstack([self._hash_embed(v) for v in df[col].fillna("")])
             for i in range(self.dim):
                 df[f"{base}{i}"] = emb[:, i]
-            if self.drop_source:
-                df = df.drop(columns=[col])
         return df

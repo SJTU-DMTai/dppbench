@@ -2,13 +2,12 @@ from ..base_op import TabularOp
 
 
 class FilterSample(TabularOp):
-    """Filter rows by condition or by missing-value subset."""
+    """Filter rows by query expression or NA-subset drop."""
 
     APPLIES_TO_STD_TEST = False
 
-    def __init__(self, func=None, subset=None, query=None):
+    def __init__(self, subset=None, query=None):
         super().__init__(name="FilterSample")
-        self.func = func
         self.subset = subset
         self.query = query
 
@@ -16,15 +15,14 @@ class FilterSample(TabularOp):
         description = """Operator name: FilterSample
 
 Function description:
-Keep rows satisfying a custom condition. If no func or
-query is supplied, drops rows with NA in subset.
+Keep rows satisfying a pandas query expression. If no query is supplied,
+drops rows with NA in the given subset of columns.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-func : callable or None — Row predicate returning True to keep.
-subset : list[str] or None — Columns checked for NA.
+subset : list[str] or None — Columns checked for NA when query is None.
 query : str or None — pandas query expression.
 
 Output:
@@ -49,7 +47,4 @@ Example YAML:
     def transform(self, df):
         if self.query:
             return df.query(self.query).reset_index(drop=True)
-        if self.func is not None:
-            mask = df.apply(self.func, axis=1)
-            return df[mask].reset_index(drop=True)
         return df.dropna(subset=self.subset).reset_index(drop=True)

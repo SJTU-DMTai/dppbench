@@ -7,11 +7,13 @@ class SelectFeature(TabularOp):
     """Select or drop features by variance, univariate score, RFE, or model."""
 
     FIT_ON_TRAIN_ONLY = True
+    RANDOM_STATE = 42
+    RFE_STEP = 1
 
     def __init__(self, target_col=None, method="variance", k=100,
                  threshold=0.0, score_func="f_classif",
                  n_features_to_select=20, estimator="tree",
-                 exclude_cols=None, random_state=42, step=1):
+                 exclude_cols=None):
         super().__init__(name="SelectFeature")
         if method not in ("variance", "univariate", "rfe", "model"):
             raise ValueError("method must be variance/univariate/rfe/model")
@@ -23,8 +25,6 @@ class SelectFeature(TabularOp):
         self.n_features_to_select = int(n_features_to_select)
         self.estimator = estimator
         self.exclude_cols = exclude_cols or []
-        self.random_state = random_state
-        self.step = step
         self.keep_cols_ = None
         self.fitted_ = False
 
@@ -32,14 +32,20 @@ class SelectFeature(TabularOp):
         description = """Operator name: SelectFeature
 
 Function description:
-Select a feature subset using variance threshold,
-univariate scores, RFE, or model importance.
+Select a feature subset using variance threshold, univariate scores, RFE, or model importance.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-See __init__ signature for supported parameters and defaults.
+target_col : str or None — Label column (required for non-variance methods).
+method : str — variance/univariate/rfe/model (default 'variance').
+k : int — Top-k features for univariate/model (default 100).
+threshold : float — Variance threshold (default 0.0).
+score_func : str — f_classif/f_regression/chi2 for univariate.
+n_features_to_select : int — Target feature count for RFE (default 20).
+estimator : str — tree/forest/linear for RFE/model.
+exclude_cols : list[str] or None — Columns never dropped.
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -80,10 +86,10 @@ Example YAML:
         if self.estimator in ("tree", "forest"):
             from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
             cls = RandomForestClassifier if is_classif else RandomForestRegressor
-            return cls(n_estimators=50, random_state=self.random_state, n_jobs=-1)
+            return cls(n_estimators=50, random_state=self.RANDOM_STATE, n_jobs=-1)
         if is_classif:
             from sklearn.linear_model import LogisticRegression
-            return LogisticRegression(max_iter=200, random_state=self.random_state)
+            return LogisticRegression(max_iter=200, random_state=self.RANDOM_STATE)
         from sklearn.linear_model import LinearRegression
         return LinearRegression()
 
@@ -107,7 +113,7 @@ Example YAML:
                 selector = RFE(
                     self._estimator(is_classif=is_classif),
                     n_features_to_select=n_keep,
-                    step=self.step,
+                    step=self.RFE_STEP,
                 ).fit(x, y)
                 selected = list(x.columns[selector.get_support()])
             else:

@@ -7,7 +7,7 @@ class CorrectLabel(TabularOp):
     """Correct suspected label errors using predicted probabilities."""
 
     def __init__(self, label_col, pred_probs=None, strategy="flip",
-                 confidence_threshold=0.9, mask_col=None):
+                 confidence_threshold=0.9):
         super().__init__(name="CorrectLabel")
         if strategy not in ("flip", "flag"):
             raise ValueError("strategy must be 'flip' or 'flag'")
@@ -15,15 +15,14 @@ class CorrectLabel(TabularOp):
         self.pred_probs = pred_probs
         self.strategy = strategy
         self.confidence_threshold = float(confidence_threshold)
-        self.mask_col = mask_col or f"{label_col}_corrected"
+        self.mask_col = f"{label_col}_corrected"
 
     def get_op_description(self):
         description = """Operator name: CorrectLabel
 
 Function description:
-Handle suspected label errors by comparing the current
-label with high-confidence predicted probabilities. Can flip labels or only
-flag rows. Cleanlab is optional; this implementation uses a robust fallback.
+Handle suspected label errors by comparing the current label with
+high-confidence predicted probabilities. Can flip labels or only flag rows.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
@@ -33,10 +32,9 @@ label_col : str — Label column.
 pred_probs : array-like or probability column(s).
 strategy : str — flip or flag.
 confidence_threshold : float — Minimum predicted class confidence.
-mask_col : str — Marker column.
 
 Output:
-pd.DataFrame — Transformed table after applying the operator.
+pd.DataFrame — Original table plus a "<label_col>_corrected" 0/1 marker column.
 
 Example:
 >>> df = pd.DataFrame({'label': [0, 0, 1], 'p1': [0.95, 0.10, 0.92]})

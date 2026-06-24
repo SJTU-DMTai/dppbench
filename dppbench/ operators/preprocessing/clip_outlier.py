@@ -3,18 +3,15 @@ from ..base_op import TabularOp
 
 
 class ClipOutlier(TabularOp):
-    """Winsorize numeric columns by quantile or explicit bounds."""
+    """Winsorize numeric columns by quantile thresholds."""
 
     FIT_ON_TRAIN_ONLY = True
 
-    def __init__(self, cols=None, lower_quantile=0.01, upper_quantile=0.99,
-                 lower=None, upper=None):
+    def __init__(self, cols=None, lower_quantile=0.01, upper_quantile=0.99):
         super().__init__(name="ClipOutlier")
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
-        self.lower_quantile = lower_quantile
-        self.upper_quantile = upper_quantile
-        self.lower = lower
-        self.upper = upper
+        self.lower_quantile = float(lower_quantile)
+        self.upper_quantile = float(upper_quantile)
         self.bounds_ = {}
         self.fitted_ = False
 
@@ -22,36 +19,35 @@ class ClipOutlier(TabularOp):
         description = """Operator name: ClipOutlier
 
 Function description:
-Cap extreme numeric values using quantile thresholds
-(winsorization) or explicit lower/upper bounds.
+Cap extreme numeric values using quantile thresholds (winsorization).
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
 cols : list[str] or None — Numeric columns. None = all numeric.
-lower_quantile, upper_quantile : float — Learned quantile bounds.
-lower, upper : float or None — Explicit bounds overriding quantiles.
+lower_quantile : float — Lower quantile bound (default 0.01).
+upper_quantile : float — Upper quantile bound (default 0.99).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'amount': [1, 10, 999]})
->>> op = ClipOutlier(cols=['amount'], lower=0, upper=100)
+>>> op = ClipOutlier(cols=['amount'], lower_quantile=0.0, upper_quantile=0.5)
 >>> op.transform(df)
    amount
-0       1
-1      10
-2     100
+0     1.0
+1    10.0
+2    10.0
 
 Example YAML:
   - op: ClipOutlier
     target: train
     params:
       cols: [amount]
-      lower: 0
-      upper: 100
+      lower_quantile: 0.01
+      upper_quantile: 0.99
 """
         return description.strip()
 
@@ -64,8 +60,8 @@ Example YAML:
             )
             for col in cols:
                 values = pd.to_numeric(df[col], errors="coerce")
-                lo = self.lower if self.lower is not None else values.quantile(self.lower_quantile)
-                hi = self.upper if self.upper is not None else values.quantile(self.upper_quantile)
+                lo = values.quantile(self.lower_quantile)
+                hi = values.quantile(self.upper_quantile)
                 self.bounds_[col] = (lo, hi)
             self.fitted_ = True
         for col, (lo, hi) in self.bounds_.items():

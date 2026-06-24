@@ -46,6 +46,16 @@ pipeline:
     time_col: timestamp
     seq_col: item_id_seq
     max_len: 20
+- op: SampleNegative
+  target: interaction
+  params:
+    user_col: user_id
+    item_col: item_id
+    target_col: watch_ratio
+    n_negatives: 1
+    positive_label: 1
+    negative_label: 0
+    seed: 42
 - op: FilterSample
   target: interaction
   params:

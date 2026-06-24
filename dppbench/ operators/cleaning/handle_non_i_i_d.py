@@ -4,43 +4,23 @@ import pandas as pd
 from ..base_op import TabularOp
 
 
-_VALID_ACTIONS = ("flag", "delete", "reweight")
-_VALID_WEIGHTING = ("marker", "score")
-_VALID_COMBINE = ("overwrite", "multiply")
+_VALID_ACTIONS = ("delete", "reweight")
 
 
 class HandleNonIID(TabularOp):
-    """Detect non-IID samples and either delete or reweight them."""
+    """Detect non-IID samples and either delete or down-weight them."""
 
     APPLIES_TO_STD_TEST = False
 
     def __init__(self, feature_cols=None, pred_probs=None,
-                 score_col="non_iid_score", flag_col="is_non_iid",
-                 threshold=0.95,
-                 action="reweight", weighting="marker",
-                 weight_col="sample_weight", marker_weight=0.2,
-                 default_weight=1.0, min_weight=0.2, max_weight=1.0,
-                 combine="overwrite"):
+                 threshold=0.95, action="reweight"):
         super().__init__(name="HandleNonIID")
         if action not in _VALID_ACTIONS:
-            raise ValueError("action must be flag/delete/reweight")
-        if weighting not in _VALID_WEIGHTING:
-            raise ValueError("weighting must be marker/score")
-        if combine not in _VALID_COMBINE:
-            raise ValueError("combine must be overwrite/multiply")
+            raise ValueError("action must be delete/reweight")
         self.feature_cols = feature_cols
         self.pred_probs = pred_probs
-        self.score_col = score_col
-        self.flag_col = flag_col
         self.threshold = float(threshold)
         self.action = action
-        self.weighting = weighting
-        self.weight_col = weight_col
-        self.marker_weight = float(marker_weight)
-        self.default_weight = float(default_weight)
-        self.min_weight = float(min_weight)
-        self.max_weight = float(max_weight)
-        self.combine = combine
 
     def _prob_score(self, df):
         if self.pred_probs is None:
@@ -73,35 +53,16 @@ class HandleNonIID(TabularOp):
             return np.zeros(len(df), dtype=float)
         return np.mean(np.vstack(parts), axis=0)
 
-    def _compute_weights(self, score, marker, n):
-        if self.weighting == "marker":
-            weights = np.full(n, self.default_weight, dtype=float)
-            weights[marker] = self.marker_weight
-            return weights
-        score = np.asarray(score, dtype=float)
-        lo, hi = float(np.nanmin(score)) if n else 0.0, float(np.nanmax(score)) if n else 0.0
-        if hi > lo:
-            risk = (score - lo) / (hi - lo)
-        else:
-            risk = np.zeros(n, dtype=float)
-        return self.max_weight - risk * (self.max_weight - self.min_weight)
-
     def transform(self, df):
         df = df.copy()
         score = self._score(df)
         cutoff = np.nanquantile(score, self.threshold) if len(score) else np.inf
         marker = (score >= cutoff)
-        df[self.score_col] = score
-        df[self.flag_col] = marker.astype(int)
         if self.action == "delete":
-            df = df.loc[~marker].reset_index(drop=True)
-        elif self.action == "reweight":
-            weights = self._compute_weights(score, marker, len(df))
-            if self.combine == "multiply" and self.weight_col in df.columns:
-                base = pd.to_numeric(df[self.weight_col], errors="coerce").fillna(1.0).to_numpy()
-                df[self.weight_col] = base * weights
-            else:
-                df[self.weight_col] = weights
+            return df.loc[~marker].reset_index(drop=True)
+        weights = np.ones(len(df), dtype=float)
+        weights[marker] = 0.2
+        df["sample_weight"] = weights
         return df
 
     def get_op_description(self):
@@ -117,18 +78,12 @@ df : pd.DataFrame — Ordered sample table with features and optional prediction
 Parameters:
 feature_cols : list[str] or None — Feature columns used for distribution-deviation scoring.
 pred_probs : array-like, str, list[str], or None — Prediction probability data or columns.
-score_col : str — Continuous non-IID score column.
-flag_col : str — 0/1 high-risk marker column.
-threshold : float — Score quantile used to flag samples.
-action : str — "delete" or "reweight" (default: reweight).
-weighting : str — "marker" (constant marker_weight) or "score" (min-max mapped).
-weight_col : str — Output weight column. Defaults to "sample_weight".
-marker_weight : float — Weight assigned to flagged rows under weighting=marker.
-combine : str — "overwrite" or "multiply" with existing weights.
+threshold : float — Quantile cutoff used to flag samples.
+action : str — "delete" or "reweight" (default).
 
 Output:
-pd.DataFrame — Original table plus non-IID score/marker columns, with rows
-filtered or sample_weight column written.
+pd.DataFrame — For action='delete', rows are removed. For action='reweight',
+sample_weight column is written (1.0 default, 0.2 for flagged rows).
 
 Example:
 >>> df = pd.DataFrame({"x": [0.0, 0.1, 9.0]})

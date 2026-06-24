@@ -1,50 +1,45 @@
 import numpy as np
 import pandas as pd
 from ..base_op import TabularOp
-from ..custom_op import CustomOp
 
 
 class CustomClean(TabularOp):
-    """Custom cleaning operator with common map/replace helpers."""
+    """Custom cleaning operator with map-values and replace-text helpers."""
 
     SUPPORTED_OPS = ("eq", "ne", "lt", "le", "gt", "ge", "in")
 
-    def __init__(self, code=None, entry="pipeline", func=None,
-                 mode="code", cols=None, rules=None, replace_with=None,
-                 pattern=None, replacement="", regex=True,
-                 fillna_replacement=None):
+    def __init__(self, mode="map_values", cols=None, rules=None,
+                 replace_with=None, pattern=None, replacement="", regex=True):
         super().__init__(name="CustomClean")
-        if mode not in ("code", "map_values", "replace_text"):
-            raise ValueError("mode must be code/map_values/replace_text")
+        if mode not in ("map_values", "replace_text"):
+            raise ValueError("mode must be map_values/replace_text")
         self.mode = mode
-        self.code = code
-        self.entry = entry or "pipeline"
-        self.func = func
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
         self.rules = rules or []
         self.replace_with = np.nan if replace_with is None else replace_with
         self.pattern = pattern
         self.replacement = replacement
         self.regex = bool(regex)
-        self.fillna_replacement = fillna_replacement
-        self._custom = CustomOp(code=code, entry=self.entry) if code else None
 
     def get_op_description(self):
         description = """Operator name: CustomClean
 
 Function description:
-User-defined cleaning. In addition to sandboxed code or
-callable func, supports built-in modes that replace old MapValues and
-ReplaceText behavior.
+User-defined cleaning. Two modes: map_values replaces matched values
+according to per-column comparison rules; replace_text applies regex/string
+substitution on textual columns.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-mode : str — code/map_values/replace_text.
-code, entry, func — Custom execution inputs.
-cols, rules, replace_with — map_values mode.
-pattern, replacement, regex, fillna_replacement — replace_text mode.
+mode : str — map_values or replace_text.
+cols : list[str] or None — Target columns (used for replace_text and as default for map_values rules).
+rules : list[dict] — map_values rule list; each dict has a comparison op (eq/ne/lt/le/gt/ge/in) and replace_with.
+replace_with : any — Default replacement when a rule omits one (default NaN).
+pattern : str or None — Regex/text pattern for replace_text mode.
+replacement : str — Replacement string for replace_text mode.
+regex : bool — Whether pattern is a regex (default True).
 
 Output:
 pd.DataFrame — Transformed table after applying the operator.
@@ -123,22 +118,11 @@ Example YAML:
                     self.pattern, self.replacement, regex=self.regex
                 ),
             )
-            if self.fillna_replacement is not None:
-                ser = ser.fillna(self.fillna_replacement)
             df[col] = ser
         return df
 
     def transform(self, df):
         df = df.copy()
-        if self.func is not None:
-            result = self.func(df)
-            if not isinstance(result, pd.DataFrame):
-                raise TypeError("CustomClean func must return a pandas DataFrame")
-            return result
         if self.mode == "map_values":
             return self._map_values(df)
-        if self.mode == "replace_text":
-            return self._replace_text(df)
-        if self._custom is not None:
-            return self._custom.transform(df)
-        return df
+        return self._replace_text(df)

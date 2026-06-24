@@ -107,7 +107,7 @@ def repair(pipeline: "Pipeline", task_type: str, ctx: "DataContext") -> "Pipelin
         import random as _r
         rng = _r.Random()
         existing = {s.op for s in pipeline.steps}
-        for mand in ("JoinTable", "CreateSequence"):
+        for mand in ("JoinTable", "CreateSequence", "SampleNegative"):
             if mand not in existing:
                 step = make_step(mand, ctx, rng)
                 if step is not None:

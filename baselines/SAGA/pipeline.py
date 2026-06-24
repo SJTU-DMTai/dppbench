@@ -190,6 +190,19 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         return p
     if op_name == "RenameColumn":
         return None
+    if op_name == "ParseNumber":
+        parse_cols = _pick_some(text_cols + categorical_cols, rng, 1, 2)
+        if not parse_cols:
+            return None
+        p["cols"] = parse_cols
+        return p
+    if op_name == "SplitColumn":
+        if not text_cols:
+            return None
+        p["col"] = text_cols[0]
+        p["sep"] = r"\s+"
+        p["regex"] = True
+        return p
     if op_name == "CustomProcess":
         cols = []
         if ctx.id_col:
@@ -222,6 +235,18 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["pattern"] = r"\s+"
         p["replacement"] = " "
         p["regex"] = True
+        return p
+    if op_name == "CorrectLabel":
+        if not ctx.target_col:
+            return None
+        p["label_col"] = ctx.target_col
+        p["strategy"] = "flag"
+        p["confidence_threshold"] = 0.9
+        return p
+    if op_name == "CorrectTypo":
+        if not text_cols:
+            return None
+        p["cols"] = _pick_some(text_cols, rng, 1, 2)
         return p
 
     # ---- ERROR_DETECTION ----
@@ -361,6 +386,12 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if not numeric_cols:
             return None
         p["cols"] = _pick_some(numeric_cols, rng, 1, 3)
+        return p
+    if op_name == "AugmentMixup":
+        if ctx.task_type != "tabular" or not ctx.target_col or not numeric_cols:
+            return None
+        p["label_col"] = ctx.target_col
+        p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
         return p
 
     # ---- NORMALIZATION ----

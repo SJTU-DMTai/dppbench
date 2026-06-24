@@ -314,7 +314,19 @@ def _train_tabular(args, cfg, pre_process_yaml, device="cpu"):
         print(f"Training {model_name}...")
         model = MODEL_MAP[model_name](in_dim=graph["x"].shape[1], **ctor_kwargs)
         result = train_graph(model, graph, model_params, train_cfg, device=device)
-        print(result)
+        val_keys = {"auc", "f1", "f1_threshold", "accuracy", "rmse", "mae", "r2"}
+        val_result = {}
+        std_result = {}
+        for k, v in result.items():
+            if k.startswith("std_test_"):
+                std_key = k[len("std_test_"):]
+                std_result[std_key] = v
+            elif k in val_keys:
+                val_result[k] = v
+        if val_result:
+            print(f"val: {val_result}")
+        if std_result:
+            print(f"std_test: {std_result}")
         return
 
 

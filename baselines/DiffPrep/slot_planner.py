@@ -218,7 +218,6 @@ def _diffprep_custom_default_params(op_name: str, ctx: DataContext) -> Optional[
             "aggs": ["mean"],
             "group_cols": None,
             "time_col": ctx.time_col,
-            "min_periods": 1,
         }
 
     if op_name == "ResampleTimeSeries":

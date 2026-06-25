@@ -69,20 +69,17 @@ def _add_join_steps(
             params = build_default_params("JoinTable", ctx, rng)
             if params is None:
                 continue
+            if edge.aux_ref is not None and ctx.task_type != "rec":
+                params["aux_df"] = f"${edge.aux_ref}"
+                params["key_col"] = ctx.id_col
+                params["method"] = "key"
+                if "prefix" not in params:
+                    pass
+                if rng.random() < 0.5:
+                    params["prefix"] = edge.aux_ref.upper()[:8]
+                    params["max_cols"] = 20
             candidate_steps.append(PipelineStep(
-                op="JoinTable", target="interaction", params=params,
-            ))
-            used_names.append(edge.name)
-        elif edge.op_name in ("JoinTable", "JoinTable"):
-            if not edge.aux_ref or ctx.id_col is None:
-                continue
-            params = copy.deepcopy(CATALOG[edge.op_name].default_params)
-            params["aux_df"] = f"${edge.aux_ref}"
-            params["key_col"] = ctx.id_col
-            if edge.op_name == "JoinTable":
-                params["prefix"] = edge.aux_ref.upper()[:8]
-            candidate_steps.append(PipelineStep(
-                op=edge.op_name, target="both", params=params,
+                op="JoinTable", target=edge.target, params=params,
             ))
             used_names.append(edge.name)
     return candidate_steps, used_names

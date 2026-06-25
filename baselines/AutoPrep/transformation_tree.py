@@ -29,44 +29,30 @@ from .transformation_model import TransformationModel
 # Excludes ops that would corrupt the (already-frozen) target column or
 # require multi-table semantics that don't apply to a single interaction df.
 _REC_INTERACTION = {
-    # rec-only structural / mandatory
     "JoinTable", "CreateSequence", "FilterSample", "FilterKCore",
     "SampleNegative",
-    # missing-value
-    "HandleMV", "HandleMV", "HandleMV",
-    # cleaning / value transforms
-    "CustomClean", "CustomClean", "HandleError",
-    # outliers
+    "HandleMV",
+    "CustomClean", "HandleError",
     "HandleOutlier",
-    # datetime
-    "ParseDate", "ParseDate", "ExtractDateTimeFeature",
-    # schema / column drops
-    "CastType", "RenameColumn", "CustomProcess", "CustomProcess",
+    "ParseDate", "ExtractDateTimeFeature",
+    "CastType", "CustomProcess",
     "SelectFeature",
-    # encoding
-    "OneHotEncode", "OrdinalEncode", "LabelEncode",
-    "CustomProcess", "HashEncode", "TargetEncode",
-    # scaling / distribution reshape
-    "ScaleFeature", "ScaleFeature", "ScaleFeature", "ScaleFeature", "TransformPower",
-    "TransformPower", "TransformPower",
-    # discretization
+    "OneHotEncode", "LabelEncode", "HashEncode", "TargetEncode",
+    "ScaleFeature", "TransformPower",
     "DiscretizeFeature",
-    # feature gen
     "CrossFeature", "CreateFeature",
 }
 
 # Side tables: only column-level cleaning / lightweight encoding.
 _REC_SIDE = {
     "HandleMV", "LabelEncode", "CustomProcess",
-    "CustomProcess", "CustomProcess", "ScaleFeature", "ScaleFeature",
-    "SelectFeature",
+    "ScaleFeature", "SelectFeature",
 }
 
 # Tabular auxiliary table: light cleaning + later joined back via JoinTable.
 _TABULAR_AUX = {
     "HandleMV", "LabelEncode", "CustomProcess",
-    "CustomProcess", "CustomProcess",
-    "JoinTable", "JoinTable",
+    "JoinTable",
 }
 
 

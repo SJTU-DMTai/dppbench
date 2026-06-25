@@ -139,8 +139,8 @@ _add("ScaleFeature", OpCategory.SCALING,
      param_space={"method": ["standard", "minmax", "maxabs", "robust", "l2"]},
      needs_context=True)
 _add("TransformPower", OpCategory.DISTRIBUTION_RESHAPE,
-     default_params={"method": "yeo-johnson"},
-     param_space={"method": ["log", "sqrt", "box-cox", "yeo-johnson", "quantile"]},
+     default_params={"method": "log", "offset": 1.0},
+     param_space={"method": ["log", "sqrt", "quantile"]},
      needs_context=True)
 _add("DiscretizeFeature", OpCategory.DISCRETIZATION,
      default_params={"strategy": "manual"},

@@ -120,7 +120,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
     operator cannot be applied given the current context (e.g. no time column
     for ``ExtractDateTimeFeature``).
 
-    Covers all 59 dppbench operators registered in :data:`CATALOG`.
+    Covers all dppbench operators registered in :data:`CATALOG`.
+    Stochastic variation across calls is used for search diversity.
     """
     if op_name not in CATALOG:
         return None
@@ -133,30 +134,28 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 
     # ---- JOIN ----
     if op_name == "JoinTable":
-        if not (ctx.has_user_df or ctx.has_item_df):
-            return None
-        p["user_col"] = ctx.user_col
-        p["item_col"] = ctx.item_col
-        p["user_df"] = "$user_df" if ctx.has_user_df else None
-        p["item_df"] = "$item_df" if ctx.has_item_df else None
-        p["how"] = "left"
-        return p
-    if op_name == "JoinTable":
-        if not ctx.aux_dfs or ctx.id_col is None:
-            return None
-        aux = rng.choice(ctx.aux_dfs)
-        p["aux_df"] = f"${aux}"
-        p["key_col"] = ctx.id_col
-        p["prefix"] = aux.upper()[:8]
-        p["max_cols"] = 20
-        return p
-    if op_name == "JoinTable":
-        if not ctx.aux_dfs or ctx.id_col is None:
-            return None
-        aux = rng.choice(ctx.aux_dfs)
-        p["aux_df"] = f"${aux}"
-        p["key_col"] = ctx.id_col
-        return p
+        if ctx.task_type == "rec":
+            if not (ctx.has_user_df or ctx.has_item_df):
+                return None
+            p["user_col"] = ctx.user_col
+            p["item_col"] = ctx.item_col
+            p["user_df"] = "$user_df" if ctx.has_user_df else None
+            p["item_df"] = "$item_df" if ctx.has_item_df else None
+            p["how"] = "left"
+            p["method"] = "rec"
+            return p
+        else:
+            if not ctx.aux_dfs or ctx.id_col is None:
+                return None
+            aux = rng.choice(ctx.aux_dfs)
+            p["aux_df"] = f"${aux}"
+            p["key_col"] = ctx.id_col
+            p["method"] = "key"
+            if rng.random() < 0.5:
+                p["prefix"] = aux.upper()[:8]
+                p["max_cols"] = 20
+            return p
+
     if op_name == "ConcatTable":
         if not ctx.aux_dfs:
             return None
@@ -204,38 +203,62 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["regex"] = True
         return p
     if op_name == "CustomProcess":
-        cols = []
-        if ctx.id_col:
-            cols.append(ctx.id_col)
-        if not cols:
-            return None
-        p["cols"] = cols
+        variant = rng.choice(["drop_id", "drop_null", "freq_encode", "passthrough"])
+        if variant == "drop_id":
+            cols = []
+            if ctx.id_col:
+                cols.append(ctx.id_col)
+            if not cols:
+                return None
+            p["cols"] = cols
+            p["mode"] = "drop_columns"
+            return p
+        elif variant == "drop_null":
+            p["threshold"] = 0.9
+            p["mode"] = "drop_high_null"
+            return p
+        elif variant == "freq_encode":
+            if not categorical_cols:
+                return None
+            p["cols"] = _pick_some(categorical_cols, rng, 1, 5)
+            p["mode"] = "frequency_encode"
+            return p
+        else:
+            return p
+    if op_name == "CustomTransform":
         return p
-    if op_name == "CustomProcess":
+    if op_name == "AlignSchema":
         return p
     if op_name == "SelectFeature":
+        if not ctx.target_col:
+            return None
+        method = rng.choice(["variance", "univariate", "model"])
         p["target_col"] = ctx.target_col
+        p["method"] = method
+        if method == "univariate":
+            p["k"] = max(5, min(50, len(numeric_cols)))
+        elif method == "model":
+            p["n_features_to_select"] = max(5, min(20, max(2, len(numeric_cols) // 2)))
         return p
 
     # ---- CLEAN_VALUE ----
     if op_name == "CustomClean":
-        if not ctx.sentinel_rules:
-            return None
-        converted = []
-        for r in ctx.sentinel_rules:
-            new_r = {k: v for k, v in r.items() if k != "value"}
-            new_r["eq"] = r["value"]
-            converted.append(new_r)
-        p["rules"] = converted
-        return p
-    if op_name == "CustomClean":
-        if not text_cols:
-            return None
-        p["cols"] = _pick_some(text_cols, rng, 1, 1)
-        p["pattern"] = r"\s+"
-        p["replacement"] = " "
-        p["regex"] = True
-        return p
+        if ctx.sentinel_rules and (not text_cols or rng.random() < 0.6):
+            converted = []
+            for r in ctx.sentinel_rules:
+                new_r = {k: v for k, v in r.items() if k != "value"}
+                new_r["eq"] = r["value"]
+                converted.append(new_r)
+            p["rules"] = converted
+            return p
+        else:
+            if not text_cols:
+                return None
+            p["cols"] = _pick_some(text_cols, rng, 1, 1)
+            p["pattern"] = r"\s+"
+            p["replacement"] = " "
+            p["regex"] = True
+            return p
     if op_name == "CorrectLabel":
         if not ctx.target_col:
             return None
@@ -275,8 +298,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             return None
         p["cols"] = [ctx.time_col]
         return p
-    if op_name == "ParseDate":
-        return None
 
     # ---- OUTLIER ----
     if op_name == "HandleOutlier":
@@ -285,20 +306,22 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["cols"] = _pick_some(numeric_cols, rng, 1, 3)
         p["action"] = "delete"
         return p
+    if op_name == "ClipOutlier":
+        if not numeric_cols:
+            return None
+        p["cols"] = _pick_some(numeric_cols, rng, 1, 3)
+        return p
 
     # ---- MISSING_VALUE ----
     if op_name == "HandleMV":
-        return p
-    if op_name == "HandleMV":
-        if not numeric_cols:
-            return None
-        p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
-        return p
-    if op_name == "HandleMV":
-        if not numeric_cols:
-            return None
-        p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
-        return p
+        variant = rng.choice(["global", "cols"])
+        if variant == "global":
+            return p
+        else:
+            if not numeric_cols:
+                return None
+            p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
+            return p
 
     # ---- DISCRETIZATION ----
     if op_name == "DiscretizeFeature":
@@ -318,11 +341,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         return None
     if op_name == "LabelEncode":
         return p
-    if op_name == "CustomProcess":
-        if not categorical_cols:
-            return None
-        p["cols"] = _pick_some(categorical_cols, rng, 1, 5)
-        return p
     if op_name == "HashEncode":
         if not categorical_cols:
             return None
@@ -336,29 +354,23 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         return p
 
     # ---- SCALING / DISTRIBUTION_RESHAPE ----
-    if op_name in ("ScaleFeature", "ScaleFeature", "ScaleFeature"):
-        # Never auto-pick target / id / user / item / time columns: scaling
-        # them would corrupt downstream ops (e.g. embedding lookup on a
-        # scaled user_id).
-        if not numeric_cols:
-            return None
-        p["cols"] = list(numeric_cols)
-        p["auto_numeric"] = False
-        return p
     if op_name == "ScaleFeature":
         if not numeric_cols:
             return None
-        p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
+        p["method"] = rng.choice(["standard", "minmax", "maxabs", "robust", "l2"])
+        if p["method"] == "standard" and rng.random() < 0.3:
+            p["cols"] = list(numeric_cols)
+            p["auto_numeric"] = False
+        else:
+            p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
         return p
     if op_name == "TransformPower":
         if not numeric_cols:
             return None
         p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
-        return p
-    if op_name == "TransformPower":
-        if not numeric_cols:
-            return None
-        p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
+        p["method"] = rng.choice(["log", "sqrt", "quantile"])
+        if p["method"] in ("log", "sqrt"):
+            p["offset"] = 1.0
         return p
 
     # ---- IMBALANCE / AUGMENT ----
@@ -368,16 +380,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["target_col"] = ctx.target_col
         return p
     if op_name == "Undersample":
-        if ctx.task_type != "tabular" or not ctx.target_col:
-            return None
-        p["target_col"] = ctx.target_col
-        return p
-    if op_name == "Undersample":
-        if ctx.task_type != "tabular" or not ctx.target_col:
-            return None
-        p["target_col"] = ctx.target_col
-        return p
-    if op_name == "Oversample":
         if ctx.task_type != "tabular" or not ctx.target_col:
             return None
         p["target_col"] = ctx.target_col
@@ -392,13 +394,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             return None
         p["label_col"] = ctx.target_col
         p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
-        return p
-
-    # ---- NORMALIZATION ----
-    if op_name == "TransformPower":
-        if not numeric_cols:
-            return None
-        p["cols"] = _pick_some(numeric_cols, rng, 1, 3)
         return p
 
     # ---- FEATURE_GEN ----
@@ -444,20 +439,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["aggs"] = {numeric_cols[0]: ["mean"]}
         return p
 
-    # ---- FE-Selection ----
-    if op_name == "SelectFeature":
-        if not ctx.target_col:
-            return None
-        p["target_col"] = ctx.target_col
-        p["k"] = max(5, min(50, len(numeric_cols)))
-        return p
-    if op_name == "SelectFeature":
-        if not ctx.target_col or len(numeric_cols) < 5:
-            return None
-        p["target_col"] = ctx.target_col
-        p["n_features_to_select"] = max(5, min(20, len(numeric_cols) // 2))
-        return p
-
     # ---- FE-Reduction ----
     if op_name == "ReduceDimension":
         if len(numeric_cols) < 4:
@@ -465,23 +446,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         n_comp = min(8, max(2, len(numeric_cols) // 2))
         p["cols"] = numeric_cols
         p["n_components"] = n_comp
-        return p
-    if op_name == "ReduceDimension":
-        if len(numeric_cols) < 4:
-            return None
-        p["cols"] = numeric_cols
-        p["n_components"] = min(4, max(2, len(numeric_cols) // 3))
-        return p
-    if op_name == "ReduceDimension":
-        if not ctx.target_col or len(numeric_cols) < 2:
-            return None
-        p["cols"] = numeric_cols
-        p["target_col"] = ctx.target_col
-        return p
-    if op_name == "ReduceDimension":
-        if len(numeric_cols) < 4:
-            return None
-        p["cols"] = numeric_cols
         return p
 
     # ---- Reshape / Sort / String ----
@@ -501,6 +465,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["seq_col"] = "item_id_seq"
         p["max_len"] = 20
         return p
+    if op_name == "TruncateSequence":
+        return p
 
     # ---- SAMPLING ----
     if op_name == "SampleNegative":
@@ -510,6 +476,51 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["item_col"] = ctx.item_col
         p["target_col"] = ctx.target_col
         return p
+
+    # ---- GROUP AGG ----
+    if op_name == "AggregateGroupFeature":
+        group_cols = []
+        if ctx.id_col:
+            group_cols.append(ctx.id_col)
+        if ctx.task_type == "rec" and ctx.user_col:
+            group_cols.append(ctx.user_col)
+        if not group_cols and categorical_cols:
+            group_cols = _pick_some(categorical_cols, rng, 1, 2)
+        if not group_cols:
+            return None
+        p["group_cols"] = group_cols
+        if numeric_cols:
+            p["agg_cols"] = _pick_some(numeric_cols, rng, 1, 3)
+            p["agg_funcs"] = rng.choice(
+                [["mean", "std"], ["mean", "count"], ["sum", "count"], ["mean", "max", "min"]]
+            )
+        else:
+            p["agg_funcs"] = ["count"]
+        return p
+
+    # ---- TEXT FEATURES ----
+    if op_name == "ExtractTextFeature":
+        if not text_cols:
+            return None
+        p["cols"] = _pick_some(text_cols, rng, 1, 2)
+        p["method"] = rng.choice(["tfidf", "bow"])
+        p["max_features"] = int(rng.choice([50, 100, 200]))
+        return p
+    if op_name == "ExtractTextEmbedding":
+        if not text_cols:
+            return None
+        p["cols"] = _pick_some(text_cols, rng, 1, 2)
+        p["method"] = "hash"
+        p["dim"] = 32
+        return p
+
+    # ---- GRAPH FEATURES ----
+    if op_name == "ExtractGraphFeature":
+        return p
+
+    # ---- CUSTOM FE ----
+    if op_name == "CustomFE":
+        return None
 
     return p
 

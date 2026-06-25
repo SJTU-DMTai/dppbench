@@ -129,11 +129,13 @@ class JoinEdge:
 class JoinModel:
     """Schema-driven join probability model.
 
-    For rec tasks the join is ``JoinTable`` against the user/item/context side
-    tables, and is treated as mandatory (probability 1.0).
+    For rec tasks the join is ``JoinTable`` against the user/item side tables,
+    and is treated as mandatory (probability 1.0).
 
-    For tabular tasks, every aux dataframe contributes one ``JoinTable`` and
-    one ``JoinTable`` candidate (probabilistic, initial 0.5 floor).
+    For tabular tasks, every aux dataframe contributes one ``JoinTable``
+    candidate (probabilistic, initial 0.5 floor per the paper).  Whether the
+    join adds a column prefix is decided stochastically in
+    ``pipeline_factory.build_default_params``, not by creating duplicate edges.
     """
 
     def __init__(self, ctx: DataContext, eta: float = 0.5):
@@ -158,15 +160,10 @@ class JoinModel:
                 self.mandatory_keys.add(edge.name)
         else:
             for aux in ctx.aux_dfs:
-                e1 = JoinEdge(name=f"JoinTable({aux})", op_name="JoinTable",
-                              target="both", aux_ref=aux)
-                e2 = JoinEdge(name=f"JoinTable({aux})", op_name="JoinTable",
-                              target="both", aux_ref=aux)
-                self.edges.append(e1)
-                self.edges.append(e2)
-                # initial prob 0.5 -> logit 0
-                self.logp[e1.name] = 0.0
-                self.logp[e2.name] = 0.0
+                e = JoinEdge(name=f"JoinTable({aux})", op_name="JoinTable",
+                             target="both", aux_ref=aux)
+                self.edges.append(e)
+                self.logp[e.name] = 0.0  # initial prob 0.5 -> logit 0
 
     # ------------------------------------------------------------------
     def prob(self, edge_name: str) -> float:

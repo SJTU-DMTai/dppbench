@@ -127,6 +127,7 @@ def diffprep_make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> O
 _DIFFPREP_CUSTOM_DEFAULT_OPS = {
     "ScaleFeature", "HandleOutlier", "HandleError", "JoinTable", "ParseDate",
     "CreateLagFeature", "CreateRollingFeature", "ResampleTimeSeries",
+    "TransformPower",
 }
 
 
@@ -231,6 +232,13 @@ def _diffprep_custom_default_params(op_name: str, ctx: DataContext) -> Optional[
             "group_cols": [],
             "count_col": None,
         }
+
+    if op_name == "TransformPower":
+        bad = {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
+        cols = [c for c in ctx.numeric_cols if c not in bad][:3]
+        if not cols:
+            return None
+        return {"cols": cols, "method": "log", "offset": 1.0}
 
     return None
 

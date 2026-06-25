@@ -4,6 +4,11 @@ The executable operator universe is defined once in
 ``baselines.common.operator_catalog``. Auto-Prep adds only the metadata that is
 specific to its probabilistic transformation prior: ``prior_features`` and
 human-readable ``description`` strings used for cold-start scoring and display.
+
+Each operator appears exactly once; when an operator supports multiple internal
+methods (e.g. HandleMV with median/MICE/KNN), the method is chosen stochastically
+by ``pipeline_factory.build_default_params`` rather than by duplicating the
+operator entry.
 """
 from __future__ import annotations
 
@@ -31,109 +36,216 @@ class OpSpec:
     description: str = ""
 
 
-_AUTOPREP_METADATA = {'Oversample': {'description': 'ADASYN oversampling.', 'prior_features': {'imbalance': 0.5}},
- 'JoinTable': {'description': 'Aggregate aux table on key then left-merge.',
-              'prior_features': {'aux': 5.0}},
- 'AugmentNoise': {'description': 'Add Gaussian noise to numeric cols.',
-                  'prior_features': {'const': 0.2}},
- 'Oversample': {'description': 'Random oversample/undersample/SMOTE.',
-                   'prior_features': {'imbalance': 1.0}},
- 'DiscretizeFeature': {'description': 'Discretize numeric column to buckets.',
-               'prior_features': {'numeric': 0.2}},
- 'CastType': {'description': 'Cast columns to dtype.', 'prior_features': {'const': 0.1}},
- 'CrossFeature': {'description': 'Concatenate cols into one string column.',
-                   'prior_features': {'const': 0.2}},
- 'ConcatTable': {'description': 'Concat tables along axis.', 'prior_features': {'aux': 0.3}},
- 'CreateFeature': {'description': 'Create one new column from source_cols via a built-in algorithm '
-                                  '(mean/sum/std/min/max/median/product/diff/ratio/inc_ratio/concat/identity) '
-                                  'or a user-supplied callable. Replaces the old DeriveFeatures + '
-                                  'CreateFeature.',
-                   'prior_features': {'numeric_pairs': 0.5}},
- 'CreateSequence': {'description': 'Build per-user history sequence.',
-                    'prior_features': {'const': 1.0}},
- 'ExtractDateTimeFeature': {'description': 'Calendar features from datetime.',
-                      'prior_features': {'time': 1.0}},
- 'Deduplicate': {'description': 'Drop fully duplicated rows.', 'prior_features': {'const': 0.5}},
- 'CustomProcess': {'description': 'Drop given columns.', 'prior_features': {'id': 1.0}},
- 'CustomProcess': {'description': 'Drop columns with too many NaN.',
-                  'prior_features': {'missing_max': 1.0}},
- 'Undersample': {'description': 'Edited nearest-neighbours undersampling.',
-                    'prior_features': {'imbalance': 0.3}},
- 'HandleError': {'description': 'Detect rule violations and delete or repair them.',
-                 'prior_features': {'numeric': 0.4, 'const': 0.2}},
- 'HandleMV': {'description': 'Median/mean/mode imputation.', 'prior_features': {'missing': 5.0}},
- 'FilterSample': {'description': 'Row-level NA filter.', 'prior_features': {'const': 0.3}},
- 'HandleOutlier': {'description': 'Detect outliers and delete or repair them.',
-                   'prior_features': {'numeric': 0.6}},
- 'HandleNonIID': {'description': 'Detect non-IID samples and delete or reweight them.',
-                  'prior_features': {'numeric': 0.3}},
- 'ReweightUPG': {'description': 'Detect underperforming groups and up-weight their loss.',
-                 'prior_features': {'const': 0.3}},
- 'CustomProcess': {'description': 'Replace category with its frequency.',
-                     'prior_features': {'categorical': 0.3}},
- 'HashEncode': {'description': 'Hash high-cardinality categories.',
-                'prior_features': {'high_card': 1.0}},
- 'HandleMV': {'description': 'MICE-style iterative imputation.',
-                      'prior_features': {'missing': 3.0}},
- 'FilterKCore': {'description': 'K-core filtering on interaction graph.',
-                 'prior_features': {'const': 0.5}},
- 'ReduceDimension': {'description': 'Kernel PCA.', 'prior_features': {'many_numeric': 0.3}},
- 'HandleMV': {'description': 'KNN-based imputation.', 'prior_features': {'missing': 3.0}},
- 'LabelEncode': {'description': 'Factorize categorical to ints.',
-                 'prior_features': {'categorical': 1.0}},
- 'CreateLagFeature': {'description': 'Lag features per group.', 'prior_features': {'time_target': 1.0}},
- 'ReduceDimension': {'description': 'Supervised LDA projection.',
-               'prior_features': {'target_classes': 0.4}},
- 'TransformPower': {'description': 'Log transform numeric cols.',
-           'prior_features': {'numeric': 0.3, 'skew': 0.5}},
- 'CustomClean': {'description': 'Replace sentinel values via predicates.',
-               'prior_features': {'sentinel': 5.0}},
- 'ScaleFeature': {'description': 'Divide each col by max(|x|).', 'prior_features': {'numeric': 0.3}},
- 'JoinTable': {'description': '1:1 / 1:0 join with aux table.', 'prior_features': {'aux': 1.0}},
- 'ScaleFeature': {'description': 'Min-max scale to [0,1].', 'prior_features': {'numeric': 0.4}},
- 'SampleNegative': {'description': 'Sample negatives per positive.',
-                      'prior_features': {'const': 0.5}},
- 'CustomFE': {'description': 'User-provided feature engineering callback.',
-              'prior_features': {'const': 0.1}},
- 'OneHotEncode': {'description': 'Expand categorical to dummies.',
-                  'prior_features': {'categorical': 0.5}},
- 'OrdinalEncode': {'description': 'Ordinal encode by user-given order.',
-                   'prior_features': {'categorical': 0.3}},
- 'ParseDate': {'description': 'Parse YYMMDD integer dates.',
-                  'prior_features': {'int_date': 2.0}},
- 'ReduceDimension': {'description': 'Linear PCA reduction.', 'prior_features': {'many_numeric': 0.5}},
- 'CreatePolynomialFeature': {'description': 'Polynomial / interaction features.',
-                        'prior_features': {'numeric': 0.2}},
- 'TransformPower': {'description': 'Power transform for skew removal.',
-                    'prior_features': {'numeric': 0.3, 'skew': 0.5}},
- 'TransformPower': {'description': 'Quantile transform to uniform/normal.',
-                       'prior_features': {'numeric': 0.3, 'skew': 0.5}},
- 'JoinTable': {'description': 'One-stop rec join with user/item side tables.',
-             'prior_features': {'const': 1.0}},
- 'RenameColumn': {'description': 'Rename columns.', 'prior_features': {'const': 0.05}},
- 'CustomClean': {'description': 'Regex replace inside string columns.',
-                 'prior_features': {'text': 1.0}},
- 'ResampleTimeSeries': {'description': 'Resample to time bucket and aggregate.',
-                       'prior_features': {'time': 0.5}},
- 'SelectFeature': {'description': 'Recursive feature elimination.', 'prior_features': {'numeric': 0.3}},
- 'ScaleFeature': {'description': 'Robust scale (median/IQR).',
-                 'prior_features': {'numeric': 0.4, 'outlier': 0.5}},
- 'CreateRollingFeature': {'description': 'Rolling-window aggregates.',
-                      'prior_features': {'time_target': 1.0}},
- 'SelectFeature': {'description': 'Univariate feature selection.',
-                 'prior_features': {'numeric': 0.3}},
- 'SortRows': {'description': 'Sort rows by columns.', 'prior_features': {'const': 0.05}},
- 'ScaleFeature': {'description': 'Z-score standardize.', 'prior_features': {'numeric': 0.5}},
- 'ParseDate': {'description': 'Cast string column to datetime64.',
-                         'prior_features': {'time': 1.0}},
- 'TargetEncode': {'description': 'Smoothed target mean encoding.',
-                    'prior_features': {'categorical': 0.4}},
- 'Undersample': {'description': 'Drop majority of Tomek pairs.',
-                'prior_features': {'imbalance': 0.3}},
- 'ReduceDimension': {'description': 'UMAP non-linear embedding.',
-                'prior_features': {'many_numeric': 0.1}},
- 'SelectFeature': {'description': 'Drop low-variance numeric cols.',
-                       'prior_features': {'numeric': 0.2}}}
+_AUTOPREP_METADATA = {
+    "JoinTable": {
+        "description": "Join with aux/user/item tables (key-merge or rec join).",
+        "prior_features": {"aux": 5.0, "const": 1.0},
+    },
+    "ConcatTable": {
+        "description": "Concat tables along axis.",
+        "prior_features": {"aux": 0.3},
+    },
+    "AlignSchema": {
+        "description": "Align schemas across tables.",
+        "prior_features": {"const": 0.1},
+    },
+    "CastType": {
+        "description": "Cast columns to dtype.",
+        "prior_features": {"const": 0.1},
+    },
+    "RenameColumn": {
+        "description": "Rename columns.",
+        "prior_features": {"const": 0.05},
+    },
+    "ParseDate": {
+        "description": "Parse date/datetime columns (string or YYMMDD int).",
+        "prior_features": {"time": 1.0, "int_date": 2.0},
+    },
+    "ParseNumber": {
+        "description": "Parse numeric values from string columns.",
+        "prior_features": {"text": 0.5},
+    },
+    "SortRows": {
+        "description": "Sort rows by columns.",
+        "prior_features": {"const": 0.05, "time": 0.3},
+    },
+    "SplitColumn": {
+        "description": "Split a string column into multiple columns.",
+        "prior_features": {"text": 0.5},
+    },
+    "CustomTransform": {
+        "description": "User-defined column transform.",
+        "prior_features": {"const": 0.1},
+    },
+    "HandleMV": {
+        "description": "Missing-value handling (median/mean/mode/constant/knn/iterative).",
+        "prior_features": {"missing": 5.0, "missing_max": 1.0},
+    },
+    "HandleOutlier": {
+        "description": "Detect outliers and delete or repair them.",
+        "prior_features": {"numeric": 0.6, "outlier": 0.5},
+    },
+    "HandleError": {
+        "description": "Detect rule violations and delete or repair them.",
+        "prior_features": {"numeric": 0.4, "const": 0.2},
+    },
+    "HandleNonIID": {
+        "description": "Detect non-IID samples and delete or reweight them.",
+        "prior_features": {"numeric": 0.3},
+    },
+    "ReweightUPG": {
+        "description": "Detect underperforming groups and up-weight their loss.",
+        "prior_features": {"const": 0.3},
+    },
+    "CorrectLabel": {
+        "description": "Identify and flag/correct noisy labels.",
+        "prior_features": {"target_classes": 0.3},
+    },
+    "Deduplicate": {
+        "description": "Drop fully duplicated rows.",
+        "prior_features": {"const": 0.5},
+    },
+    "CorrectTypo": {
+        "description": "Correct typographical errors in text columns.",
+        "prior_features": {"text": 0.5},
+    },
+    "CustomClean": {
+        "description": "Clean values (sentinel replacement or regex substitution).",
+        "prior_features": {"sentinel": 5.0, "text": 1.0},
+    },
+    "OneHotEncode": {
+        "description": "Expand categorical to dummy/one-hot columns.",
+        "prior_features": {"categorical": 0.5},
+    },
+    "OrdinalEncode": {
+        "description": "Ordinal encode by user-given order.",
+        "prior_features": {"categorical": 0.3},
+    },
+    "LabelEncode": {
+        "description": "Factorize categorical columns to integer ids.",
+        "prior_features": {"categorical": 1.0},
+    },
+    "HashEncode": {
+        "description": "Hash high-cardinality categories into buckets.",
+        "prior_features": {"high_card": 1.0},
+    },
+    "TargetEncode": {
+        "description": "Smoothed target mean encoding.",
+        "prior_features": {"categorical": 0.4, "target_classes": 0.5},
+    },
+    "ScaleFeature": {
+        "description": "Scale numeric columns (standard/minmax/maxabs/robust/l2).",
+        "prior_features": {"numeric": 0.5, "outlier": 0.3},
+    },
+    "TransformPower": {
+        "description": "Power transform for numeric columns (log/sqrt/box-cox/yeo-johnson/quantile).",
+        "prior_features": {"numeric": 0.3, "skew": 0.5},
+    },
+    "DiscretizeFeature": {
+        "description": "Discretize numeric column into buckets.",
+        "prior_features": {"numeric": 0.2},
+    },
+    "ClipOutlier": {
+        "description": "Clip outliers to a threshold range.",
+        "prior_features": {"numeric": 0.3, "outlier": 0.5},
+    },
+    "FilterSample": {
+        "description": "Filter rows with NAs in specified columns.",
+        "prior_features": {"const": 0.3},
+    },
+    "SampleNegative": {
+        "description": "Sample negative instances per positive (recommendation).",
+        "prior_features": {"const": 0.5},
+    },
+    "FilterKCore": {
+        "description": "K-core filtering on interaction graph.",
+        "prior_features": {"const": 0.5},
+    },
+    "Undersample": {
+        "description": "Undersample majority class (random/tomek/enn).",
+        "prior_features": {"imbalance": 0.3},
+    },
+    "Oversample": {
+        "description": "Oversample minority class (random/smote/adasyn).",
+        "prior_features": {"imbalance": 1.0},
+    },
+    "AugmentMixup": {
+        "description": "Mixup data augmentation.",
+        "prior_features": {"const": 0.1},
+    },
+    "AugmentNoise": {
+        "description": "Add Gaussian noise to numeric columns.",
+        "prior_features": {"const": 0.2},
+    },
+    "CustomProcess": {
+        "description": "Custom processing (drop cols, drop high-null, frequency encode, passthrough).",
+        "prior_features": {"id": 1.0, "missing_max": 1.0, "categorical": 0.3},
+    },
+    "CreateFeature": {
+        "description": "Create a new column via built-in operation (mean/sum/std/...).",
+        "prior_features": {"numeric_pairs": 0.5},
+    },
+    "CreatePolynomialFeature": {
+        "description": "Polynomial / interaction features.",
+        "prior_features": {"numeric": 0.2},
+    },
+    "CrossFeature": {
+        "description": "Concatenate categorical cols into one string column.",
+        "prior_features": {"const": 0.2},
+    },
+    "AggregateGroupFeature": {
+        "description": "Aggregation features within groups.",
+        "prior_features": {"categorical": 0.3},
+    },
+    "ExtractDateTimeFeature": {
+        "description": "Calendar/time features from datetime columns.",
+        "prior_features": {"time": 1.0},
+    },
+    "CreateLagFeature": {
+        "description": "Lag features per group.",
+        "prior_features": {"time_target": 1.0},
+    },
+    "CreateRollingFeature": {
+        "description": "Rolling-window aggregates.",
+        "prior_features": {"time_target": 1.0},
+    },
+    "ResampleTimeSeries": {
+        "description": "Resample to time bucket and aggregate.",
+        "prior_features": {"time": 0.5},
+    },
+    "CreateSequence": {
+        "description": "Build per-user history item sequence.",
+        "prior_features": {"const": 1.0},
+    },
+    "TruncateSequence": {
+        "description": "Truncate long sequences.",
+        "prior_features": {"const": 0.2},
+    },
+    "SelectFeature": {
+        "description": "Feature selection (variance/univariate/rfe/model).",
+        "prior_features": {"numeric": 0.3},
+    },
+    "ReduceDimension": {
+        "description": "Dimensionality reduction (pca/svd/kernel_pca/lda/umap).",
+        "prior_features": {"many_numeric": 0.5, "target_classes": 0.4},
+    },
+    "ExtractTextFeature": {
+        "description": "Extract traditional text features (TF-IDF etc.).",
+        "prior_features": {"text": 0.8},
+    },
+    "ExtractTextEmbedding": {
+        "description": "Extract dense text embeddings.",
+        "prior_features": {"text": 0.5},
+    },
+    "ExtractGraphFeature": {
+        "description": "Extract graph-based features.",
+        "prior_features": {"const": 0.2},
+    },
+    "CustomFE": {
+        "description": "User-provided feature engineering callback.",
+        "prior_features": {"const": 0.1},
+    },
+}
 
 
 def _adapt_spec(name: str) -> OpSpec:

@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from .tabular_model import TabularModel
+from .tabular_input import convert_datetime_features
 
 
 class TorchTabularModel(TabularModel):
@@ -36,12 +37,17 @@ class TorchTabularModel(TabularModel):
         self._x_std = None
         self._y_mean = 0.0
         self._y_std = 1.0
+        self.datetime_features = []
 
     def _make_net(self, n_features):
         raise NotImplementedError
 
     def _to_array(self, X, fit=False):
         if isinstance(X, pd.DataFrame):
+            if fit or not self.datetime_features:
+                X, self.datetime_features = convert_datetime_features(X)
+            else:
+                X, _ = convert_datetime_features(X, self.datetime_features)
             X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
             if fit or self.feature_names is None:
                 if self.max_features and X.shape[1] > self.max_features:

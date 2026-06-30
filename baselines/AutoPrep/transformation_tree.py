@@ -35,7 +35,7 @@ _REC_INTERACTION = {
     "CustomClean", "HandleError",
     "HandleOutlier",
     "ParseDate", "ExtractDateTimeFeature",
-    "CastType", "CustomProcess",
+    "CastType", "DropColumns", "CustomProcess",
     "SelectFeature",
     "OneHotEncode", "LabelEncode", "HashEncode", "TargetEncode",
     "ScaleFeature", "TransformPower",
@@ -45,13 +45,13 @@ _REC_INTERACTION = {
 
 # Side tables: only column-level cleaning / lightweight encoding.
 _REC_SIDE = {
-    "HandleMV", "LabelEncode", "CustomProcess",
+    "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
     "ScaleFeature", "SelectFeature",
 }
 
 # Tabular auxiliary table: light cleaning + later joined back via JoinTable.
 _TABULAR_AUX = {
-    "HandleMV", "LabelEncode", "CustomProcess",
+    "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
     "JoinTable",
 }
 

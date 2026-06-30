@@ -1,4 +1,4 @@
-"""Shared operator catalog for the 52 dppbench operators.
+"""Shared operator catalog for the dppbench operators.
 
 This is the single metadata source imported by baseline-specific catalogs.
 The callable operator implementations live under ``dppbench/ operators/`` and
@@ -81,6 +81,7 @@ _add("JoinTable", OpCategory.JOIN, default_params={"method": "key"}, needs_conte
 _add("ConcatTable", OpCategory.RESHAPE_LONGWIDE, default_params={"axis": "vertical"}, needs_context=True)
 _add("AlignSchema", OpCategory.SCHEMA, needs_context=True)
 _add("RenameColumn", OpCategory.SCHEMA, needs_context=True)
+_add("DropColumns", OpCategory.FILTER_COL, needs_context=True)
 _add("CastType", OpCategory.SCHEMA, needs_context=True)
 _add("ParseDate", OpCategory.DATETIME_PARSE, default_params={"mode": "string"}, needs_context=True)
 _add("ParseNumber", OpCategory.SCHEMA, needs_context=True)
@@ -175,7 +176,6 @@ _add("AggregateGroupFeature", OpCategory.GROUP_AGG, needs_context=True)
 _add("ExtractDateTimeFeature", OpCategory.FEATURE_TIME, needs_context=True)
 _add("CreateLagFeature", OpCategory.FEATURE_TIME, needs_context=True)
 _add("CreateRollingFeature", OpCategory.FEATURE_TIME, needs_context=True)
-_add("ResampleTimeSeries", OpCategory.FEATURE_TIME, needs_context=True)
 _add("CreateSequence", OpCategory.SEQUENCE, task_type="rec",
      valid_targets=("interaction",), needs_context=True)
 _add("TruncateSequence", OpCategory.SEQUENCE, task_type="rec",

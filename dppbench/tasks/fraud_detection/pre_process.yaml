@@ -45,12 +45,11 @@ pipeline:
   params:
     threshold: 0.9
     mode: drop_high_null
-- op: CustomProcess
+- op: DropColumns
   target: both
   params:
     cols:
     - TransactionID
-    mode: drop_columns
 - op: LabelEncode
   target: both
 - op: HandleMV

@@ -52,6 +52,18 @@ class EllipticBitcoinData(TabularData):
         "elliptic_txs_edgelist.csv",
     )
 
+    CLASS_MAP = {
+        "unknown": -1,
+        "-1": -1,
+        -1: -1,
+        "1": 1,
+        1: 1,
+        "2": 0,
+        2: 0,
+        "0": 0,
+        0: 0,
+    }
+
     def __init__(self, data_dir=None):
         super().__init__(name="EllipticBitcoin")
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "data")
@@ -136,6 +148,59 @@ class EllipticBitcoinData(TabularData):
                 f"Last error: {last_err}"
             )
 
+    def _normalize_tx_id_column(self, df, col):
+        if df is None or col not in df.columns:
+            return
+        numeric = pd.to_numeric(df[col], errors="coerce")
+        if numeric.notna().all():
+            df[col] = numeric.astype(np.int64)
+        else:
+            df[col] = df[col].astype(str)
+
+    @classmethod
+    def _normalize_class_value(cls, value):
+        if pd.isna(value):
+            return np.nan
+        key = str(value).strip()
+        if key in cls.CLASS_MAP:
+            return cls.CLASS_MAP[key]
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric):
+            return np.nan
+        numeric = int(numeric)
+        return cls.CLASS_MAP.get(numeric, np.nan)
+
+    @classmethod
+    def _normalize_class_series(cls, series):
+        return series.map(cls._normalize_class_value)
+
+    def _class_lookup(self):
+        classes = self.auxiliary_dfs.get("classes")
+        if classes is None or "txId" not in classes.columns or "class" not in classes.columns:
+            return {}
+        mapped = self._normalize_class_series(classes["class"])
+        return dict(zip(classes["txId"].astype(str), mapped))
+
+    def _attach_class_labels(self, df):
+        if df is None or "txId" not in df.columns:
+            return df
+        lookup = self._class_lookup()
+        if "class" in df.columns:
+            labels = self._normalize_class_series(df["class"])
+        else:
+            labels = pd.Series(np.nan, index=df.index)
+        if lookup:
+            labels = labels.fillna(df["txId"].astype(str).map(lookup))
+        df["class"] = labels.fillna(-1).astype(np.int64)
+        return df
+
+    def load_std_test_frozen(self):
+        loaded = super().load_std_test_frozen()
+        if loaded and self.train_df is not None:
+            self._normalize_tx_id_column(self.train_df, "txId")
+            self._attach_class_labels(self.train_df)
+        return loaded
+
     # ------------------------------------------------------------------
     # load
     # ------------------------------------------------------------------
@@ -150,16 +215,19 @@ class EllipticBitcoinData(TabularData):
         n_feat = feats.shape[1] - 2
         col_names = ["txId", "time_step"] + [f"feat_{i}" for i in range(n_feat)]
         feats.columns = col_names
-        feats["txId"] = feats["txId"].astype(str)
-        self.train_df = feats
+        self._normalize_tx_id_column(feats, "txId")
 
         classes = pd.read_csv(cls_path)
-        classes["txId"] = classes["txId"].astype(str)
+        self._normalize_tx_id_column(classes, "txId")
         self.auxiliary_dfs["classes"] = classes
 
+        self._attach_class_labels(feats)
+        self.train_df = feats
+
         edges = pd.read_csv(edge_path)
-        edges["txId1"] = edges["txId1"].astype(str)
-        edges["txId2"] = edges["txId2"].astype(str)
+        self._normalize_tx_id_column(edges, "txId1")
+        self._normalize_tx_id_column(edges, "txId2")
+        edges = edges.drop_duplicates(subset=["txId1", "txId2"]).reset_index(drop=True)
         self.auxiliary_dfs["edges"] = edges
 
         self.test_df = None
@@ -177,9 +245,15 @@ class EllipticBitcoinData(TabularData):
             raise RuntimeError("call load_data() and run_pre_process() before build_graph()")
 
         df = self.train_df.copy()
+        self._normalize_tx_id_column(df, "txId")
+        self._attach_class_labels(df)
         edges = self.auxiliary_dfs.get("edges")
         if edges is None:
             raise RuntimeError("auxiliary edges table is missing")
+        edges = edges.copy()
+        self._normalize_tx_id_column(edges, "txId1")
+        self._normalize_tx_id_column(edges, "txId2")
+        edges = edges.drop_duplicates(subset=["txId1", "txId2"]).reset_index(drop=True)
 
         # Build txId -> dense node index.
         node_ids = df["txId"].astype(str).tolist()

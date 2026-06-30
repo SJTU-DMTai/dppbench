@@ -2,7 +2,7 @@
 
 本文档对应当前 `/dppbench/ operators/` 下可反射加载的 52 个具体算子，不含 `base_op.py`、`custom_op.py` 和 `__init__.py`。算子按用户更新后的四个阶段组织：S1 Data Integration、S2 Data Cleaning、S3 Data Preprocessing、S4 Feature Engineering。
 
-## S1. Data Integration（10）
+## S1. Data Integration（11）
 
 | 算子 | 文件 | 功能 |
 | --- | --- | --- |
@@ -10,6 +10,7 @@
 | `ConcatTable` | [`concat_table.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/concat_table.py) | 多张同 schema 表纵向拼接，也支持横向拼接。 |
 | `AlignSchema` | [`align_schema.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/align_schema.py) | 按字段映射和 dtype 映射对齐 schema，可补 required columns。 |
 | `RenameColumn` | [`rename_column.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/rename_column.py) | 显式重命名列。 |
+| `DropColumns` | [`drop_columns.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/drop_columns.py) | 按显式列名删除列。 |
 | `CastType` | [`cast_type.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/cast_type.py) | 将列转换为 int/float/string/bool/category/datetime 等 dtype。 |
 | `ParseDate` | [`parse_date.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/parse_date.py) | 解析字符串日期、YYMMDD 整数日期和 Berka birth_number。 |
 | `ParseNumber` | [`parse_number.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/integration/parse_number.py) | 将字符串数值列清洗并解析为 numeric dtype。 |
@@ -51,9 +52,9 @@
 | `Oversample` | [`oversample.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/oversample.py) | random/smote/adasyn/smote_nc 过采样。 |
 | `AugmentMixup` | [`augment_mixup.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/augment_mixup.py) | Mixup 数据增强。 |
 | `AugmentNoise` | [`augment_noise.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/augment_noise.py) | 数值列加噪生成增强样本。 |
-| `CustomProcess` | [`custom_process.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/custom_process.py) | 预处理阶段自定义逻辑，并承接旧 DropColumns/DropHighNull/FrequencyEncode。 |
+| `CustomProcess` | [`custom_process.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/custom_process.py) | 预处理阶段自定义逻辑，并承接高缺失列过滤与频次编码。 |
 
-## S4. Feature Engineering（16）
+## S4. Feature Engineering（15）
 
 | 算子 | 文件 | 功能 |
 | --- | --- | --- |
@@ -64,7 +65,6 @@
 | `ExtractDateTimeFeature` | [`extract_date_time_feature.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/extract_date_time_feature.py) | 从 datetime 列提取年/月/星期/小时等。 |
 | `CreateLagFeature` | [`create_lag_feature.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/create_lag_feature.py) | 时序滞后特征。 |
 | `CreateRollingFeature` | [`create_rolling_feature.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/create_rolling_feature.py) | 时序滚动窗口统计。 |
-| `ResampleTimeSeries` | [`resample_time_series.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/resample_time_series.py) | 事件表按固定时间粒度聚合。 |
 | `CreateSequence` | [`create_sequence.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/create_sequence.py) | 构造用户历史行为序列。 |
 | `TruncateSequence` | [`truncate_sequence.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/truncate_sequence.py) | 截断 list/sequence 特征到固定长度。 |
 | `SelectFeature` | [`select_feature.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/select_feature.py) | variance/univariate/rfe/model 特征选择。 |

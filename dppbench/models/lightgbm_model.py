@@ -1,6 +1,7 @@
 import numpy as np
 import lightgbm as lgb
 from .tabular_model import TabularModel
+from .tabular_input import convert_datetime_features
 
 
 class LightGBMModel(TabularModel):
@@ -9,6 +10,7 @@ class LightGBMModel(TabularModel):
         self.params = params
         self.model = None
         self.feature_names = None
+        self.datetime_features = []
 
     def _get_lgb_params(self):
         default_params = {
@@ -37,6 +39,9 @@ class LightGBMModel(TabularModel):
             eval_sample_weight=None, **kwargs):
         params = self._get_lgb_params()
         self.feature_names = list(X_train.columns) if hasattr(X_train, "columns") else None
+        X_train, self.datetime_features = convert_datetime_features(X_train)
+        if X_val is not None:
+            X_val, _ = convert_datetime_features(X_val, self.datetime_features)
 
         callbacks = [
             lgb.log_evaluation(period=100),
@@ -62,6 +67,7 @@ class LightGBMModel(TabularModel):
         return self
 
     def predict(self, X):
+        X, _ = convert_datetime_features(X, self.datetime_features)
         if self.task == "binary":
             return self.model.predict_proba(X)[:, 1]
         return self.model.predict(X)

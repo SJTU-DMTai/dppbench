@@ -8,7 +8,7 @@ pipeline:
     item_df: $item_df
     how: left
     method: rec
-- op: CustomProcess
+- op: DropColumns
   target: interaction
   params:
     cols:
@@ -16,7 +16,6 @@ pipeline:
     - date
     - play_duration
     - video_duration
-    mode: drop_columns
 - op: FilterSample
   target: interaction
   params:

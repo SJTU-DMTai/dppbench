@@ -12,6 +12,7 @@ apikeys.json
 .vscode/
 .idea/
 .trae/
+.agents/
 
 # Python
 __pycache__/
@@ -33,3 +34,5 @@ env/
 papers/
 outputs/
 logs/
+
+AGENTS.md

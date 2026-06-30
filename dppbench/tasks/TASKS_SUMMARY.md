@@ -78,12 +78,12 @@
 | berka | ~6.2k loan | account, client, disp, card, order, trans, district（7 表） | 6 → ~50+ | ParseDate×5 → OrdinalEncode → CastType → CreateFeature → TransformPower → JoinTable×4 → CustomProcess → CrossFeature → LabelEncode → HandleMV | 多表 ASCII；YYMMDD 整数日期；状态映射（A/C→0, B/D→1） |
 | bike_sharing | 17 379 小时 | `day_aux`（日级聚合表） | 16 → ~30+ | ExtractDateTimeFeature×2 → CustomProcess(day drop target parts) → CreateFeature → TransformPower → JoinTable → CreateLagFeature → CreateRollingFeature → CustomProcess×2 → LabelEncode → HandleMV | 时序滞后/滚动；日聚合特征；删除 `casual/registered` 防泄漏 |
 | bondora | ~50k loans | `country_stats`（loader 内 groupby 派生） | ~110 → ~50（列过滤后） | CustomProcess → CreateFeature×2 → TransformPower → ScaleFeature → JoinTable → HandleError → CustomProcess×2 → LabelEncode → HandleMV → ScaleFeature → Undersample | xlsx；高基类别；国家异常值修复 |
-| citibike_jc_hourly | ~140 万行原始 trip → resample 到小时桶 | 无 | 11 → ~30+ | HandleOutlier(action=delete) → HandleError(action=delete) → ResampleTimeSeries → ExtractDateTimeFeature → CreateLagFeature → CreateRollingFeature → CustomProcess → LabelEncode → HandleMV → SortRows | 兼容无 `birth_year` schema；离群点；不规则时间序列重采样 |
+| citibike_jc_hourly | ~140 万行原始 trip → loader 聚合到小时桶 | 无 | loader 输出小时面板 → ~30+ | ExtractDateTimeFeature → CreateLagFeature → CreateRollingFeature → CustomProcess → LabelEncode → HandleMV → SortRows | 兼容无 `birth_year` schema；loader 内离群点/错误过滤与小时聚合 |
 | default_credit | 30 000 行 | `monthly_history`（wide→long 派生） | 24 → ~40+ | CustomClean → CreateFeature → TransformPower → JoinTable → CustomProcess → OneHotEncode → LabelEncode → HandleMV×2 → ReduceDimension → SelectFeature | EDUCATION/MARRIAGE 异常值；月度历史 wide→long pivot |
 | elliptic_bitcoin | 203 769 节点 | `classes`（标签）+ `edges`（234 355 条） | 165 节点特征 → Z-score 165 维 | JoinTable → CustomClean → Deduplicate → ScaleFeature → HandleMV → ReduceDimension×3 | 标签 vocab "unknown"/"1"/"2"；图边去重；节点特征标准化 |
 | fraud_detection | ~590k 交易 | `identity`（在 load_data 中已合并） | ~430 → 列过滤后显著缩减 | ExtractDateTimeFeature → TransformPower → RenameColumn → CustomProcess → HashEncode → CustomProcess×2 → LabelEncode → HandleMV | 高维稀疏；高基类别；近 50% 列为空；保留原始类别分布 |
 | home_credit | 307 511 行 × 122 列 | bureau, bureau_balance, previous_application, pos_cash, credit_card, installments（共 6 表，pipeline 启用 2 个 JoinTable，3 个被注释） | 122 → 241 | CustomClean×2 → CreateFeature×10 → JoinTable×2 → CustomProcess → LabelEncode → HandleMV → SelectFeature×2 | DAYS_EMPLOYED=365243 哨兵；XNA 字符串；ext_source 衍生 |
-| nyc_taxi_hourly | 千万级原始 trip → 小时桶 | 无 | 19 → ~30+ | ParseDate → CustomClean → HandleError(action=delete) → ExtractDateTimeFeature → ResampleTimeSeries → ExtractDateTimeFeature → CreateLagFeature → CreateRollingFeature → CustomProcess → HandleMV → TransformPower → SortRows | parquet；行程时长/距离离群点；resample |
+| nyc_taxi_hourly | 千万级原始 trip → loader 聚合到小时桶 | 无 | loader 输出小时面板 → ~30+ | ExtractDateTimeFeature → CreateLagFeature → CreateRollingFeature → CustomProcess → HandleMV → TransformPower → SortRows | parquet；loader 内异常过滤与小时聚合 |
 | polish_bankruptcy | year5 | year1, year2, year3, year4（4 个聚合源） | 64 比率 → ~150+ | ConcatTable → TransformPower → CreatePolynomialFeature → JoinTable → CustomProcess×2 → LabelEncode → HandleMV×2 → Oversample | 多年 ARFF；class 列泄漏需删除；64 个金融比率 |
 
 ### 2.2 推荐类（RecData）
@@ -106,7 +106,7 @@
 
 ### 中高复杂度（★★★★☆ 4 个）
 
-- **citibike_jc_hourly / nyc_taxi_hourly**：单表事件流，但需要哨兵值清洗 + 离群点/错误检测 + ResampleTimeSeries + 滞后/滚动等 **11–13 步**的"脏数据 + 时序"组合。
+- **citibike_jc_hourly / nyc_taxi_hourly**：loader 将原始事件流清洗并聚合为小时面板，pipeline 负责滞后/滚动等时序特征。
 - **fraud_detection**：宽表（~430 列），通过 CustomProcess / HashEncode 处理高缺失、高基类别和稀疏特征。
 - **polish_bankruptcy**：5 张同结构 ARFF 表，4 次 `JoinTable(method="agg")` 聚合跨年特征。
 - **elliptic_bitcoin**：唯一的图任务，3 张表 + 自定义 `JoinTable`/`ScaleFeature` 算子。
@@ -143,7 +143,7 @@
 
 | 算子 | 使用任务数 | 主要场景 |
 |---|---|---|
-| CustomProcess | 12 | 预处理阶段承接列过滤、高基类别频次编码等任务定制逻辑 |
+| CustomProcess | 12 | 预处理阶段承接高缺失列过滤、高基类别频次编码等任务定制逻辑 |
 | HandleMV | 11 | 几乎所有 TabularData 流水线收尾 |
 | JoinTable | 11 | 跨表多对一聚合（max_cols=20）或 key join |
 | LabelEncode | 9 | 类别特征统一编码 |
@@ -159,7 +159,7 @@
 | 算子 | 使用任务数 | 主要场景 |
 |---|---|---|
 | CreateSequence / HandleError | 3 | RecData 序列构建；规则约束错误检测 |
-| ResampleTimeSeries / HandleError(action=delete) | 2 | 事件流→小时桶 |
+| HandleError(action=delete) | 2 | 任务默认错误检测；小时桶聚合已下沉到对应 loader |
 | ScaleFeature / ParseDate / SelectFeature / ReduceDimension | 2–3 | 缩放、日期解析、选择与降维 |
 | FilterSample | 4 | RecData ID/label 非空过滤 |
 
@@ -184,7 +184,7 @@
 | 拆分前 | 拆分后 | 边界 |
 |---|---|---|
 | `FeatureEngineer` (含 log) | `CreateFeature` + `TransformPower(method="log")` | CreateFeature 做 ratio/sum/std/mean 等 arithmetic；TransformPower 做分布变换 |
-| `FilterFeatures`（同时按列名/方差/缺失率筛） | `CustomProcess(mode="drop_columns/drop_high_null")` + `SelectFeature(method="variance")` | 自定义列过滤与统计式特征选择分离 |
+| `FilterFeatures`（同时按列名/方差/缺失率筛） | `DropColumns` + `CustomProcess(mode="drop_high_null")` + `SelectFeature(method="variance")` | 显式列删除、高缺失过滤与统计式特征选择分离 |
 | 多个 scaler | `ScaleFeature(method=...)` | 用 method 显式选择 standard/minmax/maxabs/robust/l2 |
 | 多个 imputer | `HandleMV(method=...)` | method 覆盖 constant/mean/median/mode/knn/iterative；`action ∈ {delete, impute}` |
 | `OneHotEncode` / `OrdinalEncode` / `LabelEncode` / `HashEncode` / `CustomProcess(mode="frequency_encode")` | 全部保留 | 编码语义不同：OHE 增列、Ord 保留有序、Label 单列编码、Hash 固定桶、频次编码走定制预处理 |
@@ -193,10 +193,10 @@
 
 ### 5.5 paper 算子覆盖一览（Figure 2 Taxonomy）
 
-- Integration：JoinTable、ConcatTable、AlignSchema、RenameColumn、CastType、ParseDate、ParseNumber、SortRows、SplitColumn、CustomTransform
+- Integration：JoinTable、ConcatTable、AlignSchema、RenameColumn、DropColumns、CastType、ParseDate、ParseNumber、SortRows、SplitColumn、CustomTransform
 - Cleaning：HandleMV、HandleOutlier、HandleError、HandleNonIID、ReweightUPG、CorrectLabel、Deduplicate、CorrectTypo、CustomClean
 - Preprocessing：OneHotEncode、OrdinalEncode、LabelEncode、HashEncode、TargetEncode、ScaleFeature、TransformPower、DiscretizeFeature、ClipOutlier、FilterSample、SampleNegative、FilterKCore、Undersample、Oversample、AugmentMixup、AugmentNoise、CustomProcess
-- Feature Engineering：CreateFeature、CreatePolynomialFeature、CrossFeature、AggregateGroupFeature、ExtractDateTimeFeature、CreateLagFeature、CreateRollingFeature、ResampleTimeSeries、CreateSequence、TruncateSequence、SelectFeature、ReduceDimension、ExtractTextFeature、ExtractTextEmbedding、ExtractGraphFeature、CustomFE
+- Feature Engineering：CreateFeature、CreatePolynomialFeature、CrossFeature、AggregateGroupFeature、ExtractDateTimeFeature、CreateLagFeature、CreateRollingFeature、CreateSequence、TruncateSequence、SelectFeature、ReduceDimension、ExtractTextFeature、ExtractTextEmbedding、ExtractGraphFeature、CustomFE
 - Reshape/Sort：SortRows
 - RecData：FilterKCore、CreateSequence、FilterSample、SampleNegative（标签由 RecData._apply_label_rule 在 load_data 末尾固化）
 

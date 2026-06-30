@@ -14,8 +14,8 @@ class NycTaxiHourlyData(TabularData):
     coordinates, fare_amount > 1000, and timestamps that fall outside the
     nominal month. The preprocessing pipeline must clean these via
     ``HandleError(action=delete)`` and then bucket the events into a (PULocationID,
-    hour) panel via ``ResampleTimeSeries``. The downstream regression
-    target is the per-(zone, hour) trip count.
+    hour) panel in the loader. The downstream regression target is the per-zone,
+    per-hour trip count.
 
     Source: https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
     """
@@ -100,9 +100,82 @@ class NycTaxiHourlyData(TabularData):
             )
             df = df[df["PULocationID"].isin(top)].reset_index(drop=True)
 
+        df = self._clean_raw_events(df)
+        df = self._build_hourly_panel(df)
+
         self.train_df = df
         self.test_df = None
         return self.train_df, self.test_df
+
+    def _clean_raw_events(self, df):
+        df = df.copy()
+        if "tpep_pickup_datetime" in df.columns:
+            df["tpep_pickup_datetime"] = pd.to_datetime(
+                df["tpep_pickup_datetime"], errors="coerce"
+            )
+        if "tpep_dropoff_datetime" in df.columns:
+            df["tpep_dropoff_datetime"] = pd.to_datetime(
+                df["tpep_dropoff_datetime"], errors="coerce"
+            )
+        if "passenger_count" in df.columns:
+            df["passenger_count"] = pd.to_numeric(df["passenger_count"], errors="coerce")
+            bad_passenger = (df["passenger_count"] < 0) | (df["passenger_count"] > 9)
+            df.loc[bad_passenger.fillna(False), "passenger_count"] = pd.NA
+        for col in ["trip_distance", "fare_amount", "tip_amount", "total_amount"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        rules = [
+            ("trip_distance", 0, 200),
+            ("fare_amount", 0, 1000),
+            ("total_amount", 0, 2000),
+        ]
+        mask = pd.Series(True, index=df.index)
+        for col, lo, hi in rules:
+            if col in df.columns:
+                mask = mask & df[col].between(lo, hi, inclusive="both")
+        if "tpep_pickup_datetime" in df.columns:
+            start = pd.Timestamp("2022-12-15")
+            end = pd.Timestamp("2023-02-15")
+            mask = mask & df["tpep_pickup_datetime"].between(start, end, inclusive="both")
+        return df.loc[mask.fillna(False)].reset_index(drop=True)
+
+    def _build_hourly_panel(self, df):
+        required = {"tpep_pickup_datetime", "PULocationID"}
+        missing = sorted(required - set(df.columns))
+        if missing:
+            raise ValueError(f"Missing required NYC taxi columns for hourly panel: {missing}")
+        df = df.copy()
+        df["_hour_ts"] = df["tpep_pickup_datetime"].dt.floor("h")
+        agg_spec = {}
+        for col, funcs in {
+            "trip_distance": ["mean", "sum"],
+            "fare_amount": ["mean", "sum"],
+            "tip_amount": ["mean"],
+            "total_amount": ["mean"],
+            "passenger_count": ["mean"],
+        }.items():
+            if col in df.columns:
+                agg_spec[col] = funcs
+        if agg_spec:
+            out = df.groupby(["PULocationID", "_hour_ts"], dropna=False).agg(agg_spec).reset_index()
+            out.columns = [
+                "_".join([str(x) for x in col if x]) if isinstance(col, tuple) else col
+                for col in out.columns
+            ]
+            counts = (
+                df.groupby(["PULocationID", "_hour_ts"], dropna=False)
+                .size()
+                .reset_index(name="trip_count")
+            )
+            out = out.merge(counts, on=["PULocationID", "_hour_ts"], how="left")
+        else:
+            out = (
+                df.groupby(["PULocationID", "_hour_ts"], dropna=False)
+                .size()
+                .reset_index(name="trip_count")
+            )
+        out["_hour_idx"] = pd.to_datetime(out["_hour_ts"]).astype("datetime64[ns]").astype("int64") // 10 ** 9
+        return out.sort_values(["PULocationID", "_hour_idx"], kind="mergesort").reset_index(drop=True)
 
     def split(self, val_ratio=0.2, seed=42):
         df = self.train_df
@@ -120,7 +193,7 @@ class NycTaxiHourlyData(TabularData):
 
         if self._sort_col not in df.columns:
             raise ValueError(
-                f"Expected '{self._sort_col}' from ResampleTimeSeries before split."
+                f"Expected '{self._sort_col}' from hourly panel built in load_data()."
             )
         df = df.sort_values(self._sort_col, kind="mergesort").reset_index(drop=True)
         unique_ts = np.sort(df[self._sort_col].unique())

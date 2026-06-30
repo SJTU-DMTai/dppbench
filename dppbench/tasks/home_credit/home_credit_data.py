@@ -1,10 +1,17 @@
 import os
+import json
 import shutil
 import subprocess
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import pandas as pd
 from ...dataset import TabularData
+
+class _Redirect308Handler(urllib.request.HTTPRedirectHandler):
+    def http_error_308(self, req, fp, code, msg, headers):
+        return self.http_error_301(req, fp, code, msg, headers)
 
 
 class HomeCreditData(TabularData):
@@ -23,13 +30,20 @@ class HomeCreditData(TabularData):
         "https://www.kaggle.com/competitions/home-credit-default-risk/data"
     )
     ENV_URLS = "DPPBENCH_HOME_CREDIT_URL"
-    USER_AGENT = "Wget/1.21.4"
+    ENV_HF_ENDPOINTS = "DPPBENCH_HOME_CREDIT_HF_ENDPOINTS"
+    HF_ENDPOINT_ENV = "HF_ENDPOINT"
+    USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     ARCHIVE_NAME = "home-credit-default-risk.zip"
 
-    HF_BASE_URL = "https://huggingface.co/datasets/jamirc/home_credit_default_risk/resolve/main"
-    HF_FILE_MAP = {
-        "application_train.csv": "application_tr.csv",
-        "application_test.csv": "application_ts.csv",
+    HF_REPO_PATH = "datasets/jamirc/home_credit_default_risk"
+    HF_API_PATH = "api/datasets/jamirc/home_credit_default_risk"
+    HF_DEFAULT_ENDPOINTS = ("https://huggingface.co", "https://hf-mirror.com")
+    HF_FILE_CANDIDATES = {
+        "application_train.csv": ("application_tr.csv", "application_train.csv"),
+        "application_test.csv": ("application_ts.csv", "application_test.csv"),
     }
 
     REQUIRED_FILES = (
@@ -51,31 +65,62 @@ class HomeCreditData(TabularData):
         self.target_col = "TARGET"
         self.id_col = "SK_ID_CURR"
 
-    def _download_archive(self, url, filename):
+    @staticmethod
+    def _urlopen(req, timeout):
+        opener = urllib.request.build_opener(_Redirect308Handler)
+        try:
+            return opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 308:
+                raise
+            location = exc.headers.get("Location")
+            if not location:
+                raise
+            redirected = urllib.request.Request(
+                urllib.parse.urljoin(req.full_url, location),
+                headers=dict(req.header_items()),
+            )
+            return opener.open(redirected, timeout=timeout)
+
+    def _download_file(self, url, filename):
         os.makedirs(self.data_dir, exist_ok=True)
         filepath = os.path.join(self.data_dir, filename)
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             return filepath
 
         print(f"{self.name} Downloading {url}")
+        tmp_path = filepath + ".part"
         req = urllib.request.Request(
             url,
             headers={
                 "User-Agent": self.USER_AGENT,
                 "Accept": "*/*",
+                "Accept-Encoding": "identity",
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=900) as resp, \
-                    open(filepath, "wb") as f:
+            with self._urlopen(req, timeout=900) as resp, \
+                    open(tmp_path, "wb") as f:
+                expected = resp.headers.get("Content-Length")
+                expected_size = int(expected) if expected and expected.isdigit() else None
                 while True:
                     chunk = resp.read(1 << 20)
                     if not chunk:
                         break
                     f.write(chunk)
+                actual_size = f.tell()
+            if expected_size is not None and actual_size != expected_size:
+                raise IOError(
+                    f"incomplete download for {url}: "
+                    f"expected {expected_size} bytes, got {actual_size}"
+                )
+            if actual_size == 0:
+                raise IOError(f"empty download for {url}")
+            os.replace(tmp_path, filepath)
         except Exception:
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            for path in (tmp_path, filepath):
+                if os.path.exists(path):
+                    os.remove(path)
             raise
         return filepath
 
@@ -108,14 +153,52 @@ class HomeCreditData(TabularData):
             root_path = os.path.join(self.data_dir, filename)
             if os.path.exists(root_path):
                 continue
+            alias_names = set(self.HF_FILE_CANDIDATES.get(filename, ()))
             for dirpath, _, filenames in os.walk(self.data_dir):
-                if filename not in filenames:
+                match = None
+                for candidate in filenames:
+                    if (
+                        candidate == filename
+                        or candidate in alias_names
+                        or candidate.endswith(f"-{filename}")
+                        or candidate.endswith(f"_{filename}")
+                    ):
+                        match = candidate
+                        break
+                if match is None:
                     continue
-                src = os.path.join(dirpath, filename)
+                src = os.path.join(dirpath, match)
                 if os.path.abspath(src) == os.path.abspath(root_path):
                     break
                 shutil.copy2(src, root_path)
                 break
+
+    @staticmethod
+    def _split_env_urls(value):
+        return [item.strip().rstrip("/") for item in value.split(",") if item.strip()]
+
+    def _hf_endpoints(self):
+        endpoints = []
+        endpoints.extend(self._split_env_urls(os.environ.get(self.ENV_HF_ENDPOINTS, "")))
+        hf_endpoint = os.environ.get(self.HF_ENDPOINT_ENV, "").strip().rstrip("/")
+        if hf_endpoint:
+            endpoints.append(hf_endpoint)
+        endpoints.extend(self.HF_DEFAULT_ENDPOINTS)
+
+        seen = set()
+        unique = []
+        for endpoint in endpoints:
+            if not endpoint or endpoint in seen:
+                continue
+            seen.add(endpoint)
+            unique.append(endpoint)
+        return unique
+
+    def _hf_api_url(self, endpoint):
+        return f"{endpoint}/{self.HF_API_PATH}"
+
+    def _hf_file_url(self, endpoint, remote_name):
+        return f"{endpoint}/{self.HF_REPO_PATH}/resolve/main/{remote_name}"
 
     def _try_download_from_urls(self):
         urls = [
@@ -128,7 +211,7 @@ class HomeCreditData(TabularData):
             if not archive_name.lower().endswith(".zip"):
                 archive_name = f"home-credit-default-risk-{i}.zip"
             try:
-                self._download_archive(url, archive_name)
+                self._download_file(url, archive_name)
                 self._extract_archives()
                 if not self._missing_required_files():
                     return True
@@ -136,30 +219,94 @@ class HomeCreditData(TabularData):
                 print(f"{self.name} mirror download failed: {type(exc).__name__}: {exc}")
         return False
 
+    def _huggingface_siblings(self):
+        for endpoint in self._hf_endpoints():
+            req = urllib.request.Request(
+                self._hf_api_url(endpoint),
+                headers={
+                    "User-Agent": self.USER_AGENT,
+                    "Accept": "application/json",
+                },
+            )
+            try:
+                with self._urlopen(req, timeout=60) as resp:
+                    payload = json.load(resp)
+            except Exception as exc:
+                print(
+                    f"{self.name} HuggingFace file listing failed at "
+                    f"{endpoint}: {exc}"
+                )
+                continue
+            siblings = {
+                item.get("rfilename")
+                for item in payload.get("siblings", [])
+                if item.get("rfilename")
+            }
+            return siblings, endpoint
+        return None, None
+
+    def _huggingface_remote_candidates(self, local_name, siblings):
+        candidates = self.HF_FILE_CANDIDATES.get(local_name, (local_name,))
+        if siblings is None:
+            return candidates
+        present = [name for name in candidates if name in siblings]
+        return present or candidates
+
     def _try_download_huggingface(self):
         required = list(self.REQUIRED_FILES) + list(self.AUX_FILES.values())
         os.makedirs(self.data_dir, exist_ok=True)
+        siblings, listed_endpoint = self._huggingface_siblings()
+        endpoints = [listed_endpoint] if listed_endpoint else self._hf_endpoints()
         for local_name in required:
             target = os.path.join(self.data_dir, local_name)
             if os.path.exists(target) and os.path.getsize(target) > 0:
                 continue
-            remote_name = self.HF_FILE_MAP.get(local_name, local_name)
-            url = f"{self.HF_BASE_URL}/{remote_name}"
-            print(f"{self.name} Downloading {local_name} from HuggingFace...")
-            try:
-                self._download_archive(url, local_name)
-            except Exception as e:
-                print(f"{self.name} HuggingFace download failed for {local_name}: {e}")
-                if os.path.exists(target):
-                    os.remove(target)
+            downloaded = False
+            for endpoint in endpoints:
+                for remote_name in self._huggingface_remote_candidates(local_name, siblings):
+                    url = self._hf_file_url(endpoint, remote_name)
+                    print(
+                        f"{self.name} Downloading {local_name} from "
+                        f"{endpoint} file {remote_name}..."
+                    )
+                    try:
+                        self._download_file(url, local_name)
+                        downloaded = True
+                        break
+                    except Exception as e:
+                        print(
+                            f"{self.name} HuggingFace download failed for "
+                            f"{local_name} from {endpoint}/{remote_name}: {e}"
+                        )
+                if downloaded:
+                    break
+            if not downloaded:
                 return False
         self._promote_required_files()
         return not self._missing_required_files()
+
+    def _kaggle_credentials_available(self):
+        if os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY"):
+            return True
+        config_dirs = []
+        if os.environ.get("KAGGLE_CONFIG_DIR"):
+            config_dirs.append(os.environ["KAGGLE_CONFIG_DIR"])
+        config_dirs.extend(["~/.config/kaggle", "~/.kaggle"])
+        return any(
+            os.path.exists(os.path.expanduser(os.path.join(d, "kaggle.json")))
+            for d in config_dirs
+        )
 
     def _run_kaggle_download(self):
         os.makedirs(self.data_dir, exist_ok=True)
         kaggle = shutil.which("kaggle")
         if not kaggle:
+            return False
+        if not self._kaggle_credentials_available():
+            print(
+                f"{self.name} Kaggle CLI found but kaggle.json or "
+                f"KAGGLE_USERNAME/KAGGLE_KEY is missing; skipping Kaggle download."
+            )
             return False
 
         cmd = [
@@ -214,9 +361,13 @@ class HomeCreditData(TabularData):
         missing = self._missing_required_files()
         raise RuntimeError(
             f"{self.name} data files are missing: {missing}. "
-            f"Set {self.ENV_URLS} to a direct archive URL, install/configure "
+            f"Set {self.ENV_URLS} to a direct archive URL, set "
+            f"{self.ENV_HF_ENDPOINTS}=https://hf-mirror.com or HF_ENDPOINT to "
+            f"a reachable HuggingFace-compatible endpoint, install/configure "
             f"Kaggle CLI and accept the competition rules at {self.COMPETITION_URL}, "
-            f"or download the files manually from HuggingFace (jamirc/home_credit_default_risk)."
+            f"or download the files manually from HuggingFace "
+            f"(jamirc/home_credit_default_risk; application_tr.csv maps to "
+            f"application_train.csv and application_ts.csv maps to application_test.csv)."
         )
 
     def load_data(self):

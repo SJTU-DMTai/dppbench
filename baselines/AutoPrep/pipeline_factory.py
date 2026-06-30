@@ -225,20 +225,17 @@ def build_default_params(
     if op_name == "RenameColumn":
         return None
 
+    if op_name == "DropColumns":
+        if not (ctx.id_col and ctx.task_type == "tabular"):
+            return None
+        p["cols"] = [ctx.id_col]
+        return p
+
     if op_name == "CustomProcess":
-        # Stochastically choose among: drop id, drop high-null, frequency encode,
+        # Stochastically choose among: drop high-null, frequency encode,
         # passthrough (default empty params)
-        variant = rng.choice(["drop_id", "drop_null", "freq_encode", "passthrough"])
-        if variant == "drop_id":
-            cols = []
-            if ctx.id_col and ctx.task_type == "tabular":
-                cols.append(ctx.id_col)
-            if not cols:
-                return None
-            p["cols"] = cols
-            p["mode"] = "drop_columns"
-            return p
-        elif variant == "drop_null":
+        variant = rng.choice(["drop_null", "freq_encode", "passthrough"])
+        if variant == "drop_null":
             p["threshold"] = rng.choice([0.7, 0.8, 0.9])
             p["mode"] = "drop_high_null"
             return p
@@ -420,14 +417,6 @@ def build_default_params(
         p["windows"] = rng.choice([[3], [3, 7], [7, 14]])
         p["aggs"] = ["mean", "std"]
         p["time_col"] = ctx.time_col
-        return p
-
-    if op_name == "ResampleTimeSeries":
-        if not ctx.time_col or not numeric_cols:
-            return None
-        p["time_col"] = ctx.time_col
-        p["freq"] = rng.choice(["D", "W", "M"])
-        p["aggs"] = {numeric_cols[0]: ["mean"]}
         return p
 
     # ------------------------------------------------------ FE-Selection

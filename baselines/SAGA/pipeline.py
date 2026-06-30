@@ -202,18 +202,14 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["sep"] = r"\s+"
         p["regex"] = True
         return p
+    if op_name == "DropColumns":
+        if not ctx.id_col:
+            return None
+        p["cols"] = [ctx.id_col]
+        return p
     if op_name == "CustomProcess":
-        variant = rng.choice(["drop_id", "drop_null", "freq_encode", "passthrough"])
-        if variant == "drop_id":
-            cols = []
-            if ctx.id_col:
-                cols.append(ctx.id_col)
-            if not cols:
-                return None
-            p["cols"] = cols
-            p["mode"] = "drop_columns"
-            return p
-        elif variant == "drop_null":
+        variant = rng.choice(["drop_null", "freq_encode", "passthrough"])
+        if variant == "drop_null":
             p["threshold"] = 0.9
             p["mode"] = "drop_high_null"
             return p
@@ -431,14 +427,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["aggs"] = ["mean", "std"]
         p["time_col"] = ctx.time_col
         return p
-    if op_name == "ResampleTimeSeries":
-        if not ctx.time_col or not numeric_cols:
-            return None
-        p["time_col"] = ctx.time_col
-        p["freq"] = "D"
-        p["aggs"] = {numeric_cols[0]: ["mean"]}
-        return p
-
     # ---- FE-Reduction ----
     if op_name == "ReduceDimension":
         if len(numeric_cols) < 4:

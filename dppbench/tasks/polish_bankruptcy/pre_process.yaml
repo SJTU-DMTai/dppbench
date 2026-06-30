@@ -36,12 +36,11 @@ pipeline:
     prefix: ALLYEARS
     max_cols: 50
     method: agg
-- op: CustomProcess
+- op: DropColumns
   target: train
   params:
     cols:
     - _join_key
-    mode: drop_columns
 - op: CustomProcess
   target: train
   params:

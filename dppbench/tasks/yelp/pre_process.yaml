@@ -8,7 +8,7 @@ pipeline:
     item_df: $item_df
     how: left
     method: rec
-- op: CustomProcess
+- op: DropColumns
   target: interaction
   params:
     cols:
@@ -18,7 +18,6 @@ pipeline:
     - user_yelping_since
     - item_name
     - item_postal_code
-    mode: drop_columns
 - op: FilterSample
   target: interaction
   params:

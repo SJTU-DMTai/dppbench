@@ -57,6 +57,10 @@ _AUTOPREP_METADATA = {
         "description": "Rename columns.",
         "prior_features": {"const": 0.05},
     },
+    "DropColumns": {
+        "description": "Drop columns by explicit names.",
+        "prior_features": {"id": 1.0, "const": 0.1},
+    },
     "ParseDate": {
         "description": "Parse date/datetime columns (string or YYMMDD int).",
         "prior_features": {"time": 1.0, "int_date": 2.0},
@@ -178,8 +182,8 @@ _AUTOPREP_METADATA = {
         "prior_features": {"const": 0.2},
     },
     "CustomProcess": {
-        "description": "Custom processing (drop cols, drop high-null, frequency encode, passthrough).",
-        "prior_features": {"id": 1.0, "missing_max": 1.0, "categorical": 0.3},
+        "description": "Custom processing (drop high-null, frequency encode, passthrough).",
+        "prior_features": {"missing_max": 1.0, "categorical": 0.3},
     },
     "CreateFeature": {
         "description": "Create a new column via built-in operation (mean/sum/std/...).",
@@ -208,10 +212,6 @@ _AUTOPREP_METADATA = {
     "CreateRollingFeature": {
         "description": "Rolling-window aggregates.",
         "prior_features": {"time_target": 1.0},
-    },
-    "ResampleTimeSeries": {
-        "description": "Resample to time bucket and aggregate.",
-        "prior_features": {"time": 0.5},
     },
     "CreateSequence": {
         "description": "Build per-user history item sequence.",

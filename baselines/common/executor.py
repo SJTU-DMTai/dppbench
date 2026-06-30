@@ -225,8 +225,9 @@ class TrainingExecutor:
         data = self._load_data()
         if self._task_type == "tabular":
             return self._tabular_data_summary(data)
-        else:
-            return self._rec_data_summary(data)
+        if self._task_type == "graph":
+            return self._graph_data_summary(data)
+        return self._rec_data_summary(data)
 
     def _tabular_data_summary(self, data):
         train_df = data.train_df
@@ -253,6 +254,35 @@ class TrainingExecutor:
             "has_item_df": data.item_df is not None,
             "user_df_shape": list(data.user_df.shape) if data.user_df is not None else None,
             "item_df_shape": list(data.item_df.shape) if data.item_df is not None else None,
+        }
+
+    def _graph_data_summary(self, data):
+        train_df = data.train_df
+        edges = data.auxiliary_dfs.get("edges") if data.auxiliary_dfs else None
+        classes = data.auxiliary_dfs.get("classes") if data.auxiliary_dfs else None
+        feat_cols = [c for c in train_df.columns if str(c).startswith("feat_")]
+        target_col = getattr(data, "target_col", None)
+        id_col = getattr(data, "id_col", None)
+        target_distribution = {}
+        if target_col in train_df.columns:
+            target_distribution = {
+                str(k): int(v)
+                for k, v in train_df[target_col].value_counts(dropna=False).items()
+            }
+        return {
+            "task_type": "graph",
+            "train_shape": train_df.shape,
+            "columns": list(train_df.columns[:30]),
+            "feature_cols": feat_cols[:30],
+            "n_feature_cols": len(feat_cols),
+            "dtypes_summary": {str(k): int(v) for k, v in train_df.dtypes.value_counts().items()},
+            "null_ratio": float(train_df.isnull().mean().mean()),
+            "target_col": target_col,
+            "id_col": id_col,
+            "target_distribution": target_distribution,
+            "edges_shape": list(edges.shape) if edges is not None else None,
+            "classes_shape": list(classes.shape) if classes is not None else None,
+            "auxiliary_tables": {k: list(v.shape) if v is not None else None for k, v in data.auxiliary_dfs.items()},
         }
 
     def _load_data(self):

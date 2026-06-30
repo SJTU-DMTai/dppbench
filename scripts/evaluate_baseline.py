@@ -346,6 +346,11 @@ def _run_baseline_and_eval(
     t0 = time.time()
     result = runner.run()
     construct_time = time.time() - t0
+    if result.get("unsupported_task_type"):
+        error = result.get("error") or result.get("eval_error") or (
+            f"unsupported_task_type={result['unsupported_task_type']}"
+        )
+        raise RuntimeError(error)
 
     pipeline_yaml = result.get("best_pipeline_yaml")
     if not pipeline_yaml:

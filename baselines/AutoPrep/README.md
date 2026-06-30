@@ -33,7 +33,7 @@ graph `G(T)`。MPBP 在 `G(T)` 上的求解由动态规划+最大权重 spanning
 | 论文概念 | 本仓库映射 |
 |---|---|
 | 多张表 `T` | tabular: `train_df / test_df / aux_dfs`；rec: `interaction / user / item` |
-| 操作库 `O` | [`dppbench/ operators/`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/) 下 **52 个全部算子**（[`operator_catalog.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/operator_catalog.py) 加载时 `assert len(CATALOG) == 52`） |
+| 操作库 `O` | [`dppbench/ operators/`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/) 下全部算子（[`operator_catalog.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/operator_catalog.py) 加载时与共享 catalog 数量保持一致） |
 | `M_T+` 概率 `p(O|T)` | 启发式特征先验（缺失率、numeric/categorical 计数、time_col 是否存在、是否倾斜等） + 下游 AUC 在线 multiplicative-weights 更新 |
 | `M_J` 连接概率 | schema-driven：rec 主表 join 所有侧表（`JoinTable` 强制）；tabular 每个 aux_df 候选 `JoinTable` / `JoinTable`，初始 `p=0.5` |
 | Transformation tree | 每张子表按 table kind（`interaction / user_df / item_df / main_tabular / aux_df`）取专用算子白名单，以 beam search（branching K, depth m=2）展开 |
@@ -70,7 +70,7 @@ mandatory / prior_features`，其中 `prior_features` 由
 
 [`pipeline_factory.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/pipeline_factory.py)
 为这 59 个算子分别提供 context-aware 的 `build_default_params`，遇到不可用
-的上下文（例如 `ReduceDimension` 无 `target_col`、`ResampleTimeSeries` 无
+的上下文（例如 `ReduceDimension` 无 `target_col`、时序算子无
 `time_col`）会返回 `None`，让上层 solver 安全跳过。
 
 ## 4. 模块布局

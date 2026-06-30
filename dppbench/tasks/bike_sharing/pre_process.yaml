@@ -23,14 +23,13 @@ pipeline:
     - is_weekend
     - dayofyear
     drop_original: true
-- op: CustomProcess
+- op: DropColumns
   target: day
   params:
     cols:
     - casual
     - registered
     - cnt
-    mode: drop_columns
 - op: CreateFeature
   target: train
   params:
@@ -82,13 +81,12 @@ pipeline:
   params:
     threshold: 0.7
     mode: drop_high_null
-- op: CustomProcess
+- op: DropColumns
   target: train
   params:
     cols:
     - casual
     - registered
-    mode: drop_columns
 - op: LabelEncode
   target: train
 - op: HandleMV

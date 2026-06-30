@@ -12,8 +12,8 @@ class CustomProcess(TabularOp):
     def __init__(self, code=None, entry="pipeline", func=None, mode="code",
                  cols=None, threshold=0.8):
         super().__init__(name="CustomProcess")
-        if mode not in ("code", "drop_columns", "drop_high_null", "frequency_encode"):
-            raise ValueError("mode must be code/drop_columns/drop_high_null/frequency_encode")
+        if mode not in ("code", "drop_high_null", "frequency_encode"):
+            raise ValueError("mode must be code/drop_high_null/frequency_encode")
         self.code = code
         self.entry = entry or "pipeline"
         self.func = func
@@ -24,21 +24,20 @@ class CustomProcess(TabularOp):
         self.drop_cols_ = []
         self.fitted_ = False
         self._custom = CustomOp(code=code, entry=self.entry) if code else None
-        self.drop_col_types = []
 
     def get_op_description(self):
         description = """Operator name: CustomProcess
 
 Function description:
-User-defined preprocessing. Built-in modes replace old
-DropColumns, DropHighNull, and FrequencyEncode utility operators.
+User-defined preprocessing. Built-in modes cover high-null column filtering
+and frequency encoding.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
 
 Parameters:
-mode : str — code/drop_columns/drop_high_null/frequency_encode.
-cols : list[str] or None — Columns for drop_columns/frequency_encode.
+mode : str — code/drop_high_null/frequency_encode.
+cols : list[str] or None — Columns for frequency_encode.
 threshold : float — Null ratio threshold for drop_high_null.
 code, entry, func — Custom execution inputs.
 
@@ -70,17 +69,12 @@ Example YAML:
             if not isinstance(result, pd.DataFrame):
                 raise TypeError("CustomProcess func must return a pandas DataFrame")
             return result
-        if self.mode == "drop_columns":
-            existing = [c for c in (self.cols or []) if c in df.columns]
-            self.drop_col_types = existing
-            return df.drop(columns=existing)
         if self.mode == "drop_high_null":
             if not self.fitted_:
                 ratios = df.isna().mean()
                 self.drop_cols_ = ratios[ratios > self.threshold].index.tolist()
                 self.fitted_ = True
             existing = [c for c in self.drop_cols_ if c in df.columns]
-            self.drop_col_types = existing
             return df.drop(columns=existing)
         if self.mode == "frequency_encode":
             if not self.fitted_:

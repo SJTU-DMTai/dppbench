@@ -18,8 +18,8 @@ class CitibikeJcHourlyData(TabularData):
     sentinel ``birth_year=1969`` for unknown, durations of a few seconds,
     rides crossing midnight, etc. Preprocessing must wash these via
     ``CustomClean`` + ``HandleError(action=delete)`` and then bucket the events into a
-    (start_station, hour) panel via ``ResampleTimeSeries``. The downstream
-    regression target is the per-(station, hour) rental count.
+    (start_station, hour) panel in the loader. The downstream regression target
+    is the per-(station, hour) rental count.
 
     Source: https://citibikenyc.com/system-data
     """
@@ -146,9 +146,49 @@ class CitibikeJcHourlyData(TabularData):
             df["start_station_id"] = df["start_station_id"].astype(str)
             df = df[df["start_station_id"].isin(top)].reset_index(drop=True)
 
+        df = self._clean_raw_events(df)
+        df = self._build_hourly_panel(df)
+
         self.train_df = df
         self.test_df = None
         return self.train_df, self.test_df
+
+    def _clean_raw_events(self, df):
+        df = df.copy()
+        if "trip_duration" in df.columns:
+            df["trip_duration"] = pd.to_numeric(df["trip_duration"], errors="coerce")
+            df = df[df["trip_duration"].between(60, 86400, inclusive="both")]
+            q1 = df["trip_duration"].quantile(0.25)
+            q3 = df["trip_duration"].quantile(0.75)
+            iqr = q3 - q1
+            if pd.notna(iqr) and iqr > 0:
+                lo = q1 - 3.0 * iqr
+                hi = q3 + 3.0 * iqr
+                df = df[df["trip_duration"].between(lo, hi, inclusive="both")]
+        if "started_at" in df.columns:
+            start = pd.Timestamp("2022-12-15")
+            end = pd.Timestamp("2023-02-15")
+            df = df[df["started_at"].between(start, end, inclusive="both")]
+        return df.reset_index(drop=True)
+
+    def _build_hourly_panel(self, df):
+        required = {"started_at", "start_station_id", "trip_duration"}
+        missing = sorted(required - set(df.columns))
+        if missing:
+            raise ValueError(f"Missing required Citi Bike columns for hourly panel: {missing}")
+        df = df.copy()
+        df["_hour_ts"] = df["started_at"].dt.floor("h")
+        out = (
+            df.groupby(["start_station_id", "_hour_ts"], dropna=False)
+            .agg(
+                trip_duration_mean=("trip_duration", "mean"),
+                trip_duration_sum=("trip_duration", "sum"),
+                rental_count=("trip_duration", "size"),
+            )
+            .reset_index()
+        )
+        out["_hour_idx"] = pd.to_datetime(out["_hour_ts"]).astype("datetime64[ns]").astype("int64") // 10 ** 9
+        return out.sort_values(["start_station_id", "_hour_idx"], kind="mergesort").reset_index(drop=True)
 
     def split(self, val_ratio=0.2, seed=42):
         df = self.train_df
@@ -166,7 +206,7 @@ class CitibikeJcHourlyData(TabularData):
 
         if self._sort_col not in df.columns:
             raise ValueError(
-                f"Expected '{self._sort_col}' from ResampleTimeSeries before split."
+                f"Expected '{self._sort_col}' from hourly panel built in load_data()."
             )
         df = df.sort_values(self._sort_col, kind="mergesort").reset_index(drop=True)
         unique_ts = np.sort(df[self._sort_col].unique())

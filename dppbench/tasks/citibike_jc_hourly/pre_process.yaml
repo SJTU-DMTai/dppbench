@@ -1,36 +1,4 @@
 pipeline:
-- op: HandleOutlier
-  target: train
-  params:
-    cols:
-    - trip_duration
-    method: iqr
-    threshold: 3.0
-    action: delete
-    flag_col: trip_duration_outlier
-- op: HandleError
-  target: train
-  params:
-    action: delete
-    rules:
-    - col: trip_duration
-      min: 60
-      max: 86400
-    - col: started_at
-      min: '2022-12-15'
-      max: '2023-02-15'
-- op: ResampleTimeSeries
-  target: train
-  params:
-    time_col: started_at
-    freq: H
-    group_cols:
-    - start_station_id
-    aggs:
-      trip_duration:
-      - mean
-      - sum
-    count_col: rental_count
 - op: ExtractDateTimeFeature
   target: train
   params:

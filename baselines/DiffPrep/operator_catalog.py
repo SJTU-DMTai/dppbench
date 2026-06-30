@@ -44,6 +44,7 @@ SLOT_KIND: Dict[str, str] = {
     # ---- soft: mostly column-wise or tensor-friendly transforms ----
     "AlignSchema": "soft",
     "RenameColumn": "soft",
+    "DropColumns": "hard",
     "CastType": "soft",
     "ParseDate": "soft",
     "ParseNumber": "soft",
@@ -92,7 +93,6 @@ SLOT_KIND: Dict[str, str] = {
     "CreateFeature": "hard",
     "CreateLagFeature": "hard",
     "CreateRollingFeature": "hard",
-    "ResampleTimeSeries": "hard",
     "CreateSequence": "hard",
     "TruncateSequence": "hard",
     "CustomFE": "hard",

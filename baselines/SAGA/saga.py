@@ -61,9 +61,13 @@ def _infer_rec_context(data_name: str, summary: dict, data) -> DataContext:
             elif t == "text":
                 text_cols.append(c)
 
-    # target column
-    target_col = None
+    # target column: prefer the task/model contract over name heuristics.
+    feat_cfg = getattr(data, "model_cfg", {}).get("feature", {}) or {}
+    configured_target = feat_cfg.get("target_col")
+    target_col = configured_target if configured_target in interaction_df.columns else None
     for cand in ("rating", "stars", "label", "click", "is_click"):
+        if target_col is not None:
+            break
         if cand in interaction_df.columns:
             target_col = cand
             break
@@ -138,6 +142,42 @@ def _infer_tabular_context(data_name: str, summary: dict, data) -> DataContext:
         time_col=time_col,
         aux_dfs=aux_names,
         sentinel_rules=sentinel_rules,
+    )
+
+
+def _infer_graph_context(data_name: str, summary: dict, data) -> DataContext:
+    train_df = data.train_df
+    target_col = getattr(data, "target_col", None)
+    id_col = getattr(data, "id_col", None)
+
+    numeric_cols, categorical_cols = [], []
+    for c in train_df.columns:
+        if c in (target_col, id_col):
+            continue
+        if train_df[c].dtype.kind in ("i", "u", "f"):
+            numeric_cols.append(c)
+        else:
+            categorical_cols.append(c)
+
+    time_col = None
+    for cand in ("time_step", "timestamp", "time"):
+        if cand in train_df.columns:
+            time_col = cand
+            break
+
+    aux_names = list((data.auxiliary_dfs or {}).keys())
+    aux_names = [a for a in aux_names if data.auxiliary_dfs.get(a) is not None]
+    return DataContext(
+        task_type="graph",
+        data_name=data_name,
+        numeric_cols=numeric_cols,
+        categorical_cols=categorical_cols,
+        list_cols=[],
+        text_cols=[],
+        target_col=target_col,
+        id_col=id_col,
+        time_col=time_col,
+        aux_dfs=aux_names,
     )
 
 
@@ -245,6 +285,8 @@ class SAGA:
         summary = evaluator.get_data_summary()
         if evaluator.task_type == "rec":
             return _infer_rec_context(self.data_name, summary, data)
+        if evaluator.task_type == "graph":
+            return _infer_graph_context(self.data_name, summary, data)
         return _infer_tabular_context(self.data_name, summary, data)
 
     # ------------------------------------------------------------------
@@ -275,6 +317,28 @@ class SAGA:
             print(f"[SAGA] target={ctx.target_col}  time={ctx.time_col}  "
                   f"id={ctx.id_col}  aux={ctx.aux_dfs}")
             print("=" * 60)
+
+        if ctx.task_type == "graph":
+            duration = time.time() - t0
+            error = "unsupported_task_type=graph: SAGA graph search is not implemented"
+            if self.verbose:
+                print(f"[SAGA] {error}")
+            return {
+                "best_pipeline_yaml": None,
+                "best_pipeline_path": None,
+                "best_fitness": None,
+                "best_metrics": {},
+                "eval_error": error,
+                "is_legal": False,
+                "final_pipeline_ops": [],
+                "top_k": [],
+                "n_unique_evaluations": evaluator.n_unique_evaluations,
+                "logical_history": [],
+                "duration_seconds": duration,
+                "output_dir": self.output_dir,
+                "unsupported_task_type": "graph",
+                "error": error,
+            }
 
         # ---- Logical search ----
         logical = LogicalSearch(

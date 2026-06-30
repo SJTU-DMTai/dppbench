@@ -126,7 +126,7 @@ def diffprep_make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> O
 # ---------------------------------------------------------------------------
 _DIFFPREP_CUSTOM_DEFAULT_OPS = {
     "ScaleFeature", "HandleOutlier", "HandleError", "JoinTable", "ParseDate",
-    "CreateLagFeature", "CreateRollingFeature", "ResampleTimeSeries",
+    "CreateLagFeature", "CreateRollingFeature",
     "TransformPower",
 }
 
@@ -219,18 +219,6 @@ def _diffprep_custom_default_params(op_name: str, ctx: DataContext) -> Optional[
             "aggs": ["mean"],
             "group_cols": None,
             "time_col": ctx.time_col,
-        }
-
-    if op_name == "ResampleTimeSeries":
-        # Needs a real datetime column.
-        if ctx.time_col is None:
-            return None
-        return {
-            "time_col": ctx.time_col,
-            "freq": "H",
-            "aggs": {},
-            "group_cols": [],
-            "count_col": None,
         }
 
     if op_name == "TransformPower":

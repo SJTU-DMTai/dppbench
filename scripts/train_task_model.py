@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--data_dir",
         type=str,
-        default=None,
+        default="/mnt/sdb/dengjiale/dppbench/data",
         help=(
             "Optional dataset root. When set, task files are stored under "
             "<data_dir>/<data_name>/data and std_test under "
@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=None,
+        default="/mnt/sdb/dengjiale/dppbench/output",
         help=(
             "Optional output root. When set, logs and structured metrics are "
             "written under <output_dir>/baseline/<data_name>/<model>."

@@ -67,12 +67,11 @@ pipeline:
     group_cols:
     - station
     time_col: _sort_idx
-- op: CustomProcess
+- op: DropColumns
   target: station_meta
   params:
     cols:
     - PM2.5
-    mode: drop_columns
 - op: JoinTable
   target: train
   params:

@@ -137,14 +137,7 @@ def rec_cold_start_user_filter(task_name, model_cfg=None):
     return {"min_train_interactions": min_train_interactions}
 
 # Time-series tasks expose a numeric chronological column on
-# ``self._sort_col`` after ``load_data()`` (except citibike & nyc_taxi
-# which create that column only inside ResampleTimeSeries). For those,
-# fall back to a raw timestamp column.
-TIMESERIES_FALLBACK_TIME_COL = {
-    "citibike_jc_hourly": "started_at",
-    "nyc_taxi_hourly": "tpep_pickup_datetime",
-}
-
+# ``self._sort_col`` after ``load_data()``.
 
 def _import_class(dotted):
     module_path, class_name = dotted.rsplit(".", 1)
@@ -240,12 +233,9 @@ def build_timeseries(task_name, data, out_dir, dry_run):
     # Resolve the ordering column.
     sort_col = getattr(data, "_sort_col", None)
     if sort_col is None or sort_col not in df.columns:
-        sort_col = TIMESERIES_FALLBACK_TIME_COL.get(task_name)
-        if sort_col is None or sort_col not in df.columns:
-            raise ValueError(
-                f"{task_name}: cannot find chronological sort column "
-                f"(tried _sort_col + {TIMESERIES_FALLBACK_TIME_COL.get(task_name)})"
-            )
+        raise ValueError(
+            f"{task_name}: cannot find chronological sort column '{sort_col}'"
+        )
 
     df = df.sort_values(sort_col, kind="mergesort").reset_index(drop=True)
     unique_ts = pd.Series(df[sort_col].unique()).sort_values().to_numpy()

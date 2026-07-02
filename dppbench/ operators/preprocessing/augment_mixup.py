@@ -45,13 +45,25 @@ Example:
 2    5.0    0.5
 
 Example YAML:
-  - op: AugmentMixup
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: AugmentMixup
+    prev:
+    - s0
     params:
       label_col: label
-      cols: [x1, x2]
+      cols:
+      - x1
+      - x2
       alpha: 0.2
       n_samples: 100
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

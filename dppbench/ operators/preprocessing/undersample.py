@@ -44,11 +44,21 @@ Example:
 1  3      1
 
 Example YAML:
-  - op: Undersample
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: Undersample
+    prev:
+    - s0
     params:
       target_col: label
       method: random
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

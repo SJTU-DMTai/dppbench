@@ -36,12 +36,25 @@ Example:
 2        2       5          5.0             1
 
 Example YAML:
-  - op: AggregateGroupFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: AggregateGroupFeature
+    prev:
+    - s0
     params:
       group_cols: user_id
-      agg_cols: [amount]
-      agg_funcs: [mean, count]
+      agg_cols:
+      - amount
+      agg_funcs:
+      - mean
+      - count
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

@@ -14,8 +14,20 @@ the very small number of historic call sites (e.g.
 - ``LLMCaller``
 - ``get_operator_descriptions`` / ``get_operator_summary`` /
   ``get_operator_detail``
+- ``Pipeline`` / ``PipelineStep`` / ``DataContext`` and shared legality /
+  evaluation helpers used by all pipeline-search baselines.
 """
 from .executor import TrainingExecutor
+from .pipeline import (
+    DataContext,
+    Pipeline,
+    PipelineStep,
+    assign_dag_structure,
+    build_default_params,
+    make_step,
+)
+from .pipeline_constraints import ensure_tabular_tail, is_legal, repair
+from .evaluator import EvaluationResult, PipelineEvaluator
 from .op_registry import (
     get_operator_descriptions,
     get_operator_summary,

@@ -49,13 +49,23 @@ Example:
 3        2       11       0
 
 Example YAML:
-  - op: SampleNegative
-    target: interaction
+dag:
+  sources:
+  - id: s0
+    table: interaction
+  ops:
+  - id: o1
+    op: SampleNegative
+    prev:
+    - s0
     params:
       user_col: user_id
       item_col: item_id
       target_col: rating
       n_negatives: 1
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

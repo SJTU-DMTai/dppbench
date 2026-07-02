@@ -15,8 +15,13 @@ from typing import List, Optional
 
 import numpy as np
 
-from baselines.SAGA.pipeline import DataContext, Pipeline, PipelineStep
-from baselines.SAGA.pipeline_constraints import repair as repair_pipeline
+from baselines.common.pipeline import (
+    DataContext,
+    Pipeline,
+    PipelineStep,
+    assign_dag_structure,
+)
+from baselines.common.pipeline_constraints import repair as repair_pipeline
 
 from .operator_catalog import CATALOG, OpCategory
 
@@ -97,6 +102,7 @@ def repairs_to_pipeline(reps: List[Repair], ctx: DataContext,
                         rng: Optional[_random.Random] = None) -> Pipeline:
     pipe = Pipeline(steps=[r.to_pipeline_step() for r in reps])
     repair_pipeline(pipe, ctx.task_type, ctx)
+    assign_dag_structure(pipe, ctx, rng or _random.Random())
     return pipe
 
 

@@ -8,7 +8,7 @@ For each operator we either:
   * return ``None`` to signal the operator is **not applicable** to the
     current context (e.g. ``ReduceDimension`` without enough numeric columns).
 
-Pipeline / PipelineStep / DataContext are reused from ``baselines.SAGA.pipeline``
+Pipeline / PipelineStep / DataContext are reused from ``baselines.common.pipeline``
 (they are pure data structures and do not depend on the SAGA catalog).
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import copy
 import random as _random
 from typing import Optional
 
-from baselines.SAGA.pipeline import DataContext, Pipeline, PipelineStep
+from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
 
 from .operator_catalog import CATALOG, OpCategory
 
@@ -232,21 +232,19 @@ def build_default_params(
         return p
 
     if op_name == "CustomProcess":
-        # Stochastically choose among: drop high-null, frequency encode,
-        # passthrough (default empty params)
-        variant = rng.choice(["drop_null", "freq_encode", "passthrough"])
+        # Stochastically choose between drop high-null and passthrough.
+        variant = rng.choice(["drop_null", "passthrough"])
         if variant == "drop_null":
             p["threshold"] = rng.choice([0.7, 0.8, 0.9])
             p["mode"] = "drop_high_null"
             return p
-        elif variant == "freq_encode":
-            if not categorical_cols:
-                return None
-            p["cols"] = _pick_some(categorical_cols, rng, 1, 5)
-            p["mode"] = "frequency_encode"
-            return p
-        else:
-            return p
+        return p
+
+    if op_name == "FrequencyEncode":
+        if not categorical_cols:
+            return None
+        p["cols"] = _pick_some(categorical_cols, rng, 1, 5)
+        return p
 
     if op_name == "CustomTransform":
         return p

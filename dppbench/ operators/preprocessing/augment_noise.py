@@ -50,12 +50,23 @@ Example:
 3  20.0
 
 Example YAML:
-  - op: AugmentNoise
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: AugmentNoise
+    prev:
+    - s0
     params:
-      cols: [temp]
+      cols:
+      - temp
       noise_scale: 0.05
       n_copies: 1
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

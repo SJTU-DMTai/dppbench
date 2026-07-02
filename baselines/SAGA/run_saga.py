@@ -26,7 +26,7 @@ from baselines.SAGA.saga import SAGA  # noqa: E402
 
 BASE_DIR = os.path.join(_ROOT, "dppbench", "tasks")
 SUPPORTED = ["home_credit", "fraud_detection", "amazon_beauty",
-             "movielens", "yelp", "tenrec"]
+             "movielens", "yelp", "tenrec", "bondora"]
 
 
 def parse_args():
@@ -51,6 +51,8 @@ def parse_args():
     parser.add_argument("--no_fast_train", dest="fast_train", action="store_false",
                         default=None,
                         help="Disable search-time fast training overrides.")
+    parser.add_argument("--skip_final_eval", action="store_true",
+                        help="Skip full-data final evaluation after search; useful for smoke tests.")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -81,6 +83,7 @@ def main():
         small_n=args.small_n,
         fast_train=args.fast_train,
         config_path=args.config,
+        skip_final_eval=args.skip_final_eval,
     )
     result = saga.run()
 

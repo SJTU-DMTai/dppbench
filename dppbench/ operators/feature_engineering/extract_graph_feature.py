@@ -40,12 +40,24 @@ Example:
 2  u2  i2                 1                 2
 
 Example YAML:
-  - op: ExtractGraphFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ExtractGraphFeature
+    prev:
+    - s0
     params:
       source_col: user_id
       target_col: item_id
-      features: [degree, pagerank]
+      features:
+      - degree
+      - pagerank
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

@@ -37,10 +37,21 @@ Example:
 1  40.0      1
 
 Example YAML:
-  - op: FilterSample
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: FilterSample
+    prev:
+    - s0
     params:
-      subset: [age]
+      subset:
+      - age
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

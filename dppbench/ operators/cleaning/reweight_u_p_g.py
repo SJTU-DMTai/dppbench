@@ -106,11 +106,21 @@ Example:
 2            2.0
 
 Example YAML:
-  - op: ReweightUPG
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ReweightUPG
+    prev:
+    - s0
     params:
       cluster_col: cluster
       pred_probs: pred_prob
       threshold: 0.9
+  train:
+    prev:
+    - o1
 """
         return description.strip()

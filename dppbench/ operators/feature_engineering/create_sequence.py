@@ -56,14 +56,24 @@ Example:
 4        2      202          2       [201]
 
 Example YAML:
-  - op: CreateSequence
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: interaction
+  ops:
+  - id: o1
+    op: CreateSequence
+    prev:
+    - s0
     params:
       user_col: user_id
       item_col: item_id
       time_col: timestamp
       seq_col: item_id_seq
       max_len: 50
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

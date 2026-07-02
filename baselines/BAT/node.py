@@ -12,7 +12,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from baselines.SAGA.pipeline import PipelineStep
+from baselines.common.pipeline import PipelineStep
 
 if TYPE_CHECKING:
     from .action import BaseAction

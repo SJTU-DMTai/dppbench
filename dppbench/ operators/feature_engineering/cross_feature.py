@@ -37,11 +37,23 @@ Example:
 1   SH  android  SH_android
 
 Example YAML:
-  - op: CrossFeature
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CrossFeature
+    prev:
+    - s0
     params:
-      cols: [city, device]
+      cols:
+      - city
+      - device
       output_col: city_device
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

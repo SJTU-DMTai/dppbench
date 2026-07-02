@@ -38,10 +38,20 @@ Example:
 1  4  2    2.0
 
 Example YAML:
-  - op: CustomFE
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CustomFE
+    prev:
+    - s0
     params:
       func: null
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

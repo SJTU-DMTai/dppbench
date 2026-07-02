@@ -145,7 +145,7 @@ movielens / yelp / tenrec`。其它参数：
 ```bash
 # 1. catalog 完整性
 python -c "from baselines.AutoPrep.operator_catalog import CATALOG; \
-  assert len(CATALOG)==58, len(CATALOG); print('58 ops OK')"
+  print(f'operator catalog OK: {len(CATALOG)} ops')"
 
 # 2. 静态 import
 python -c "from baselines.AutoPrep.auto_prep import AutoPrep; \

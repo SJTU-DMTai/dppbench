@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.SAGA.evaluator import EvaluationResult, PipelineEvaluator
+from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 
 
 class CtxPipeEvaluator(PipelineEvaluator):

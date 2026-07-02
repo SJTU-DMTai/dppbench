@@ -56,13 +56,26 @@ Example:
 1  2.0  0.0      1  0.707107
 
 Example YAML:
-  - op: ReduceDimension
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ReduceDimension
+    prev:
+    - s0
     params:
-      cols: [x1, x2, x3]
+      cols:
+      - x1
+      - x2
+      - x3
       method: pca
       n_components: 2
       prefix: pc_
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

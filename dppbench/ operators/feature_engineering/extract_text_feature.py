@@ -43,13 +43,25 @@ Example:
 1 good service                0                1                   1
 
 Example YAML:
-  - op: ExtractTextFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ExtractTextFeature
+    prev:
+    - s0
     params:
       cols: review
       method: tfidf
       max_features: 100
-      ngram_range: [1, 2]
+      ngram_range:
+      - 1
+      - 2
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

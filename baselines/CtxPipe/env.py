@@ -23,14 +23,14 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from baselines.SAGA.pipeline import Pipeline, make_step
-from baselines.SAGA.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import Pipeline, make_step
+from baselines.common.pipeline_constraints import is_legal, repair
 
 from .context import ContextEncoder
 from .operator_catalog import operators_for_task
 
 if TYPE_CHECKING:
-    from baselines.SAGA.pipeline import DataContext
+    from baselines.common.pipeline import DataContext
 
     from .evaluator import CtxPipeEvaluator
 

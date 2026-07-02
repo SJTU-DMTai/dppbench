@@ -1,11 +1,11 @@
 """Discretize the trained continuous pipeline into a YAML-serialisable
-:class:`baselines.SAGA.pipeline.Pipeline`.
+:class:`baselines.common.pipeline.Pipeline`.
 
 For each slot we ``argmax`` over the slot's beta row to pick a single
 candidate operator. Mandatory slots already have one-hot beta so the
 argmax simply returns the forced op. ``IDENTITY`` picks become no-ops.
 
-After collecting the per-slot ops we apply :func:`baselines.SAGA.
+After collecting the per-slot ops we apply :func:`baselines.common.
 pipeline_constraints.repair` to inject mandatory operators that may have
 been omitted (e.g. ``LabelEncode`` + ``HandleMV`` for tabular tail) and
 to reorder according to the canonical category ranks.
@@ -17,8 +17,8 @@ from typing import List, Optional
 
 import torch
 
-from baselines.SAGA.pipeline import DataContext, Pipeline
-from baselines.SAGA.pipeline_constraints import repair
+from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.pipeline_constraints import repair
 
 from .search_space import ContinuousPipeline
 from .slot_planner import IDENTITY, Slot, diffprep_make_step

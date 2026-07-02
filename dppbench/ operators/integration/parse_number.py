@@ -38,10 +38,21 @@ Example:
 1     NaN
 
 Example YAML:
-  - op: ParseNumber
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ParseNumber
+    prev:
+    - s0
     params:
-      cols: [amount]
+      cols:
+      - amount
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

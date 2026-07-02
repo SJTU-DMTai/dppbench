@@ -46,12 +46,22 @@ Example:
 1   35   False
 
 Example YAML:
-  - op: CastType
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CastType
+    prev:
+    - s0
     params:
       col_dtypes:
         age: int32
         is_vip: bool
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

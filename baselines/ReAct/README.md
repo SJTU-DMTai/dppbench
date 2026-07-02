@@ -6,7 +6,7 @@ dppbench preprocessing-pipeline benchmark.
 
 The agent runs a single linear Thought -> Action -> Observation trajectory.
 At every turn the LLM submits a **complete preprocessing pipeline YAML**
-(matching the schema of `dppbench/tasks/<task>/pre_process.yaml`); the
+(matching the schema of `dppbench/tasks/<task>/prepare.yaml`); the
 system resets the sandbox, executes the full pipeline, trains the
 downstream model on a small validation sample, and feeds back
 

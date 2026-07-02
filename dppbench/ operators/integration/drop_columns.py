@@ -35,10 +35,21 @@ Example:
 1      20       1
 
 Example YAML:
-  - op: DropColumns
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: DropColumns
+    prev:
+    - s0
     params:
-      cols: [id]
+      cols:
+      - id
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

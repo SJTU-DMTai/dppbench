@@ -1,0 +1,82 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ExtractDateTimeFeature
+    prev:
+    - s0
+    params:
+      cols:
+      - TransactionDT
+      features:
+      - day_of_week
+      - hour_of_day
+      drop_original: true
+  - id: o2
+    op: TransformPower
+    prev:
+    - o1
+    params:
+      cols:
+      - TransactionAmt
+      output_cols:
+      - TransactionAmt_log
+      method: log
+  - id: o3
+    op: RenameColumn
+    prev:
+    - o2
+    params:
+      rename_map:
+        TransactionAmt: trans_amt
+  - id: o4
+    op: FrequencyEncode
+    prev:
+    - o3
+    params:
+      cols:
+      - card1
+      - card2
+      - card3
+      - card5
+      - addr1
+      - addr2
+      - P_emaildomain
+      - R_emaildomain
+  - id: o5
+    op: HashEncode
+    prev:
+    - o4
+    params:
+      cols:
+      - card1
+      n_buckets: 4096
+  - id: o6
+    op: CustomProcess
+    prev:
+    - o5
+    params:
+      threshold: 0.9
+      mode: drop_high_null
+  - id: o7
+    op: DropColumns
+    prev:
+    - o6
+    params:
+      cols:
+      - TransactionID
+  - id: o8
+    op: LabelEncode
+    prev:
+    - o7
+  - id: o9
+    op: HandleMV
+    prev:
+    - o8
+    params:
+      method: median
+  train:
+    prev:
+    - o9

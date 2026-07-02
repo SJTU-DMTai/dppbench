@@ -80,12 +80,24 @@ Example:
 >>> op2 = HandleMV(cols=['city'], na_values=[""], action='mark')
 
 Example YAML:
-  - op: HandleMV
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: HandleMV
+    prev:
+    - s0
     params:
-      cols: [age, city]
+      cols:
+      - age
+      - city
       action: impute
       method: mode
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

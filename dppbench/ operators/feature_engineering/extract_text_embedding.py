@@ -39,12 +39,22 @@ Example:
 1  bad service           1.0
 
 Example YAML:
-  - op: ExtractTextEmbedding
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ExtractTextEmbedding
+    prev:
+    - s0
     params:
       cols: review
       method: hash
       dim: 32
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

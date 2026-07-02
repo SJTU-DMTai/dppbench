@@ -44,14 +44,29 @@ Example:
 2        1    3      30                15.0
 
 Example YAML:
-  - op: CreateRollingFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CreateRollingFeature
+    prev:
+    - s0
     params:
       target_col: amount
-      windows: [3, 7]
-      aggs: [mean, sum]
-      group_cols: [user_id]
+      windows:
+      - 3
+      - 7
+      aggs:
+      - mean
+      - sum
+      group_cols:
+      - user_id
       time_col: day
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

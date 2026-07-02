@@ -13,10 +13,10 @@ from .executor import TrainingExecutor
 from .op_registry import get_operator_descriptions, get_operator_summary
 
 
-SYSTEM_PROMPT = """You are a data preprocessing optimization agent. Your goal is to improve the model's performance (AUC) by modifying the preprocessing pipeline (pre_process.yaml).
+SYSTEM_PROMPT = """You are a data preprocessing optimization agent. Your goal is to improve the model's performance (AUC) by modifying the preprocessing pipeline (prepare.yaml).
 
 ## Constraints
-- You can ONLY modify the pre_process.yaml file.
+- You can ONLY modify the prepare.yaml file.
 - You CANNOT modify the raw data or the model parameters.
 - You should use operators from the available operator library.
 
@@ -28,14 +28,14 @@ You must respond with exactly ONE of the following actions in each turn:
    <action>THINK</action>
    <content>Your analysis and reasoning here</content>
 
-2. **MODIFY_YAML**: Modify the pre_process.yaml file.
+2. **MODIFY_YAML**: Modify the prepare.yaml file.
    Format:
    <action>MODIFY_YAML</action>
    <content>
    The complete new YAML content (will replace the entire file)
    </content>
 
-3. **TRAIN**: Execute training with the current pre_process.yaml and observe results.
+3. **TRAIN**: Execute training with the current prepare.yaml and observe results.
    Format:
    <action>TRAIN</action>
    <content>Reason for triggering training</content>
@@ -77,7 +77,7 @@ def build_context_message(executor, op_summary, history):
 ## Model Configuration
 {yaml.dump(model_cfg, default_flow_style=False)}
 
-## Current pre_process.yaml
+## Current prepare.yaml
 ```yaml
 {current_yaml}
 ```
@@ -199,16 +199,31 @@ class PreprocOptAgent:
 
         try:
             parsed = yaml.safe_load(yaml_content)
-            if not isinstance(parsed, dict) or "pipeline" not in parsed:
-                self._append_observation("Error: YAML must contain a 'pipeline' key at the top level. Please fix and retry.")
+            dag = parsed.get("dag") if isinstance(parsed, dict) else None
+            if (
+                not isinstance(dag, dict)
+                or not isinstance(dag.get("sources"), list)
+                or not isinstance(dag.get("ops"), list)
+                or not isinstance(dag.get("train"), dict)
+                or "prev" not in dag["train"]
+            ):
+                self._append_observation(
+                    "Error: YAML must use the prepare.yaml DAG schema "
+                    "with dag.sources, dag.ops[*].prev, and dag.train.prev. "
+                    "Please fix and retry."
+                )
                 return
         except yaml.YAMLError as e:
             self._append_observation(f"Error: Invalid YAML syntax: {e}. Please fix and retry.")
             return
 
         self.executor.write_yaml(yaml_content)
-        self._log(f"[MODIFY_YAML] Pipeline updated ({len(parsed['pipeline'])} steps)")
-        self._append_observation(f"Working pre_process.yaml has been updated successfully with {len(parsed['pipeline'])} pipeline steps (original file is unchanged). You can now run TRAIN to see results.")
+        n_ops = len(parsed["dag"].get("ops", []))
+        self._log(f"[MODIFY_YAML] Pipeline updated ({n_ops} DAG ops)")
+        self._append_observation(
+            f"Working prepare.yaml has been updated successfully with {n_ops} "
+            "DAG ops (original file is unchanged). You can now run TRAIN to see results."
+        )
 
     def _handle_train(self, content):
         self._log(f"[TRAIN] Running training pipeline...")
@@ -248,7 +263,7 @@ Analyze the results and decide whether to:
             obs = f"""Training FAILED with error:
 {result['error']}
 
-Please fix the pre_process.yaml and try again (MODIFY_YAML)."""
+Please fix the prepare.yaml and try again (MODIFY_YAML)."""
 
         self._append_observation(obs)
 
@@ -304,7 +319,7 @@ Please fix the pre_process.yaml and try again (MODIFY_YAML)."""
             self._log(f"\n{'='*60}")
             self._log(f"Optimization complete. Best AUC: {self.best_metrics.get('auc', 0):.4f}")
             self._log(f"Best pipeline saved to: {output_path}")
-            self._log(f"Original pre_process.yaml is unchanged.")
+            self._log(f"Original prepare.yaml is unchanged.")
             self._log(f"Total LLM tokens used: {self.llm.total_tokens_used}")
             self._log(f"{'='*60}")
 

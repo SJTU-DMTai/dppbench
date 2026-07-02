@@ -48,12 +48,23 @@ Example:
 2    B      1        0.75
 
 Example YAML:
-  - op: TargetEncode
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: TargetEncode
+    prev:
+    - s0
     params:
-      cols: [city]
+      cols:
+      - city
       target_col: label
       smoothing: 1.0
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

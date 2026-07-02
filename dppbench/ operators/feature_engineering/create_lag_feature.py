@@ -37,13 +37,26 @@ Example:
 2        1    3      30          20.0
 
 Example YAML:
-  - op: CreateLagFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CreateLagFeature
+    prev:
+    - s0
     params:
       target_col: amount
-      lags: [1, 7]
-      group_cols: [user_id]
+      lags:
+      - 1
+      - 7
+      group_cols:
+      - user_id
       time_col: day
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

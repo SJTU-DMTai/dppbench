@@ -30,9 +30,9 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.CtxPipe.evaluator import CtxPipeEvaluator
-from baselines.SAGA.pipeline import DataContext, Pipeline
-from baselines.SAGA.pipeline_constraints import is_legal
-from baselines.SAGA.saga import _infer_rec_context, _infer_tabular_context
+from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.pipeline_constraints import is_legal
+from baselines.common.context import _infer_rec_context, _infer_tabular_context
 
 from .evaluator import AutoPrepEvaluator
 from .operator_catalog import CATALOG

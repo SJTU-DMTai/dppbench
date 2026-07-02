@@ -44,10 +44,21 @@ Example:
 2             0             1
 
 Example YAML:
-  - op: OneHotEncode
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: OneHotEncode
+    prev:
+    - s0
     params:
-      cols: [education]
+      cols:
+      - education
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

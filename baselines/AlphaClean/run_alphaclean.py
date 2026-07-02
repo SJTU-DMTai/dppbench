@@ -26,8 +26,22 @@ if _ROOT not in sys.path:
 from baselines.AlphaClean.alphaclean import AlphaClean  # noqa: E402
 
 BASE_DIR = os.path.join(_ROOT, "dppbench", "tasks")
-SUPPORTED = ["home_credit", "fraud_detection", "amazon_beauty",
+SUPPORTED = ["home_credit", "fraud_detection", "bondora", "amazon_beauty",
              "movielens", "yelp", "tenrec"]
+
+
+def _resolve_device(gpu_id):
+    if gpu_id is None or gpu_id < 0:
+        return "cpu"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    try:
+        import torch  # noqa: F401
+        if not torch.cuda.is_available():
+            print(f"[warn] gpu_id={gpu_id} requested but CUDA not available; falling back to CPU.")
+            return "cpu"
+    except Exception:
+        return "cpu"
+    return "cuda:0"
 
 
 def parse_args():
@@ -52,6 +66,8 @@ def parse_args():
     p.add_argument("--pruner_refit_every", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--output_dir", type=str, default=None)
+    p.add_argument("--gpu_id", type=int, default=-1,
+                   help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--no_fast_train", dest="fast_train", action="store_false",
                    default=None)
@@ -63,6 +79,8 @@ def main():
     task_dir = os.path.join(BASE_DIR, args.data_name)
     if not os.path.isdir(task_dir):
         raise SystemExit(f"Task directory not found: {task_dir}")
+
+    device = _resolve_device(args.gpu_id)
 
     runner = AlphaClean(
         task_dir=task_dir,
@@ -81,6 +99,7 @@ def main():
         seed=args.seed,
         output_dir=args.output_dir,
         verbose=not args.quiet,
+        device=device,
         fast_train=args.fast_train,
         config_path=args.config,
     )
@@ -99,6 +118,8 @@ def main():
     print(f"Pruner:           {result.get('pruner_path')}")
     print(f"Unique evals:     {result.get('n_unique_evaluations')}")
     print(f"Duration:         {result.get('duration_seconds'):.1f}s")
+    print(f"Device:           {device}")
+    print(f"GPU id:           {args.gpu_id}")
     print(f"Output dir:       {result.get('output_dir')}")
     print("\nSearch history:")
     for rec in result.get("search_history", []):

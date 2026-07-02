@@ -41,11 +41,26 @@ Example:
 1  2024-02-05 10:00:00     2024         2       5       10
 
 Example YAML:
-  - op: ExtractDateTimeFeature
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ExtractDateTimeFeature
+    prev:
+    - s0
     params:
-      cols: [ts]
-      features: [year, month, day, hour]
+      cols:
+      - ts
+      features:
+      - year
+      - month
+      - day
+      - hour
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

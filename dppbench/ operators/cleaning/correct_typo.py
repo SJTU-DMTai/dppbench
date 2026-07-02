@@ -41,13 +41,23 @@ Example:
 2  Shenzhen
 
 Example YAML:
-  - op: CorrectTypo
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CorrectTypo
+    prev:
+    - s0
     params:
       cols: city
       mapping:
         Shanghi: Shanghai
         Shenzen: Shenzhen
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

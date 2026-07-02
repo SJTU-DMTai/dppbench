@@ -54,12 +54,23 @@ Example:
 2  2.197225
 
 Example YAML:
-  - op: TransformPower
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: TransformPower
+    prev:
+    - s0
     params:
-      cols: [amount]
+      cols:
+      - amount
       method: log
       offset: 1.0
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

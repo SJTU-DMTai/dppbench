@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from baselines.SAGA.pipeline import Pipeline
+    from baselines.common.pipeline import Pipeline
 
     from .agent import DQNAgent
     from .env import PipelineEnv

@@ -39,11 +39,23 @@ Example:
 2        2          2
 
 Example YAML:
-  - op: SortRows
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: SortRows
+    prev:
+    - s0
     params:
-      by: [user_id, timestamp]
+      by:
+      - user_id
+      - timestamp
       ascending: true
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

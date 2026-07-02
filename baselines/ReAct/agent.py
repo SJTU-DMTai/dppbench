@@ -29,14 +29,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from baselines.SAGA.pipeline import (
+from baselines.common.pipeline import (
     DataContext,
     Pipeline,
     PipelineStep,
     build_default_params,
     default_target_for,
 )
-from baselines.SAGA.pipeline_constraints import is_legal
+from baselines.common.pipeline_constraints import is_legal
 from baselines.DeepPrep.tree_agent import ChainParseError, chain_to_steps
 from baselines.DeepPrep.sandbox import Sandbox
 from baselines.DeepPrep.llm_client import LLMClient
@@ -248,7 +248,7 @@ class ReActAgent:
 
     # ------------------------------------------------------------------
     def _ordering_hint(self) -> str:
-        from baselines.SAGA.pipeline_constraints import _TABULAR_ORDER, _REC_ORDER
+        from baselines.common.pipeline_constraints import _TABULAR_ORDER, _REC_ORDER
         from baselines.common.operator_catalog import CATALOG
         order = _REC_ORDER if self.ctx.task_type == "rec" else _TABULAR_ORDER
         by_cat: dict = {}

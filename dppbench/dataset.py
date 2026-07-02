@@ -1,5 +1,6 @@
 import importlib.util
 import importlib.machinery
+import inspect
 import os
 import re
 import sys
@@ -60,6 +61,282 @@ class BaseData:
 
     def load_data(self):
         raise NotImplementedError("load_data method not implemented")
+
+    @staticmethod
+    def _relation_dag_spec(config):
+        dag = config.get("dag")
+        if not isinstance(dag, dict):
+            return None
+        train = dag.get("train")
+        if (
+            isinstance(dag.get("sources"), list)
+            and isinstance(dag.get("ops"), list)
+            and isinstance(train, dict)
+            and "prev" in train
+        ):
+            return dag
+        return None
+
+    @staticmethod
+    def _relation_source_entry(entry):
+        if isinstance(entry, str):
+            return entry, None
+        if isinstance(entry, dict):
+            source_id = entry.get("id")
+            table_name = (
+                entry.get("table")
+                or entry.get("df")
+                or entry.get("source")
+                or entry.get("name")
+            )
+            return source_id, table_name
+        raise ValueError(f"Invalid relation DAG source entry {entry!r}")
+
+    def _relation_dag_sources(self, spec, available_sources):
+        sources = spec.get("sources")
+        if not isinstance(sources, list):
+            raise ValueError("Relation DAG sources must be a list")
+
+        default_names = [name for name in available_sources if name != "train"]
+        seen = set()
+        source_ids = []
+        source_tables = {}
+        for entry in sources:
+            source_id, table_name = self._relation_source_entry(entry)
+            if not isinstance(source_id, str) or not re.fullmatch(r"s\d+", source_id):
+                raise ValueError(
+                    f"Relation DAG source id must match s<number>: {source_id!r}"
+                )
+            if source_id in seen:
+                raise ValueError(f"Relation DAG source {source_id!r} is duplicated")
+
+            if table_name is None:
+                source_idx = int(source_id[1:])
+                if source_idx < 0 or source_idx >= len(default_names):
+                    raise ValueError(f"Relation DAG source {source_id!r} is unavailable")
+                table_name = default_names[source_idx]
+            if not isinstance(table_name, str) or table_name not in available_sources:
+                raise ValueError(
+                    f"Relation DAG source {source_id!r} references unavailable "
+                    f"table {table_name!r}; available: {list(available_sources)}"
+                )
+
+            seen.add(source_id)
+            source_ids.append(source_id)
+            source_tables[source_id] = available_sources[table_name]
+        return source_ids, source_tables
+
+    def _normalise_relation_ref(self, ref, op_ids, source_ids):
+        if ref == "train":
+            return "train"
+        if not isinstance(ref, str):
+            raise ValueError(f"Invalid DAG node reference {ref!r}")
+        if ref in source_ids or ref in op_ids:
+            return ref
+        raise ValueError(f"Invalid DAG node reference {ref!r}")
+
+    def _relation_dag_ops(self, spec, source_ids):
+        ops = spec.get("ops") or []
+        if not isinstance(ops, list):
+            raise ValueError("Relation DAG 'ops' must be a list")
+
+        normalised = []
+        seen = set()
+        for idx, node in enumerate(ops):
+            if not isinstance(node, dict) or "op" not in node:
+                raise ValueError(f"Relation DAG op #{idx} must contain 'op'")
+            op_id = node.get("id")
+            if op_id is None:
+                raise ValueError(f"Relation DAG op #{idx} must contain 'id'")
+            if not isinstance(op_id, str) or not op_id:
+                raise ValueError(f"Relation DAG op #{idx} has invalid id {op_id!r}")
+            if op_id == "train":
+                raise ValueError("Relation DAG op id cannot be 'train'")
+            if op_id in source_ids:
+                raise ValueError(
+                    f"Relation DAG op id {op_id!r} conflicts with a source id"
+                )
+            if op_id in seen:
+                raise ValueError(f"Relation DAG op id {op_id!r} is duplicated")
+            step = dict(node)
+            step["id"] = op_id
+            seen.add(op_id)
+            normalised.append(step)
+        return normalised
+
+    def _relation_dag_edges_from_prev(self, spec, ops, source_ids):
+        op_ids = [step["id"] for step in ops]
+        edges = []
+        for step in ops:
+            prev = step.get("prev")
+            if not isinstance(prev, list) or not prev:
+                raise ValueError(
+                    f"Relation DAG op {step['id']!r} must contain non-empty prev"
+                )
+            for raw_src in prev:
+                src = self._normalise_relation_ref(raw_src, op_ids, source_ids)
+                if src == "train":
+                    raise ValueError("Relation DAG op prev cannot reference train")
+                edges.append((src, step["id"]))
+
+        train = spec.get("train")
+        train_prev = train.get("prev") if isinstance(train, dict) else None
+        if not isinstance(train_prev, list) or len(train_prev) != 1:
+            raise ValueError("Relation DAG train.prev must contain exactly one node")
+        src = self._normalise_relation_ref(train_prev[0], op_ids, source_ids)
+        if src == "train":
+            raise ValueError("Relation DAG train.prev cannot reference train")
+        edges.append((src, "train"))
+        return edges
+
+    def _toposort_relation_dag(self, op_ids, source_ids, edges):
+        op_refs = list(op_ids)
+        op_set = set(op_refs)
+        source_set = set(source_ids)
+        deps = {ref: set() for ref in op_refs}
+        children = {ref: set() for ref in op_refs}
+        incoming = {ref: [] for ref in op_refs}
+        incoming["train"] = []
+
+        for src, dst in edges:
+            if src not in source_set and src not in op_set:
+                raise ValueError(f"Relation DAG references unknown source node {src!r}")
+            if dst != "train" and dst not in op_set:
+                raise ValueError(f"Relation DAG references unknown destination {dst!r}")
+            if dst == "train":
+                incoming["train"].append(src)
+            else:
+                incoming[dst].append(src)
+                if src in op_set:
+                    deps[dst].add(src)
+                    children[src].add(dst)
+
+        if len(incoming["train"]) != 1:
+            raise ValueError("Relation DAG must have exactly one edge into train")
+        for ref in op_refs:
+            if not incoming[ref]:
+                raise ValueError(f"Relation DAG {ref} has no input edge")
+
+        ready = [ref for ref in op_refs if not deps[ref]]
+        order = []
+        while ready:
+            ref = ready.pop(0)
+            order.append(ref)
+            for child in sorted(children[ref]):
+                deps[child].discard(ref)
+                if not deps[child]:
+                    ready.append(child)
+        if len(order) != len(op_refs):
+            raise ValueError("Relation DAG contains a cycle")
+
+        reachable = set()
+        for ref in order:
+            if any(src in source_set or src in reachable for src in incoming[ref]):
+                reachable.add(ref)
+        if len(reachable) != len(op_refs):
+            missing = sorted(set(op_refs) - reachable)
+            raise ValueError(f"Relation DAG has nodes unreachable from sources: {missing}")
+
+        reverse = {ref: [] for ref in op_refs + ["train"]}
+        for src, dst in edges:
+            reverse[dst].append(src)
+        ancestors = set()
+        stack = list(reverse["train"])
+        while stack:
+            ref = stack.pop()
+            if ref in ancestors:
+                continue
+            ancestors.add(ref)
+            if ref in op_set:
+                stack.extend(reverse[ref])
+        unused = sorted(set(op_refs) - ancestors)
+        if unused:
+            raise ValueError(f"Relation DAG has nodes disconnected from train: {unused}")
+
+        return order, incoming
+
+    def _bind_relation_secondary_inputs(self, op_cls, params, secondary_dfs, op_name):
+        if not secondary_dfs:
+            return params
+        signature = inspect.signature(op_cls.__init__)
+        accepted = set(signature.parameters)
+        params = dict(params)
+
+        if (
+            params.get("method") == "rec"
+            and "user_df" in accepted
+            and "item_df" in accepted
+        ):
+            user_col = params.get("user_col", "user_id")
+            item_col = params.get("item_col", "item_id")
+            for side_df in secondary_dfs:
+                if user_col in side_df.columns and "user_df" not in params:
+                    params["user_df"] = side_df
+                elif item_col in side_df.columns and "item_df" not in params:
+                    params["item_df"] = side_df
+                elif "item_df" not in params:
+                    params["item_df"] = side_df
+                elif "user_df" not in params:
+                    params["user_df"] = side_df
+                else:
+                    raise ValueError(
+                        f"Relation DAG op {op_name} received too many rec side inputs"
+                    )
+            return params
+
+        if "other_dfs" in accepted:
+            if "other_dfs" in params:
+                raise ValueError(f"Relation DAG op {op_name} already sets other_dfs")
+            params["other_dfs"] = secondary_dfs
+        elif "aux_df" in accepted:
+            if len(secondary_dfs) != 1:
+                raise ValueError(
+                    f"Relation DAG op {op_name} accepts one auxiliary input, "
+                    f"but received {len(secondary_dfs)}"
+                )
+            if "aux_df" in params:
+                raise ValueError(f"Relation DAG op {op_name} already sets aux_df")
+            params["aux_df"] = secondary_dfs[0]
+        else:
+            raise ValueError(
+                f"Relation DAG op {op_name} has {len(secondary_dfs) + 1} inputs, "
+                "but its constructor does not accept aux_df or other_dfs"
+            )
+        return params
+
+    def _run_relation_dag(self, config, available_sources, transform_fn):
+        spec = self._relation_dag_spec(config)
+        source_ids, source_tables = self._relation_dag_sources(spec, available_sources)
+        ops = self._relation_dag_ops(spec, source_ids)
+        op_ids = [step["id"] for step in ops]
+        edges = self._relation_dag_edges_from_prev(spec, ops, source_ids)
+        order, incoming = self._toposort_relation_dag(op_ids, source_ids, edges)
+        values = dict(source_tables)
+        op_by_id = {step["id"]: step for step in ops}
+
+        total = len(order)
+        for step_no, ref in enumerate(order, start=1):
+            step = op_by_id[ref]
+            op_name = step["op"]
+            input_dfs = [values[src] for src in incoming[ref]]
+            raw_params = step.get("params", {}) or {}
+            params = {k: self._resolve_param(v) for k, v in raw_params.items()}
+
+            op_cls = self._load_op(op_name)
+            params = self._bind_relation_secondary_inputs(
+                op_cls, params, input_dfs[1:], op_name
+            )
+            op = op_cls(**params)
+            df = input_dfs[0]
+            new_df = transform_fn(df, op, op_name)
+            values[ref] = new_df
+            print(
+                f"DAG step {step_no}/{total}: {op_name} {ref}, "
+                f"shape: {df.shape} -> {new_df.shape}"
+            )
+
+        sink_ref = incoming["train"][0]
+        return values[sink_ref]
 
     @staticmethod
     def _std_test_dir(task_data_dir):
@@ -425,20 +702,28 @@ class RecData(BaseData):
             )
         return filtered.reset_index(drop=True)
 
-    def _run_pipeline_step(self, step, step_idx, total_steps):
-        op_name = step["op"]
-        target = step.get("target", "interaction")
-        raw_params = step.get("params", {}) or {}
-        params = {k: self._resolve_param(v) for k, v in raw_params.items()}
-        op_cls = self._load_op(op_name)
-        op = op_cls(**params)
+    def _relation_dag_available_sources(self):
+        sources = {}
+        if self.interaction_df is not None:
+            sources["interaction"] = self.interaction_df
+        if self.user_df is not None:
+            sources["user"] = self.user_df
+        if self.item_df is not None:
+            sources["item"] = self.item_df
+        return sources
+
+    def _run_pre_process_relation_dag(self, config):
+        available_sources = self._relation_dag_available_sources()
+        final_df = self._run_relation_dag(
+            config, available_sources,
+            lambda df, op, op_name: self._transform_rec_dag_df(df, op, op_name),
+        )
+        self.interaction_df = final_df
+        self._remap_ids()
+
+    def _transform_rec_dag_df(self, df, op, op_name):
         applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
         uses_train_history = getattr(op, "USES_TRAIN_HISTORY_FOR_STD_TEST", False)
-        attr = f"{target}_df"
-        if not hasattr(self, attr) or getattr(self, attr) is None:
-            raise ValueError(f"Target '{target}' has no DataFrame on {self.name}")
-        df = getattr(self, attr)
-
         if "__split__" in df.columns and uses_train_history:
             new_df = op.transform(df)
         elif "__split__" in df.columns:
@@ -483,39 +768,24 @@ class RecData(BaseData):
         else:
             new_df = op.transform(df)
 
-        setattr(self, attr, new_df)
-
         if hasattr(op, 'output_col_types') and op.output_col_types:
             self.register_col_types(op.output_col_types)
-
         if hasattr(op, 'drop_col_types') and op.drop_col_types:
             for col_name in op.drop_col_types:
                 self.col_types.pop(col_name, None)
-
-        print(f"Step {step_idx}/{total_steps}: {op_name} on {target}_df, shape: {df.shape} -> {new_df.shape}")
+        return new_df
 
     def run_pre_process(self, yaml_path):
         if not self._has_std_test:
             self.load_std_test_frozen()
         with open(yaml_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        steps = config.get("pipeline", [])
-
-        pre_remap_targets = {"item", "user"}
-        pre_steps = [s for s in steps if s.get("target", "interaction") in pre_remap_targets]
-        post_steps = [s for s in steps if s.get("target", "interaction") not in pre_remap_targets]
-
-        total = len(steps)
-        step_no = 0
-        for step in pre_steps:
-            step_no += 1
-            self._run_pipeline_step(step, step_no, total)
-
-        self._remap_ids()
-
-        for step in post_steps:
-            step_no += 1
-            self._run_pipeline_step(step, step_no, total)
+        if self._relation_dag_spec(config) is None:
+            raise ValueError(
+                "Preprocessing YAML must use prev-only DAG schema: "
+                "dag.sources, dag.ops[*].prev, and dag.train.prev"
+            )
+        self._run_pre_process_relation_dag(config)
 
     def split(self):
         """Return ``{"train": ..., "test": ...}``.
@@ -646,115 +916,93 @@ class TabularData(BaseData):
         print(f"  [std_test] loaded {self._std_test_size} held-out rows")
         return True
 
+    def _relation_dag_available_sources(self):
+        sources = {}
+        if self.train_df is not None:
+            sources["main"] = self.train_df
+            sources["train"] = self.train_df
+        for name, df in self.auxiliary_dfs.items():
+            if df is not None:
+                sources[name] = df
+        if self.test_df is not None:
+            sources["test"] = self.test_df
+        return sources
+
+    def _run_pre_process_relation_dag(self, config):
+        available_sources = self._relation_dag_available_sources()
+        final_df = self._run_relation_dag(
+            config, available_sources,
+            lambda df, op, op_name: self._transform_tabular_dag_df(df, op, op_name),
+        )
+        self.train_df = final_df
+
+    def _transform_tabular_dag_df(self, df, op, op_name):
+        applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
+        if (
+            "__split__" in df.columns
+            and (df["__split__"] == "std_test").any()
+        ):
+            if getattr(op, "FIT_ON_TRAIN_ONLY", False):
+                parts = []
+                for split_name in ["train", "val", "test", "std_test"]:
+                    group = df[df["__split__"] == split_name]
+                    if len(group) == 0:
+                        continue
+                    if split_name == "std_test" and not applies_to_std_test:
+                        parts.append(group.copy())
+                        continue
+                    g_body = group.drop(columns="__split__")
+                    trans = op.transform(g_body).copy()
+                    trans["__split__"] = split_name
+                    parts.append(trans)
+                new_df = pd.concat(parts, ignore_index=True)
+            elif applies_to_std_test:
+                marker = df["__split__"].copy()
+                body = df.drop(columns="__split__")
+                new_body = op.transform(body)
+                if len(new_body) == len(marker):
+                    new_body = new_body.copy()
+                    new_body["__split__"] = marker.values
+                    new_df = new_body
+                else:
+                    print(
+                        f"  [std_test] op {op_name} changed row count "
+                        f"({len(body)} -> {len(new_body)}); falling back "
+                        f"to splitwise transform to preserve std-test."
+                    )
+                    parts = []
+                    for split_name in ["train", "val", "test", "std_test"]:
+                        group = df[df["__split__"] == split_name]
+                        if len(group) == 0:
+                            continue
+                        g_body = group.drop(columns="__split__")
+                        trans = op.transform(g_body).copy()
+                        trans["__split__"] = split_name
+                        parts.append(trans)
+                    new_df = pd.concat(parts, ignore_index=True)
+            else:
+                std_part = df[df["__split__"] == "std_test"].copy()
+                other_part = df[df["__split__"] != "std_test"]
+                other_body = other_part.drop(columns="__split__")
+                new_other = op.transform(other_body).copy()
+                if "__split__" not in new_other.columns:
+                    new_other["__split__"] = "train"
+                new_df = pd.concat([new_other, std_part], ignore_index=True)
+        else:
+            new_df = op.transform(df)
+        return new_df
+
     def run_pre_process(self, yaml_path):
         if not self._has_std_test:
             self.load_std_test_frozen()
         with open(yaml_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        steps = config.get("pipeline", [])
-        for i, step in enumerate(steps, start=1):
-            op_name = step["op"]
-            target = step.get("target", "train")
-            raw_params = step.get("params", {}) or {}
-            params = {k: self._resolve_param(v) for k, v in raw_params.items()}
-            op_cls = self._load_op(op_name)
-            op = op_cls(**params)
-            applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
-
-            if target == "both":
-                targets = ["train", "test"]
-            else:
-                targets = [target]
-
-            for t in targets:
-                if t == "train":
-                    df = self.train_df
-                elif t == "test":
-                    df = self.test_df
-                else:
-                    df = self.auxiliary_dfs.get(t)
-
-                if df is None:
-                    continue
-
-                # When operating on the train_df with std-test rows packed
-                # in via __split__, run the op only on the train slice for
-                # train-only operators; otherwise transform the whole df so
-                # std-test rows are aligned with train post-transform.
-                if (
-                    t == "train"
-                    and "__split__" in df.columns
-                    and (df["__split__"] == "std_test").any()
-                ):
-                    if getattr(op, "FIT_ON_TRAIN_ONLY", False):
-                        # Stateful encoders/statistical transforms must learn
-                        # their mapping from training rows only, then reuse it
-                        # for held-out rows to avoid std-test leakage.
-                        parts = []
-                        for split_name in ["train", "val", "test", "std_test"]:
-                            group = df[df["__split__"] == split_name]
-                            if len(group) == 0:
-                                continue
-                            if split_name == "std_test" and not applies_to_std_test:
-                                parts.append(group.copy())
-                                continue
-                            g_body = group.drop(columns="__split__")
-                            trans = op.transform(g_body).copy()
-                            trans["__split__"] = split_name
-                            parts.append(trans)
-                        new_df = pd.concat(parts, ignore_index=True)
-                    elif applies_to_std_test:
-                        # Drop the marker, transform together, re-mark.
-                        marker = df["__split__"].copy()
-                        body = df.drop(columns="__split__")
-                        new_body = op.transform(body)
-                        # If the op preserves index/length we can re-attach
-                        # the marker; else fall back to "all rows are train".
-                        if len(new_body) == len(marker):
-                            new_body = new_body.copy()
-                            new_body["__split__"] = marker.values
-                            new_df = new_body
-                        else:
-                            print(
-                                f"  [std_test] op {op_name} changed row count "
-                                f"({len(body)} -> {len(new_body)}); falling back "
-                                f"to splitwise transform to preserve std-test."
-                            )
-                            parts = []
-                            for split_name in ["train", "val", "test", "std_test"]:
-                                group = df[df["__split__"] == split_name]
-                                if len(group) == 0:
-                                    continue
-                                g_body = group.drop(columns="__split__")
-                                trans = op.transform(g_body)
-                                trans = trans.copy()
-                                trans["__split__"] = split_name
-                                parts.append(trans)
-                            new_df = pd.concat(parts, ignore_index=True)
-                    else:
-                        # Train-only op: transform train rows only, keep
-                        # std-test rows (and any val/test markers) intact.
-                        std_part = df[df["__split__"] == "std_test"].copy()
-                        other_part = df[df["__split__"] != "std_test"]
-                        other_body = other_part.drop(columns="__split__")
-                        new_other = op.transform(other_body).copy()
-                        if "__split__" not in new_other.columns:
-                            new_other["__split__"] = "train"
-                        new_df = pd.concat(
-                            [new_other, std_part], ignore_index=True
-                        )
-                else:
-                    new_df = op.transform(df)
-
-                if t == "train":
-                    self.train_df = new_df
-                elif t == "test":
-                    self.test_df = new_df
-                else:
-                    self.auxiliary_dfs[t] = new_df
-
-            shape_before = self.train_df.shape if target in ("train", "both") else (self.test_df.shape if self.test_df is not None else None)
-            print(f"Step {i}/{len(steps)}: {op_name} on {target}, train shape: {self.train_df.shape}")
+        if self._relation_dag_spec(config) is None:
+            raise ValueError(
+                "Preprocessing YAML must use prev-only DAG schema: "
+                "dag.sources, dag.ops[*].prev, and dag.train.prev"
+            )
+        self._run_pre_process_relation_dag(config)
 
     def split(self, val_ratio=0.2, seed=42):
         from sklearn.model_selection import train_test_split

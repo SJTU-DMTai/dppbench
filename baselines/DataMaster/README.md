@@ -33,9 +33,9 @@ The LLM never writes Python. For every black node it emits a single
 `<solution>Op1(arg=value) --> Op2(...) --> Terminate</solution>` chain
 drawn from the SAGA 77-op catalog. The chain is parsed via
 `baselines.DeepPrep.tree_agent.chain_to_steps` and then serialised back to
-the same berka-style YAML used by every other baseline
-(`pipeline:` list of `{op, target, params}`), so the result is directly
-consumable by `data.run_pre_process(yaml_path)`.
+the same prev-only DAG YAML used by every other baseline
+(`dag.sources`, `dag.ops[*].prev`, `dag.train.prev`), so the result is
+directly consumable by `data.run_pre_process(yaml_path)`.
 
 ## Files
 
@@ -71,7 +71,7 @@ python -m baselines.DataMaster.run_data_master \
 
 The runner emits four artefacts under `outputs/DataMaster/<data_name>/`:
 
-* `best_pipeline.yaml` — final pipeline in berka YAML format.
+* `best_pipeline.yaml` — final pipeline in prev-only DAG YAML format.
 * `agent_log.json` — full LLM transcript, solution attempts, scheduler config.
 * `tree.json` — every node in the DataTree (UCB stats, fitness, error, findings).
 * `memory.json` — GlobalMemory log.

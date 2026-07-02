@@ -55,11 +55,22 @@ Example:
 2  1.224745
 
 Example YAML:
-  - op: ScaleFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ScaleFeature
+    prev:
+    - s0
     params:
-      cols: [amount]
+      cols:
+      - amount
       method: standard
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

@@ -45,11 +45,24 @@ Example:
 1       2    20.0
 
 Example YAML:
-  - op: AlignSchema
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: AlignSchema
+    prev:
+    - s0
     params:
-      column_mapping: {uid: user_id}
-      dtype_mapping: {user_id: string, amount: float}
+      column_mapping:
+        uid: user_id
+      dtype_mapping:
+        user_id: string
+        amount: float
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

@@ -29,15 +29,23 @@ Each turn you MUST output exactly ONE action. Two action shapes are allowed:
   (A) submit a new pipeline:
       <thought>your reasoning about what to keep/change vs the previous attempt</thought>
       <pipeline>
-      pipeline:
-        - op: OpName1
-          target: ...
-          params:
-            ...
-        - op: OpName2
-          target: ...
-          params:
-            ...
+      dag:
+        sources:
+          - id: s0
+            table: main
+        ops:
+          - id: step_1
+            op: OpName1
+            prev: [s0]
+            params:
+              ...
+          - id: step_2
+            op: OpName2
+            prev: [step_1]
+            params:
+              ...
+        train:
+          prev: [step_2]
       </pipeline>
 
   (B) terminate the loop and accept the best version so far:
@@ -45,13 +53,25 @@ Each turn you MUST output exactly ONE action. Two action shapes are allowed:
       <action>Terminate</action>
 
 The content INSIDE <pipeline>...</pipeline> MUST be valid YAML that follows
-the EXACT schema of `dppbench/tasks/<task>/pre_process.yaml`:
+the EXACT schema of `dppbench/tasks/<task>/prepare.yaml`:
 
-    pipeline:
-      - op: <OperatorName>
-        target: <interaction|train|test|both>
-        params:
-          <key>: <value>
+    dag:
+      sources:
+        - id: s0
+          table: <train|interaction|user|item|auxiliary table name>
+      ops:
+        - id: <unique_op_node_id>
+          op: <OperatorName>
+          prev: [<source_id_or_previous_op_id>, ...]
+          params:
+            <key>: <value>
+      train:
+        prev: [<single_source_or_op_id>]
+
+Each op's output is implicitly named by its `id`. Multi-input operators use
+the order in `prev`: the first predecessor is the primary table and remaining
+predecessors are side inputs such as aux/user/item tables. Do not put input or
+output table names in operator params.
 
 The pipeline you write each turn is the FULL pipeline (NOT a delta on top
 of the previous one). The system will:
@@ -76,9 +96,11 @@ highest-fitness attempt across all turns as the final pipeline.
   the operator chain.
 - Parameters that depend on the dataset (column lists, target columns, etc.)
   may be omitted; the system will fill them with safe defaults.
-- The accumulated pipeline MUST contain operators in non-decreasing
-  category-rank order (the "Canonical Category Order" in the user message).
-  Out-of-order pipelines are rejected with a legality_error.
+- The accumulated pipeline MUST contain ops in non-decreasing category-rank
+  order when read in topological order (the "Canonical Category Order" in the
+  user message). Out-of-order DAGs are rejected with a legality_error.
+- Every declared source/op must reach `train`; disconnected DAG fragments are
+  rejected with a legality_error.
 - Reflect on the validation-set metrics from the previous observation when
   deciding what to change in the next pipeline.
 """
@@ -124,7 +146,7 @@ Order is:
 
 # YAML Schema (FULL pipeline each turn)
 Your <pipeline> block MUST be valid YAML matching the schema of
-`dppbench/tasks/<task>/pre_process.yaml`. For reference, here is what a
+`dppbench/tasks/<task>/prepare.yaml`. For reference, here is what a
 hand-written reference pipeline looks like for a similar task:
 ```yaml
 {yaml_example.strip()}

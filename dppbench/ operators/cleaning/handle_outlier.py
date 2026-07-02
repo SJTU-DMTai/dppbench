@@ -126,12 +126,23 @@ Example:
 1  2
 
 Example YAML:
-  - op: HandleOutlier
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: HandleOutlier
+    prev:
+    - s0
     params:
-      cols: [x]
+      cols:
+      - x
       method: iqr
       threshold: 3.0
       action: delete
+  train:
+    prev:
+    - o1
 """
         return description.strip()

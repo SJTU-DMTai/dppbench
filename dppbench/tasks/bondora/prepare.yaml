@@ -1,0 +1,114 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: country_stats
+  ops:
+  - id: o1
+    op: CreateFeature
+    prev:
+    - s0
+    params:
+      source_cols:
+      - issued_amount
+      - combined_income
+      output_col: AMT_TO_INCOME
+      method: ratio
+  - id: o2
+    op: CreateFeature
+    prev:
+    - o1
+    params:
+      source_cols:
+      - issued_amount
+      - initial_loan_duration
+      output_col: PAYMENT_PER_MONTH
+      method: ratio
+  - id: o3
+    op: TransformPower
+    prev:
+    - o2
+    params:
+      cols:
+      - issued_amount
+      output_cols:
+      - AMT_LOG
+      method: log
+  - id: o4
+    op: ScaleFeature
+    prev:
+    - o3
+    params:
+      cols:
+      - issued_amount
+      - PAYMENT_PER_MONTH
+      method: robust
+  - id: o5
+    op: JoinTable
+    prev:
+    - o4
+    - s1
+    params:
+      key_col: country
+      prefix: COUNTRY
+      max_cols: 20
+      method: agg
+  - id: o6
+    op: HandleError
+    prev:
+    - o5
+    params:
+      cols:
+      - country
+      rule: not_in
+      allowed_values:
+      - EE
+      - FI
+      - ES
+      - SK
+      action: repair
+      repair_method: set_missing
+  - id: o7
+    op: FrequencyEncode
+    prev:
+    - o6
+    params:
+      cols:
+      - country
+      - customer_risk_rating
+  - id: o8
+    op: CustomProcess
+    prev:
+    - o7
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o9
+    op: LabelEncode
+    prev:
+    - o8
+  - id: o10
+    op: HandleMV
+    prev:
+    - o9
+    params:
+      method: median
+  - id: o11
+    op: ScaleFeature
+    prev:
+    - o10
+    params:
+      pattern: COUNTRY_
+      method: maxabs
+  - id: o12
+    op: Undersample
+    prev:
+    - o11
+    params:
+      target_col: $target_col
+      n_neighbors: 3
+      method: enn
+  train:
+    prev:
+    - o12

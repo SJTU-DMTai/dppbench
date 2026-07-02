@@ -18,8 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from baselines.SAGA.pipeline import DataContext, Pipeline
-from baselines.SAGA.evaluator import EvaluationResult, PipelineEvaluator
+from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 
 from .parameter_sampler import ParameterSampler
 from .pruner import LearnedPruner

@@ -169,6 +169,7 @@ _add("AugmentNoise", OpCategory.AUGMENT, valid_targets=("train",), needs_context
 _add("CustomProcess", OpCategory.CLEAN_VALUE, needs_context=True)
 
 # S4. Feature Engineering
+_add("FrequencyEncode", OpCategory.FEATURE_GEN, needs_context=True)
 _add("CreateFeature", OpCategory.FEATURE_GEN, needs_context=True)
 _add("CreatePolynomialFeature", OpCategory.FEATURE_GEN, needs_context=True)
 _add("CrossFeature", OpCategory.FEATURE_GEN, needs_context=True)

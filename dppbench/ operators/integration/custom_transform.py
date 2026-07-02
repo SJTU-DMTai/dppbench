@@ -44,13 +44,23 @@ Example:
 1      20       40
 
 Example YAML:
-  - op: CustomTransform
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CustomTransform
+    prev:
+    - s0
     params:
-      code: |
+      code: |-
         def pipeline(df):
             df["amount2"] = df["amount"] * 2
             return df
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

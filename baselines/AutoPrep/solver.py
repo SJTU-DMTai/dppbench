@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Optional
 
-from baselines.SAGA.pipeline import DataContext, Pipeline, PipelineStep
-from baselines.SAGA.pipeline_constraints import repair
+from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
+from baselines.common.pipeline_constraints import repair
 
 from .operator_catalog import CATALOG
 from .pipeline_factory import build_default_params, make_step

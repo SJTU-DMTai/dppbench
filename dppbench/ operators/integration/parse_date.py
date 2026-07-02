@@ -55,13 +55,24 @@ Example:
 1        NaT        NaN         NaN       NaN
 
 Example YAML:
-  - op: ParseDate
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ParseDate
+    prev:
+    - s0
     params:
-      cols: [date]
+      cols:
+      - date
       mode: string
       target_format: '%Y-%m-%d'
       drop_original: false
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

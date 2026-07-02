@@ -9,7 +9,7 @@ branches can be reverted via ``<backtrack/>``.
 
 Operator parsing is intentionally permissive: the LLM only needs to write
 ``OpName`` (optionally followed by ``(arg=value, ...)``) and the agent fills
-in the dataset-aware default parameters via ``baselines.SAGA.pipeline.make_step``.
+in the dataset-aware default parameters via ``baselines.common.pipeline.make_step``.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from baselines.common.operator_catalog import CATALOG, operators_for_task
-from baselines.SAGA.pipeline import (
+from baselines.common.pipeline import (
     DataContext,
     Pipeline,
     PipelineStep,
@@ -31,7 +31,7 @@ from baselines.SAGA.pipeline import (
     default_target_for,
     make_step,
 )
-from baselines.SAGA.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline_constraints import is_legal, repair
 
 from .llm_client import LLMClient
 from .operator_catalog import format_op_descriptions

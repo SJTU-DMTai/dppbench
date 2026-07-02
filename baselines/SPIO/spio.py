@@ -20,9 +20,9 @@ from baselines.common.config import (
 )
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
-from baselines.SAGA.pipeline import DataContext, Pipeline, PipelineStep
-from baselines.SAGA.pipeline_constraints import is_legal, repair
-from baselines.SAGA.saga import _infer_rec_context, _infer_tabular_context
+from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
+from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.context import _infer_rec_context, _infer_tabular_context
 
 from .agent import SPIOAgent, SPIORunResult
 from .evaluator import SPIOEvaluator

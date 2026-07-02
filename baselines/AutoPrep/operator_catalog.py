@@ -182,8 +182,12 @@ _AUTOPREP_METADATA = {
         "prior_features": {"const": 0.2},
     },
     "CustomProcess": {
-        "description": "Custom processing (drop high-null, frequency encode, passthrough).",
-        "prior_features": {"missing_max": 1.0, "categorical": 0.3},
+        "description": "Custom processing (drop high-null, passthrough).",
+        "prior_features": {"missing_max": 1.0},
+    },
+    "FrequencyEncode": {
+        "description": "Frequency-count features for high-cardinality categorical columns.",
+        "prior_features": {"categorical": 0.5},
     },
     "CreateFeature": {
         "description": "Create a new column via built-in operation (mean/sum/std/...).",

@@ -1,6 +1,6 @@
 """DeepPrep operator catalog.
 
-Re-exports the shared 58-operator catalog so the LLM agent has access to the
+Re-exports the shared operator catalog so the LLM agent has access to the
 same operators living in ``dppbench/operators/`` (cleaning + encoding +
 feature-gen + sequence + split + sampling + ...). This guarantees coverage
 of both **tabular** and **recommendation** tasks.

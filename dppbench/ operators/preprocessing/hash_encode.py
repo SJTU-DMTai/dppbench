@@ -50,12 +50,23 @@ Example:
 2  user_42        5
 
 Example YAML:
-  - op: HashEncode
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: HashEncode
+    prev:
+    - s0
     params:
-      cols: [card1]
+      cols:
+      - card1
       n_buckets: 4096
       prefix: h_
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

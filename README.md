@@ -40,7 +40,7 @@ The default PyTorch wheel index in `requirements.txt` targets CUDA 11.8. If your
 
 DPPBench currently includes tabular, time-series, graph, and recommendation tasks under `dppbench/tasks/`. Each task directory provides:
 
-- `pre_process.yaml`: the default DSL preparation pipeline.
+- `prepare.yaml`: the default DSL preparation pipeline.
 - `model.yaml`: model choices, feature configuration, and training parameters.
 - `<task>_data.py`: the dataset loader and task-specific data preparation logic.
 - `std_test/`: the frozen standard test split when it has been generated.

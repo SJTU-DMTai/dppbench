@@ -136,7 +136,8 @@ SOFT_OP_FNS = {
     "Clip":            soft_clip,
     "DiscretizeFeature":       soft_bucketize,
     "LabelEncode":     soft_label_encode,
-    "CustomProcess": soft_frequency_encode,
+    "CustomProcess": soft_identity,
+    "FrequencyEncode": soft_frequency_encode,
     "TargetEncode":  soft_target_encode,
     "ExtractDateTimeFeature": soft_datetime_features,
 }

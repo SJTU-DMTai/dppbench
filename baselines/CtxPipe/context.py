@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from baselines.SAGA.pipeline import DataContext
+    from baselines.common.pipeline import DataContext
 
 
 CONTEXT_DIM = 32

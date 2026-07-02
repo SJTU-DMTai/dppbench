@@ -57,12 +57,26 @@ Example:
 2     0
 
 Example YAML:
-  - op: OrdinalEncode
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: OrdinalEncode
+    prev:
+    - s0
     params:
-      cols: [type]
+      cols:
+      - type
       ordering:
-        type: [junior, classic, gold]
+        type:
+        - junior
+        - classic
+        - gold
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

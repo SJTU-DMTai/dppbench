@@ -4,6 +4,7 @@ import zipfile
 import pandas as pd
 
 from ...dataset import TabularData
+from .._excel_cache import read_excel_cached
 
 
 class DefaultCreditData(TabularData):
@@ -88,7 +89,7 @@ class DefaultCreditData(TabularData):
 
         xls_path = os.path.join(self.data_dir, self.XLS_NAME)
         # The first row is a category header; the actual column names are on row 1.
-        df = pd.read_excel(xls_path, header=1)
+        df = read_excel_cached(xls_path, header=1)
         df = df.rename(columns={"default payment next month": "TARGET"})
 
         # Build monthly_history aux table (wide -> long).

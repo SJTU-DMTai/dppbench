@@ -46,11 +46,23 @@ Example:
 2   3  Carol
 
 Example YAML:
-  - op: Deduplicate
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: Deduplicate
+    prev:
+    - s0
     params:
-      subset: [user_id, item_id]
+      subset:
+      - user_id
+      - item_id
       keep: first
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

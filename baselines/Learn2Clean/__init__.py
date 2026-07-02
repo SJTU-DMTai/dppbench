@@ -7,7 +7,7 @@ https://github.com/LaureBerti/Learn2Clean).
 
 Adapted to:
 
-* Use the shared 58-operator catalog through
+* Use the shared operator catalog through
   :mod:`baselines.DiffPrep.operator_catalog` (not just data-cleaning ops).
 * Score candidate pipelines via the real downstream model AUC -- the Learn2Clean
   reward is the *step-wise AUC delta* plus a terminal AUC delta, matching the

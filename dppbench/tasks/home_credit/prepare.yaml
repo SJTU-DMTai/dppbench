@@ -1,0 +1,218 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: bureau
+  - id: s2
+    table: previous_application
+  ops:
+  - id: o1
+    op: CustomClean
+    prev:
+    - s0
+    params:
+      cols:
+      - CODE_GENDER
+      - ORGANIZATION_TYPE
+      pattern: ^XNA$
+      replacement: ''
+      regex: true
+      mode: replace_text
+  - id: o2
+    op: CustomClean
+    prev:
+    - o1
+    params:
+      rules:
+      - col: DAYS_EMPLOYED
+        eq: 365243
+      - col: CODE_GENDER
+        eq: XNA
+      - col: ORGANIZATION_TYPE
+        eq: XNA
+      mode: map_values
+  - id: o3
+    op: CreateFeature
+    prev:
+    - o2
+    params:
+      source_cols:
+      - AMT_CREDIT
+      - AMT_ANNUITY
+      output_col: NEW_CREDIT_TO_ANNUITY_RATIO
+      method: ratio
+  - id: o4
+    op: CreateFeature
+    prev:
+    - o3
+    params:
+      source_cols:
+      - AMT_CREDIT
+      - AMT_GOODS_PRICE
+      output_col: NEW_CREDIT_TO_GOODS_RATIO
+      method: ratio
+  - id: o5
+    op: CreateFeature
+    prev:
+    - o4
+    params:
+      source_cols:
+      - AMT_CREDIT
+      - AMT_INCOME_TOTAL
+      output_col: NEW_CREDIT_TO_INCOME_RATIO
+      method: ratio
+  - id: o6
+    op: CreateFeature
+    prev:
+    - o5
+    params:
+      source_cols:
+      - AMT_ANNUITY
+      - AMT_INCOME_TOTAL
+      output_col: NEW_ANNUITY_TO_INCOME_RATIO
+      method: ratio
+  - id: o7
+    op: CreateFeature
+    prev:
+    - o6
+    params:
+      source_cols:
+      - DAYS_EMPLOYED
+      - DAYS_BIRTH
+      output_col: NEW_EMPLOY_TO_BIRTH_RATIO
+      method: ratio
+  - id: o8
+    op: CreateFeature
+    prev:
+    - o7
+    params:
+      source_cols:
+      - AMT_INCOME_TOTAL
+      - CNT_CHILDREN
+      output_col: NEW_INC_PER_CHILD
+      method: inc_ratio
+      method_kwargs:
+        offset: 1
+  - id: o9
+    op: CreateFeature
+    prev:
+    - o8
+    params:
+      source_cols:
+      - EXT_SOURCE_1
+      - EXT_SOURCE_2
+      - EXT_SOURCE_3
+      output_col: NEW_SOURCES_MEAN
+      method: mean
+  - id: o10
+    op: CreateFeature
+    prev:
+    - o9
+    params:
+      source_cols:
+      - EXT_SOURCE_1
+      - EXT_SOURCE_2
+      - EXT_SOURCE_3
+      output_col: NEW_SOURCES_STD
+      method: std
+  - id: o11
+    op: CreateFeature
+    prev:
+    - o10
+    params:
+      source_cols:
+      - EXT_SOURCE_1
+      - EXT_SOURCE_2
+      - EXT_SOURCE_3
+      output_col: NEW_SOURCES_PROD
+      method: product
+  - id: o12
+    op: CreateFeature
+    prev:
+    - o11
+    params:
+      source_cols:
+      - FLAG_DOCUMENT_2
+      - FLAG_DOCUMENT_3
+      - FLAG_DOCUMENT_4
+      - FLAG_DOCUMENT_5
+      - FLAG_DOCUMENT_6
+      - FLAG_DOCUMENT_7
+      - FLAG_DOCUMENT_8
+      - FLAG_DOCUMENT_9
+      - FLAG_DOCUMENT_10
+      - FLAG_DOCUMENT_11
+      - FLAG_DOCUMENT_12
+      - FLAG_DOCUMENT_13
+      - FLAG_DOCUMENT_14
+      - FLAG_DOCUMENT_15
+      - FLAG_DOCUMENT_16
+      - FLAG_DOCUMENT_17
+      - FLAG_DOCUMENT_18
+      - FLAG_DOCUMENT_19
+      - FLAG_DOCUMENT_20
+      - FLAG_DOCUMENT_21
+      output_col: NEW_DOC_CNT
+      method: sum
+  - id: o13
+    op: JoinTable
+    prev:
+    - o12
+    - s1
+    params:
+      key_col: SK_ID_CURR
+      prefix: BUREAU
+      max_cols: 20
+      method: agg
+  - id: o14
+    op: JoinTable
+    prev:
+    - o13
+    - s2
+    params:
+      key_col: SK_ID_CURR
+      prefix: PREV
+      max_cols: 20
+      method: agg
+  - id: o15
+    op: CustomProcess
+    prev:
+    - o14
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o16
+    op: LabelEncode
+    prev:
+    - o15
+  - id: o17
+    op: HandleMV
+    prev:
+    - o16
+    params:
+      method: median
+  - id: o18
+    op: SelectFeature
+    prev:
+    - o17
+    params:
+      threshold: 0.0001
+      target_col: $target_col
+      exclude_cols:
+      - SK_ID_CURR
+      method: variance
+  - id: o19
+    op: SelectFeature
+    prev:
+    - o18
+    params:
+      target_col: $target_col
+      k: 150
+      score_func: f_classif
+      exclude_cols:
+      - SK_ID_CURR
+      method: univariate
+  train:
+    prev:
+    - o19

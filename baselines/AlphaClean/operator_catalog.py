@@ -1,6 +1,6 @@
 """AlphaClean operator catalog adapter.
 
-AlphaClean uses the shared 58-operator universe through DiffPrep's adapter because
+AlphaClean uses the shared operator universe through DiffPrep's adapter because
 that layer also exposes the ``SLOT_KIND`` annotation used by shared sampling and
 repair utilities.
 """

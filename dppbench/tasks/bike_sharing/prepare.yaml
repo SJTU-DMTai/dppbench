@@ -1,0 +1,128 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: day
+  ops:
+  - id: o1
+    op: ExtractDateTimeFeature
+    prev:
+    - s0
+    params:
+      cols:
+      - dteday
+      features:
+      - year
+      - month
+      - day
+      - dayofweek
+      - quarter
+      - is_weekend
+      - dayofyear
+      drop_original: true
+  - id: o2
+    op: ExtractDateTimeFeature
+    prev:
+    - s1
+    params:
+      cols:
+      - dteday
+      features:
+      - dayofweek
+      - is_weekend
+      - dayofyear
+      drop_original: true
+  - id: o3
+    op: DropColumns
+    prev:
+    - o2
+    params:
+      cols:
+      - casual
+      - registered
+      - cnt
+  - id: o4
+    op: CreateFeature
+    prev:
+    - o1
+    params:
+      source_cols:
+      - atemp
+      - temp
+      output_col: temp_diff
+      method: diff
+  - id: o5
+    op: TransformPower
+    prev:
+    - o4
+    params:
+      cols:
+      - hum
+      - windspeed
+      output_cols:
+      - hum_log
+      - windspeed_log
+      method: log
+  - id: o6
+    op: JoinTable
+    prev:
+    - o5
+    - o3
+    params:
+      key_col: weekday
+      prefix: DAY
+      max_cols: 10
+      method: agg
+  - id: o7
+    op: CreateLagFeature
+    prev:
+    - o6
+    params:
+      target_col: cnt
+      lags:
+      - 1
+      - 24
+      - 168
+      time_col: _sort_idx
+  - id: o8
+    op: CreateRollingFeature
+    prev:
+    - o7
+    params:
+      target_col: cnt
+      windows:
+      - 24
+      - 168
+      aggs:
+      - mean
+      - std
+      time_col: _sort_idx
+  - id: o9
+    op: CustomProcess
+    prev:
+    - o8
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o10
+    op: DropColumns
+    prev:
+    - o9
+    params:
+      cols:
+      - casual
+      - registered
+  - id: o11
+    op: LabelEncode
+    prev:
+    - o10
+  - id: o12
+    op: HandleMV
+    prev:
+    - o11
+    params:
+      method: median
+  train:
+    prev:
+    - o12

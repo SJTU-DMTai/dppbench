@@ -36,12 +36,22 @@ Example:
 1        2      [20]
 
 Example YAML:
-  - op: TruncateSequence
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: interaction
+  ops:
+  - id: o1
+    op: TruncateSequence
+    prev:
+    - s0
     params:
       cols: item_seq
       max_len: 50
       keep: last
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

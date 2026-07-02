@@ -54,14 +54,24 @@ Example:
 2  40.0    None
 
 Example YAML:
-  - op: CustomClean
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CustomClean
+    prev:
+    - s0
     params:
       mode: map_values
       rules:
-        - col: age
-          lt: 0
-          replace_with: null
+      - col: age
+        lt: 0
+        replace_with: null
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

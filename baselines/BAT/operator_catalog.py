@@ -1,6 +1,6 @@
 """BAT operator catalog.
 
-Re-exports the shared authoritative 58-operator catalog so that BAT operates
+Re-exports the shared authoritative operator catalog so that BAT operates
 on all dppbench operators (cleaning, encoding, feature gen, sequence,
 split, sampling, rec-specific JoinTable/CreateSequence/...). This satisfies
 the requirement that BAT's operator library cover the full

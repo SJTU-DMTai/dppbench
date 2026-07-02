@@ -11,10 +11,17 @@ import math
 import random
 from dataclasses import dataclass, field
 
-from .evaluator import EvaluationResult, PipelineEvaluator
+from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 from .operator_catalog import CATALOG, operators_for_task
-from .pipeline import DataContext, Pipeline, PipelineStep, make_step, random_pipeline
-from .pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import (
+    DataContext,
+    Pipeline,
+    PipelineStep,
+    assign_dag_structure,
+    make_step,
+    random_pipeline,
+)
+from baselines.common.pipeline_constraints import is_legal, repair
 
 
 @dataclass
@@ -160,6 +167,7 @@ class LogicalSearch:
                 child_pipe = self._mutate(child_pipe)
 
             repair(child_pipe, self.ctx.task_type, self.ctx)
+            assign_dag_structure(child_pipe, self.ctx, self.rng)
             ind = self._evaluate(child_pipe)
             if ind.fitness > -math.inf:
                 new_pop.append(ind)
@@ -182,7 +190,7 @@ class LogicalSearch:
     def _mutate(self, p: Pipeline) -> Pipeline:
         ops = operators_for_task(self.ctx.task_type)
         # filter out mandatory & always-included ops to avoid dropping them
-        choice = self.rng.choice(["add", "remove", "replace", "swap"])
+        choice = self.rng.choice(["add", "remove", "replace", "swap", "rewire"])
         if choice == "add" or not p.steps:
             op_name = self.rng.choice(ops)
             step = make_step(op_name, self.ctx, self.rng)
@@ -202,4 +210,6 @@ class LogicalSearch:
         elif choice == "swap" and len(p.steps) >= 2:
             i, j = self.rng.sample(range(len(p.steps)), 2)
             p.steps[i], p.steps[j] = p.steps[j], p.steps[i]
+        elif choice == "rewire":
+            assign_dag_structure(p, self.ctx, self.rng)
         return p

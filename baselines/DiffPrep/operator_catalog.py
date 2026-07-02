@@ -63,6 +63,7 @@ SLOT_KIND: Dict[str, str] = {
     "DiscretizeFeature": "soft",
     "ClipOutlier": "soft",
     "CustomProcess": "soft",
+    "FrequencyEncode": "soft",
     "CreatePolynomialFeature": "soft",
     "CrossFeature": "soft",
     "AggregateGroupFeature": "soft",

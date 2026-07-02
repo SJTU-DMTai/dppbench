@@ -7,7 +7,7 @@ For each (task, baseline) pair this script does the following sequentially:
    missing it calls :mod:`scripts.build_std_test` to build it (idempotent;
    re-running with the same seed produces the same files).
 2. **Run the baseline's pipeline construction loop** (default ``SAGA``)
-   from scratch — the task's bundled ``pre_process.yaml`` is *not*
+   from scratch — the task's bundled ``prepare.yaml`` is *not*
    reused; every baseline starts from an empty pipeline.
 3. **Re-evaluate** the produced ``best_pipeline.yaml`` through SAGA's
    ``PipelineEvaluator`` so that downstream model training is run end-to-

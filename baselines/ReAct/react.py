@@ -17,9 +17,9 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.SAGA.pipeline import DataContext, Pipeline
-from baselines.SAGA.pipeline_constraints import is_legal, repair
-from baselines.SAGA.saga import _infer_rec_context, _infer_tabular_context
+from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.context import _infer_rec_context, _infer_tabular_context
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
 
@@ -34,16 +34,24 @@ from .evaluator import ReActEvaluator
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 _DEFAULT_YAML_EXAMPLE_PATH = os.path.join(
-    _REPO_ROOT, "dppbench", "tasks", "amazon_beauty", "pre_process.yaml"
+    _REPO_ROOT, "dppbench", "tasks", "amazon_beauty", "prepare.yaml"
 )
 _FALLBACK_YAML_EXAMPLE = """\
-pipeline:
-  - op: HandleMV
-    target: both
-    params: {}
-  - op: LabelEncode
-    target: both
-    params: {}
+dag:
+  sources:
+    - id: s0
+      table: interaction
+  ops:
+    - id: handle_mv
+      op: HandleMV
+      prev: [s0]
+      params: {}
+    - id: label_encode
+      op: LabelEncode
+      prev: [handle_mv]
+      params: {}
+  train:
+    prev: [label_encode]
 """
 
 

@@ -3,6 +3,7 @@ import urllib.request
 import pandas as pd
 
 from ...dataset import TabularData
+from .._excel_cache import read_excel_cached
 
 
 class BondoraData(TabularData):
@@ -28,6 +29,20 @@ class BondoraData(TabularData):
     )
     XLSX_NAME = "loan_dataset_investor.xlsx"
     SHEET_NAME = "Loan Dataset"
+    # Drop fields whose value or missingness strongly reveals the terminal loan outcome. 
+    LEAKAGE_COLS = [
+        "loan_last_recorded_action_date_local",
+        "principal_balance",
+        "principal_debt",
+        "principal_paid_total",
+        "is_default",
+        "debt_occured_date_local",
+        "months_in_default",
+        "loan_status_risk",
+        "early_repaid_at",
+        "is_early_repaid_within_14_days",
+        "nr_of_payments",
+    ]
 
     def __init__(self, data_dir=None):
         super().__init__(name="Bondora")
@@ -78,7 +93,7 @@ class BondoraData(TabularData):
         self._download_if_missing()
 
         xlsx_path = os.path.join(self.data_dir, self.XLSX_NAME)
-        loans = pd.read_excel(xlsx_path, sheet_name=self.SHEET_NAME)
+        loans = read_excel_cached(xlsx_path, sheet_name=self.SHEET_NAME)
 
         # Keep only loans that have reached a terminal outcome (Repaid or
         # Defaulted). Active / Returned loans have no ground-truth label
@@ -86,6 +101,7 @@ class BondoraData(TabularData):
         loans = loans[loans["loan_status"].isin(["Repaid", "Defaulted"])].copy()
         loans["target"] = (loans["loan_status"] == "Defaulted").astype(int)
         loans = loans.drop(columns=["loan_status"])
+        loans = loans.drop(columns=self.LEAKAGE_COLS, errors="ignore")
 
         # Build a per-country auxiliary table to demonstrate the multi-table
         # JoinTable aggregation pattern (same shape as home_credit's bureau / installments).

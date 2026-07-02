@@ -39,12 +39,24 @@ Example:
 1  3  20       9.0
 
 Example YAML:
-  - op: CreatePolynomialFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CreatePolynomialFeature
+    prev:
+    - s0
     params:
-      cols: [x, y]
+      cols:
+      - x
+      - y
       degree: 2
       interaction_only: true
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

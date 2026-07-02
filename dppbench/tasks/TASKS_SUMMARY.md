@@ -25,7 +25,7 @@
 | 14 | [tenrec](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/tenrec) | RecData | DIN | 序列推荐（点击） | 1 + 0 = 1 | 2 | ★☆☆☆☆ |
 | 15 | [yelp](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/yelp) | RecData | DIN | 序列推荐（评分） | 1 + 2 = 3 | 6 | ★★★☆☆ |
 
-> 备注：[`ifasion/`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/ifasion) 目录仅包含原始 `.txt`（user/item/outfit），尚未实现 `data.py` 与 `pre_process.yaml`，因此**未纳入正式任务列表**。
+> 备注：[`ifasion/`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/ifasion) 目录仅包含原始 `.txt`（user/item/outfit），尚未实现 `data.py` 与 `prepare.yaml`，因此**未纳入正式任务列表**。
 
 按数据/模型类型分布：
 
@@ -36,7 +36,7 @@
 
 ### 1.1 本轮 pre_process 配置优化说明
 
-本轮对现有 `pre_process.yaml` 做了面向 std-test 自动验证的保守优化，并新增两个任务目录脚本：
+本轮对现有 `prepare.yaml` 做了面向 std-test 自动验证的保守优化，并新增两个任务目录脚本：
 
 - [`audit_preprocess_configs.py`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/audit_preprocess_configs.py)：审计 YAML、算子、列引用、泄漏风险和 schema 兼容性，输出 `PREPROCESS_CONFIG_AUDIT_REPORT.md`。
 - [`evaluate_task_model_matrix.py`](file:///Users/bytedance/Documents/dppbech/scripts/evaluate_task_model_matrix.py)：构建/复用 std-test，执行预处理和模型训练；支持 `--models default|all|...` 与 `--task-family` 做 task × model 矩阵验证，输出 task-model matrix Markdown/JSON/CSV 指标。
@@ -107,7 +107,7 @@
 ### 中高复杂度（★★★★☆ 4 个）
 
 - **citibike_jc_hourly / nyc_taxi_hourly**：loader 将原始事件流清洗并聚合为小时面板，pipeline 负责滞后/滚动等时序特征。
-- **fraud_detection**：宽表（~430 列），通过 CustomProcess / HashEncode 处理高缺失、高基类别和稀疏特征。
+- **fraud_detection**：宽表（~430 列），通过 CustomProcess / FrequencyEncode / HashEncode 处理高缺失、高基类别和稀疏特征。
 - **polish_bankruptcy**：5 张同结构 ARFF 表，4 次 `JoinTable(method="agg")` 聚合跨年特征。
 - **elliptic_bitcoin**：唯一的图任务，3 张表 + 自定义 `JoinTable`/`ScaleFeature` 算子。
 
@@ -136,14 +136,14 @@
 
 ## 5. 算子使用频率
 
-> 统计自全部 15 个 task 的 `pre_process.yaml`（截至 papers 算子补齐 D 批次回归后）。
+> 统计自全部 15 个 task 的 `prepare.yaml`（截至 papers 算子补齐 D 批次回归后）。
 > 全部新增的 paper 类算子（C1/C2/C3）均已在至少一个 task 接入并通过 smoke test。
 
 ### 5.1 高频核心算子（≥4 个 task 使用）
 
 | 算子 | 使用任务数 | 主要场景 |
 |---|---|---|
-| CustomProcess | 12 | 预处理阶段承接高缺失列过滤、高基类别频次编码等任务定制逻辑 |
+| CustomProcess | 12 | 预处理阶段承接高缺失列过滤等任务定制逻辑 |
 | HandleMV | 11 | 几乎所有 TabularData 流水线收尾 |
 | JoinTable | 11 | 跨表多对一聚合（max_cols=20）或 key join |
 | LabelEncode | 9 | 类别特征统一编码 |
@@ -187,7 +187,7 @@
 | `FilterFeatures`（同时按列名/方差/缺失率筛） | `DropColumns` + `CustomProcess(mode="drop_high_null")` + `SelectFeature(method="variance")` | 显式列删除、高缺失过滤与统计式特征选择分离 |
 | 多个 scaler | `ScaleFeature(method=...)` | 用 method 显式选择 standard/minmax/maxabs/robust/l2 |
 | 多个 imputer | `HandleMV(method=...)` | method 覆盖 constant/mean/median/mode/knn/iterative；`action ∈ {delete, impute}` |
-| `OneHotEncode` / `OrdinalEncode` / `LabelEncode` / `HashEncode` / `CustomProcess(mode="frequency_encode")` | 全部保留 | 编码语义不同：OHE 增列、Ord 保留有序、Label 单列编码、Hash 固定桶、频次编码走定制预处理 |
+| `OneHotEncode` / `OrdinalEncode` / `LabelEncode` / `HashEncode` / `FrequencyEncode` | 全部保留 | 编码语义不同：OHE 增列、Ord 保留有序、Label 单列编码、Hash 固定桶、频次编码作为独立特征工程算子 |
 | 多个降维算子 | `ReduceDimension(method=...)` | method 覆盖 PCA/SVD/LDA/kernel PCA/UMAP |
 | 多个不平衡处理算子 | `Undersample` / `Oversample` | 欠采与过采保留为两个方向，具体算法由 method 选择 |
 
@@ -204,10 +204,10 @@
 
 ## 6. 备注
 
-- 所有 TabularData 任务的 `pre_process.yaml` 均以 `LabelEncode` + `HandleMV(method="median")` 收尾，保证下游 LightGBM 直接可训。
-- RecData 的 std-test 切分由冻结数据和 `RecData.split()` 处理，`pre_process.yaml` 不再声明 `DataSplit`。
+- 所有 TabularData 任务的 `prepare.yaml` 均以 `LabelEncode` + `HandleMV(method="median")` 收尾，保证下游 LightGBM 直接可训。
+- RecData 的 std-test 切分由冻结数据和 `RecData.split()` 处理，`prepare.yaml` 不再声明 `DataSplit`。
 - 仅 `elliptic_bitcoin` 接入 GNN（GCN/GraphSAGE/GAT），需要在 [`scripts/train.py`](file:///Users/bytedance/Documents/dppbech/scripts/train.py) 中走专门的 GNN 分支。
-- [`ifasion/`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/ifasion) 暂未集成；如需上线需补 `ifasion_data.py` + `pre_process.yaml` + `model.yaml`。
+- [`ifasion/`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/ifasion) 暂未集成；如需上线需补 `ifasion_data.py` + `prepare.yaml` + `model.yaml`。
 
 ---
 
@@ -247,11 +247,11 @@ dppbench/tasks/<task>/std_test/
 
 ### 7.4 算子是否作用于 std-test 的判定
 
-**完全由算子源码自带的类属性 `APPLIES_TO_STD_TEST` 决定**，与 `pre_process.yaml` 完全解耦：
+**完全由算子源码自带的类属性 `APPLIES_TO_STD_TEST` 决定**，与 `prepare.yaml` 完全解耦：
 
 - 在 [base_op.py](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/base_op.py) 的 `BaseOp` 上默认 `APPLIES_TO_STD_TEST = True`；所有 (A) Fit-on-train+transform-on-both（如 `LabelEncode`、`ScaleFeature`、`HandleMV(action=impute)`）与 (B) 结构性特征构造（如 `JoinTable`、`CreateSequence`、`CustomProcess`）算子默认继承 `True`，与训练数据走同样的 `transform`，保证特征维度对齐。
 - (C) 训练专属算子在自己的源码文件里 override 为 `False`：`HandleOutlier`、`HandleError`、`HandleNonIID`、`ReweightUPG`、`Deduplicate`、`FilterSample`、`SampleNegative`、`FilterKCore`、`Undersample`、`Oversample`、`AugmentMixup`、`AugmentNoise`（`HandleMV` 仅在 `action=delete` 下置 `False`，运行时切换）。
-- baseline（SAGA / CtxPipe / DiffPrep / SPIO / ReAct / Learn2Clean / DataMaster / DeepPrep / AutoPrep / AlphaClean）和 task 维护者**都不需要感知 / 输出 / 声明**这个字段；他们生成 / 维护的 `pre_process.yaml` 内容保持不变。
+- baseline（SAGA / CtxPipe / DiffPrep / SPIO / ReAct / Learn2Clean / DataMaster / DeepPrep / AutoPrep / AlphaClean）和 task 维护者**都不需要感知 / 输出 / 声明**这个字段；他们生成 / 维护的 `prepare.yaml` 内容保持不变。
 - 框架（`run_pre_process`，[dataset.py](file:///Users/bytedance/Documents/dppbech/dppbench/dataset.py)）在拿到 op 实例后读 `op.APPLIES_TO_STD_TEST` 自行决定是否把 `__split__ == "std_test"` 的行临时摘出再拼回。
 
 ### 7.5 评测兼容性

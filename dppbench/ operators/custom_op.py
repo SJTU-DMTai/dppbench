@@ -151,8 +151,15 @@ code  : str — Python source defining the entry function.
 entry : str — Name of the entry function (default ``pipeline``).
 
 Example YAML:
-  - op: CustomOp
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CustomOp
+    prev:
+    - s0
     params:
       code: |
         def pipeline(df):
@@ -160,6 +167,9 @@ Example YAML:
             df['amount_log'] = np.log1p(df['amount'].fillna(0))
             return df
       entry: pipeline
+  train:
+    prev:
+    - o1
 """
 
     # ------------------------------------------------------------------

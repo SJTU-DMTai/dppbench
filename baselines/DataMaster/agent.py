@@ -24,8 +24,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from baselines.SAGA.pipeline import DataContext, Pipeline
-from baselines.SAGA.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.pipeline_constraints import is_legal, repair
 from baselines.DeepPrep.tree_agent import (
     ChainParseError,
     chain_to_steps,
@@ -212,7 +212,7 @@ class DataMasterAgent:
         """Render the canonical category order with a few example ops per
         bucket, so the LLM can sort its delta chain to satisfy ``is_legal``.
         """
-        from baselines.SAGA.pipeline_constraints import (
+        from baselines.common.pipeline_constraints import (
             _TABULAR_ORDER, _REC_ORDER,
         )
         from baselines.common.operator_catalog import CATALOG

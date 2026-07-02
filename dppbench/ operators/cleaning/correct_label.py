@@ -46,13 +46,23 @@ Example:
 2      1  0.92                0
 
 Example YAML:
-  - op: CorrectLabel
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CorrectLabel
+    prev:
+    - s0
     params:
       label_col: label
       pred_probs: p1
       strategy: flip
       confidence_threshold: 0.9
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

@@ -13,7 +13,7 @@ The per-stage code generation only runs for the 4 single-table stages
 (``JoinTable`` / ``CreateSequence`` /
 ``SampleNegative``) cannot be expressed under the ``CustomOp`` single-table
 df->df contract, so they are injected structurally by the orchestrator via
-``baselines.SAGA.pipeline.make_step``.
+``baselines.common.pipeline.make_step``.
 """
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ import random as _random
 from typing import Optional
 
 from baselines.common.operator_catalog import CATALOG, OpCategory
-from baselines.SAGA.pipeline import (
+from baselines.common.pipeline import (
     DataContext,
     Pipeline,
     PipelineStep,
     make_step,
 )
-from baselines.SAGA.pipeline_constraints import ensure_tabular_tail
+from baselines.common.pipeline_constraints import ensure_tabular_tail
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ def build_scaffolded_pipeline(
     Rec: prepend ``JoinTable`` (when user/item dfs exist), then the user's
     CustomOp steps, then the mandatory structural tail
     (``CreateSequence`` ->
-    ``SampleNegative``) following ``baselines.SAGA.pipeline._REC_ORDER``.
+    ``SampleNegative``) following ``baselines.common.pipeline_constraints._REC_ORDER``.
     """
     rng = rng or _random.Random(0)
     pipe = Pipeline()

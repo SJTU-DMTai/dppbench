@@ -1,6 +1,6 @@
 """CtxPipe operator catalog.
 
-CtxPipe re-exports the shared 58-operator catalog so all baselines share an
+CtxPipe re-exports the shared operator catalog so all baselines share an
 identical executable operator universe. This guarantees that the
 RL agent can choose from **all** operator categories (cleaning, encoding,
 feature generation, sequence, split, sampling, ...) and that both tabular and

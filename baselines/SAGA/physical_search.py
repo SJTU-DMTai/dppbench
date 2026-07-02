@@ -11,9 +11,9 @@ import math
 import random
 from dataclasses import dataclass
 
-from .evaluator import EvaluationResult, PipelineEvaluator
+from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 from .operator_catalog import CATALOG
-from .pipeline import Pipeline
+from baselines.common.pipeline import Pipeline, assign_dag_structure
 
 
 @dataclass
@@ -68,6 +68,11 @@ class PhysicalSearch:
                 for k, space in spec.param_space.items():
                     new_val = _sample_param(space, self.rng)
                     step.params[k] = new_val
+            # Parameter tuning may affect table-reference params in future catalogs;
+            # keep the explicit DAG prev/source fields in sync before evaluation.
+            ctx = getattr(self.evaluator, "ctx", None)
+            if ctx is not None:
+                assign_dag_structure(cand, ctx, self.rng)
             ev: EvaluationResult = self.evaluator.evaluate(cand)
             if ev.fitness > best_fitness:
                 best_fitness = ev.fitness

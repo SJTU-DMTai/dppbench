@@ -94,11 +94,22 @@ Example:
 2            0.2
 
 Example YAML:
-  - op: HandleNonIID
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: HandleNonIID
+    prev:
+    - s0
     params:
-      feature_cols: [x]
+      feature_cols:
+      - x
       threshold: 0.95
       action: reweight
+  train:
+    prev:
+    - o1
 """
         return description.strip()

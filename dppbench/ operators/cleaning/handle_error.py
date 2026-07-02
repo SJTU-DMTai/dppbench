@@ -151,13 +151,23 @@ Example:
 0  1
 
 Example YAML:
-  - op: HandleError
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: HandleError
+    prev:
+    - s0
     params:
       action: delete
       rules:
-        - col: x
-          min: 0
-          max: 100
+      - col: x
+        min: 0
+        max: 100
+  train:
+    prev:
+    - o1
 """
         return description.strip()

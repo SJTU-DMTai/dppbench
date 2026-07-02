@@ -1,0 +1,128 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: station_meta
+  ops:
+  - id: o1
+    op: CreateFeature
+    prev:
+    - s0
+    params:
+      source_cols:
+      - PM10
+      - SO2
+      - NO2
+      - CO
+      - O3
+      output_col: co_pollutant_sum
+      method: sum
+  - id: o2
+    op: CreateFeature
+    prev:
+    - o1
+    params:
+      source_cols:
+      - TEMP
+      - DEWP
+      output_col: temp_dewp_diff
+      method: diff
+  - id: o3
+    op: TransformPower
+    prev:
+    - o2
+    params:
+      cols:
+      - RAIN
+      - WSPM
+      output_cols:
+      - rain_log
+      - wind_log
+      method: log
+  - id: o4
+    op: ScaleFeature
+    prev:
+    - o3
+    params:
+      cols:
+      - WSPM
+      - TEMP
+      feature_range:
+      - 0.0
+      - 1.0
+      method: minmax
+  - id: o5
+    op: CreateLagFeature
+    prev:
+    - o4
+    params:
+      target_col: PM2.5
+      lags:
+      - 1
+      - 3
+      - 6
+      - 12
+      - 24
+      group_cols:
+      - station
+      time_col: _sort_idx
+  - id: o6
+    op: CreateRollingFeature
+    prev:
+    - o5
+    params:
+      target_col: PM2.5
+      windows:
+      - 6
+      - 24
+      - 168
+      aggs:
+      - mean
+      - std
+      - min
+      - max
+      group_cols:
+      - station
+      time_col: _sort_idx
+  - id: o7
+    op: DropColumns
+    prev:
+    - s1
+    params:
+      cols:
+      - PM2.5
+  - id: o8
+    op: JoinTable
+    prev:
+    - o6
+    - o7
+    params:
+      key_col: station
+      prefix: STATION
+      max_cols: 20
+      method: agg
+  - id: o9
+    op: CustomProcess
+    prev:
+    - o8
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o10
+    op: LabelEncode
+    prev:
+    - o9
+    params:
+      cols:
+      - wd
+      - station
+  - id: o11
+    op: HandleMV
+    prev:
+    - o10
+    params:
+      method: median
+  train:
+    prev:
+    - o11

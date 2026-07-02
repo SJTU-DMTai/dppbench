@@ -13,8 +13,8 @@ import random as _random
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from baselines.SAGA.pipeline import DataContext, PipelineStep, build_default_params
-from baselines.SAGA.pipeline_constraints import _TABULAR_ORDER, _REC_ORDER
+from baselines.common.pipeline import DataContext, PipelineStep, build_default_params
+from baselines.common.pipeline_constraints import _TABULAR_ORDER, _REC_ORDER
 
 from .operator_catalog import CATALOG, OpCategory, slot_kind_of
 
@@ -98,7 +98,7 @@ def make_slots(task_type: str, ctx: DataContext) -> List[Slot]:
 def diffprep_make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> Optional[PipelineStep]:
     """Construct a :class:`PipelineStep` for ``op_name``.
 
-    Uses :func:`baselines.SAGA.pipeline.build_default_params` for most
+    Uses :func:`baselines.common.pipeline.build_default_params` for most
     operators and keeps a few DiffPrep-specific context defaults for operators
     that need a tensor-friendly or slot-planner-specific parameterization.
     """

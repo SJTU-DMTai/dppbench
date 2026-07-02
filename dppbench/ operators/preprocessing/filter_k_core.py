@@ -41,12 +41,22 @@ Example:
 1        1       11
 
 Example YAML:
-  - op: FilterKCore
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: interaction
+  ops:
+  - id: o1
+    op: FilterKCore
+    prev:
+    - s0
     params:
       user_col: user_id
       item_col: item_id
       k: 2
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

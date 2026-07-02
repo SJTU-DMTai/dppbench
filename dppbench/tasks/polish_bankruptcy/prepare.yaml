@@ -1,0 +1,104 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: year1
+  - id: s2
+    table: year2
+  - id: s3
+    table: year3
+  - id: s4
+    table: year4
+  ops:
+  - id: o1
+    op: ConcatTable
+    prev:
+    - s1
+    - s2
+    - s3
+    - s4
+    params:
+      axis: vertical
+      fill_missing: true
+  - id: o2
+    op: TransformPower
+    prev:
+    - s0
+    params:
+      cols:
+      - Attr1
+      - Attr9
+      output_cols:
+      - ATTR1_LOG
+      - ATTR9_LOG
+      method: log
+  - id: o3
+    op: CreatePolynomialFeature
+    prev:
+    - o2
+    params:
+      cols:
+      - Attr1
+      - Attr3
+      - Attr6
+      - Attr9
+      degree: 2
+      interaction_only: true
+  - id: o4
+    op: JoinTable
+    prev:
+    - o3
+    - o1
+    params:
+      key_col: _join_key
+      prefix: ALLYEARS
+      max_cols: 50
+      method: agg
+  - id: o5
+    op: DropColumns
+    prev:
+    - o4
+    params:
+      cols:
+      - _join_key
+  - id: o6
+    op: CustomProcess
+    prev:
+    - o5
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o7
+    op: LabelEncode
+    prev:
+    - o6
+  - id: o8
+    op: HandleMV
+    prev:
+    - o7
+    params:
+      cols:
+      - Attr1
+      - Attr3
+      - Attr6
+      - Attr9
+      max_iter: 5
+      method: iterative
+  - id: o9
+    op: HandleMV
+    prev:
+    - o8
+    params:
+      method: median
+  - id: o10
+    op: Oversample
+    prev:
+    - o9
+    params:
+      target_col: $target_col
+      n_neighbors: 5
+      method: adasyn
+  train:
+    prev:
+    - o10

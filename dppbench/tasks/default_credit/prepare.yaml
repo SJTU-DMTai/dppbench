@@ -1,0 +1,117 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: monthly_history
+  ops:
+  - id: o1
+    op: CustomClean
+    prev:
+    - s0
+    params:
+      rules:
+      - col: EDUCATION
+        eq: 0
+      - col: EDUCATION
+        eq: 5
+      - col: EDUCATION
+        eq: 6
+      - col: MARRIAGE
+        eq: 0
+      mode: map_values
+  - id: o2
+    op: CreateFeature
+    prev:
+    - o1
+    params:
+      source_cols:
+      - LIMIT_BAL
+      - AGE
+      output_col: LIMIT_PER_AGE
+      method: ratio
+  - id: o3
+    op: TransformPower
+    prev:
+    - o2
+    params:
+      cols:
+      - LIMIT_BAL
+      output_cols:
+      - LIMIT_LOG
+      method: log
+  - id: o4
+    op: JoinTable
+    prev:
+    - o3
+    - s1
+    params:
+      key_col: ID
+      prefix: PANEL
+      max_cols: 30
+      method: agg
+  - id: o5
+    op: CustomProcess
+    prev:
+    - o4
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o6
+    op: OneHotEncode
+    prev:
+    - o5
+    params:
+      cols:
+      - EDUCATION
+      - MARRIAGE
+      max_cardinality: 8
+  - id: o7
+    op: LabelEncode
+    prev:
+    - o6
+  - id: o8
+    op: HandleMV
+    prev:
+    - o7
+    params:
+      cols:
+      - LIMIT_BAL
+      - AGE
+      - LIMIT_PER_AGE
+      - LIMIT_LOG
+      n_neighbors: 5
+      method: knn
+  - id: o9
+    op: HandleMV
+    prev:
+    - o8
+    params:
+      method: median
+  - id: o10
+    op: ReduceDimension
+    prev:
+    - o9
+    params:
+      cols:
+      - LIMIT_BAL
+      - AGE
+      - LIMIT_PER_AGE
+      - LIMIT_LOG
+      target_col: $target_col
+      n_components: 1
+      method: lda
+  - id: o11
+    op: SelectFeature
+    prev:
+    - o10
+    params:
+      target_col: $target_col
+      n_features_to_select: 15
+      estimator: tree
+      exclude_cols:
+      - ID
+      method: rfe
+  train:
+    prev:
+    - o11

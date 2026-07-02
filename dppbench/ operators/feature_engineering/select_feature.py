@@ -59,12 +59,22 @@ Example:
 1   4      1
 
 Example YAML:
-  - op: SelectFeature
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: SelectFeature
+    prev:
+    - s0
     params:
       method: variance
       threshold: 0.0
       target_col: label
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

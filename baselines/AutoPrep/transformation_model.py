@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from baselines.SAGA.pipeline import DataContext
+from baselines.common.pipeline import DataContext
 
 from .operator_catalog import CATALOG, OpCategory
 
@@ -41,7 +41,7 @@ def _sigmoid(x: float) -> float:
 # Single-table transformation model M_T+
 # ---------------------------------------------------------------------------
 class TransformationModel:
-    """Online probability model over the shared 52 operators."""
+    """Online probability model over the shared operators."""
 
     def __init__(self, ctx: DataContext, eta: float = 0.5):
         self.ctx = ctx

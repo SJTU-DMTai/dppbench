@@ -446,7 +446,7 @@ def main():
     args = parse_args()
     device = _resolve_device(args.gpu_id)
     task_dir = os.path.join(BASE_DIR, args.data_name)
-    pre_process_yaml = os.path.join(task_dir, "pre_process.yaml")
+    pre_process_yaml = os.path.join(task_dir, "prepare.yaml")
     model_yaml = os.path.join(task_dir, "model.yaml")
     cfg = _resolve_model_config(_load_yaml(model_yaml), args.model)
 

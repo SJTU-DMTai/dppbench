@@ -42,12 +42,23 @@ Example:
 2    10.0
 
 Example YAML:
-  - op: ClipOutlier
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: ClipOutlier
+    prev:
+    - s0
     params:
-      cols: [amount]
+      cols:
+      - amount
       lower_quantile: 0.01
       upper_quantile: 0.99
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

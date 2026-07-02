@@ -50,13 +50,26 @@ Example:
 2    2
 
 Example YAML:
-  - op: DiscretizeFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: DiscretizeFeature
+    prev:
+    - s0
     params:
-      cols: [age]
+      cols:
+      - age
       strategy: manual
       boundaries:
-        age: [30, 60]
+        age:
+        - 30
+        - 60
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

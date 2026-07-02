@@ -52,7 +52,8 @@
 | `Oversample` | [`oversample.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/oversample.py) | random/smote/adasyn/smote_nc 过采样。 |
 | `AugmentMixup` | [`augment_mixup.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/augment_mixup.py) | Mixup 数据增强。 |
 | `AugmentNoise` | [`augment_noise.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/augment_noise.py) | 数值列加噪生成增强样本。 |
-| `CustomProcess` | [`custom_process.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/custom_process.py) | 预处理阶段自定义逻辑，并承接高缺失列过滤与频次编码。 |
+| `CustomProcess` | [`custom_process.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/preprocessing/custom_process.py) | 预处理阶段自定义逻辑，并承接高缺失列过滤。 |
+| `FrequencyEncode` | [`frequency_encode.py`](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/feature_engineering/frequency_encode.py) | 为高基数类别列新增频次计数特征。 |
 
 ## S4. Feature Engineering（15）
 

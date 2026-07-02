@@ -35,12 +35,22 @@ Example:
 1      20      1
 
 Example YAML:
-  - op: RenameColumn
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: RenameColumn
+    prev:
+    - s0
     params:
       rename_map:
         TransactionAmt: amount
         isFraud: label
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

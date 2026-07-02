@@ -1,6 +1,6 @@
 """SAGA operator catalog adapter.
 
-The shared 58-operator metadata now lives in
+The shared operator metadata now lives in
 ``baselines.common.operator_catalog``. SAGA re-exports it for backward
 compatibility and to keep older intra-SAGA imports stable.
 """

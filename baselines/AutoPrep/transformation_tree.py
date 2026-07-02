@@ -13,7 +13,7 @@ from __future__ import annotations
 import random as _random
 from dataclasses import dataclass, field
 
-from baselines.SAGA.pipeline import DataContext
+from baselines.common.pipeline import DataContext
 
 from .operator_catalog import CATALOG, OpCategory, operators_for_task
 from .pipeline_factory import build_default_params
@@ -38,6 +38,7 @@ _REC_INTERACTION = {
     "CastType", "DropColumns", "CustomProcess",
     "SelectFeature",
     "OneHotEncode", "LabelEncode", "HashEncode", "TargetEncode",
+    "FrequencyEncode",
     "ScaleFeature", "TransformPower",
     "DiscretizeFeature",
     "CrossFeature", "CreateFeature",
@@ -46,13 +47,13 @@ _REC_INTERACTION = {
 # Side tables: only column-level cleaning / lightweight encoding.
 _REC_SIDE = {
     "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
-    "ScaleFeature", "SelectFeature",
+    "ScaleFeature", "SelectFeature", "FrequencyEncode",
 }
 
 # Tabular auxiliary table: light cleaning + later joined back via JoinTable.
 _TABULAR_AUX = {
     "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
-    "JoinTable",
+    "FrequencyEncode", "JoinTable",
 }
 
 

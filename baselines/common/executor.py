@@ -105,7 +105,7 @@ class TrainingExecutor:
         self.device = device
         self.model_name = model_name
         self.model_config = model_config
-        self.original_yaml = os.path.join(task_dir, "pre_process.yaml")
+        self.original_yaml = os.path.join(task_dir, "prepare.yaml")
         self.model_yaml = os.path.join(task_dir, "model.yaml")
         self._data = None
 
@@ -114,7 +114,7 @@ class TrainingExecutor:
         self._task_type, self._data_cls_path = DATASET_REGISTRY[data_name]
 
         self._work_dir = tempfile.mkdtemp(prefix="preproc_opt_")
-        self._working_yaml = os.path.join(self._work_dir, "pre_process.yaml")
+        self._working_yaml = os.path.join(self._work_dir, "prepare.yaml")
         shutil.copy2(self.original_yaml, self._working_yaml)
 
         # Search-time fast mode toggle. When enabled, training rounds
@@ -157,9 +157,18 @@ class TrainingExecutor:
     def task_type(self):
         return self._task_type
 
+    def _resolved_data_dir(self):
+        if not self.data_dir:
+            return None
+        data_dir = os.path.abspath(self.data_dir)
+        task_data_dir = os.path.join(data_dir, self.data_name, "data")
+        if os.path.isdir(task_data_dir):
+            return task_data_dir
+        return data_dir
+
     def _make_data_instance(self):
         cls = _import_class(self._data_cls_path)
-        return cls(data_dir=self.data_dir)
+        return cls(data_dir=self._resolved_data_dir())
 
     def _make_configured_data_instance(self):
         data = self._make_data_instance()
@@ -181,7 +190,7 @@ class TrainingExecutor:
 
     def save_best_yaml(self, content, output_path=None):
         if output_path is None:
-            output_path = os.path.join(self._work_dir, "best_pre_process.yaml")
+            output_path = os.path.join(self._work_dir, "best_prepare.yaml")
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(content)
         return output_path

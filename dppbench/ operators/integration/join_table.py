@@ -79,14 +79,26 @@ Example:
 2     3     C
 
 Example YAML:
-  - op: JoinTable
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: bureau
+  ops:
+  - id: o1
+    op: JoinTable
+    prev:
+    - s0
+    - s1
     params:
       method: agg
-      aux_df: $bureau
       key_col: SK_ID_CURR
       prefix: BUREAU
       max_cols: 20
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

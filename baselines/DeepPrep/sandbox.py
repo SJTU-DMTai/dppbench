@@ -23,7 +23,7 @@ from typing import Optional
 
 import yaml
 
-from baselines.SAGA.pipeline import Pipeline, PipelineStep
+from baselines.common.pipeline import Pipeline, PipelineStep
 
 
 # ---------------------------------------------------------------------------

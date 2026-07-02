@@ -8,6 +8,6 @@ SAGA / CtxPipe.
 from __future__ import annotations
 
 from baselines.CtxPipe.evaluator import CtxPipeEvaluator as DiffPrepEvaluator
-from baselines.SAGA.evaluator import EvaluationResult
+from baselines.common.evaluator import EvaluationResult
 
 __all__ = ["DiffPrepEvaluator", "EvaluationResult"]

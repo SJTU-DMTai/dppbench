@@ -40,10 +40,21 @@ Example:
 3     2
 
 Example YAML:
-  - op: LabelEncode
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: LabelEncode
+    prev:
+    - s0
     params:
-      cols: [city]
+      cols:
+      - city
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

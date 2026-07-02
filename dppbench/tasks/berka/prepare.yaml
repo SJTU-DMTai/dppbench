@@ -1,0 +1,147 @@
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: account
+  - id: s2
+    table: trans
+  - id: s5
+    table: order
+  - id: s6
+    table: disp
+  ops:
+  - id: o1
+    op: ParseDate
+    prev:
+    - s1
+    params:
+      cols:
+      - date
+      mode: int_yymmdd
+      out_features:
+      - days_since_epoch
+      drop_original: true
+  - id: o2
+    op: ParseDate
+    prev:
+    - s2
+    params:
+      cols:
+      - date
+      mode: int_yymmdd
+      out_features:
+      - days_since_epoch
+      drop_original: true
+  - id: o3
+    op: ParseDate
+    prev:
+    - s0
+    params:
+      cols:
+      - date
+      mode: int_yymmdd
+      out_features:
+      - year
+      - month
+      - days_since_epoch
+      drop_original: true
+  - id: o4
+    op: CastType
+    prev:
+    - o3
+    params:
+      col_dtypes:
+        days_since_epoch: int32
+        year: int32
+        month: int32
+  - id: o5
+    op: CreateFeature
+    prev:
+    - o4
+    params:
+      source_cols:
+      - amount
+      - payments
+      output_col: AMOUNT_PAYMENTS_RATIO
+      method: ratio
+  - id: o6
+    op: TransformPower
+    prev:
+    - o5
+    params:
+      cols:
+      - amount
+      output_cols:
+      - AMOUNT_LOG
+      method: log
+  - id: o7
+    op: JoinTable
+    prev:
+    - o6
+    - o1
+    params:
+      key_col: account_id
+      prefix: ACC
+      max_cols: 30
+      method: agg
+  - id: o8
+    op: JoinTable
+    prev:
+    - o7
+    - o2
+    params:
+      key_col: account_id
+      prefix: TRANS
+      max_cols: 30
+      method: agg
+  - id: o9
+    op: JoinTable
+    prev:
+    - o8
+    - s5
+    params:
+      key_col: account_id
+      prefix: ORD
+      max_cols: 30
+      method: agg
+  - id: o10
+    op: JoinTable
+    prev:
+    - o9
+    - s6
+    params:
+      key_col: account_id
+      prefix: DISP
+      max_cols: 30
+      method: agg
+  - id: o11
+    op: CustomProcess
+    prev:
+    - o10
+    params:
+      threshold: 0.7
+      mode: drop_high_null
+  - id: o12
+    op: CrossFeature
+    prev:
+    - o11
+    params:
+      cols:
+      - account_id
+      - district_id
+      output_col: loan_key
+      separator: _
+  - id: o13
+    op: LabelEncode
+    prev:
+    - o12
+  - id: o14
+    op: HandleMV
+    prev:
+    - o13
+    params:
+      method: median
+  train:
+    prev:
+    - o14

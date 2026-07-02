@@ -3,7 +3,7 @@
 For each requested repair, picks an operator at random from the task-applicable
 subset of the dppbench catalog, then samples a concrete parameter set using
 :func:`baselines.DiffPrep.slot_planner.diffprep_make_step`, which already has
-context-aware default-params logic for the shared 58-operator catalog.
+context-aware default-params logic for the shared operator catalog.
 
 For ops with a non-empty ``param_space`` we additionally perturb a single key
 to mimic the paper's "threshold parameter sweep" (§6.1).
@@ -15,7 +15,7 @@ import random as _random
 from typing import List, Optional
 
 from baselines.DiffPrep.slot_planner import diffprep_make_step
-from baselines.SAGA.pipeline import DataContext
+from baselines.common.pipeline import DataContext
 
 from .operator_catalog import CATALOG, operators_for_task
 from .repair import Repair
@@ -62,6 +62,14 @@ class ParameterSampler:
         if step is None:
             return None
         params = copy.deepcopy(step.params)
+        if op_name == "JoinTable" and self.ctx.task_type != "rec" and self.ctx.aux_dfs:
+            aux = self.rng.choice(self.ctx.aux_dfs)
+            params["aux_df"] = f"${aux}"
+            if params.get("prefix"):
+                params["prefix"] = aux.upper()[:8]
+        elif op_name == "ConcatTable" and self.ctx.aux_dfs:
+            aux = self.rng.choice(self.ctx.aux_dfs)
+            params["other_dfs"] = [f"${aux}"]
         spec = CATALOG[op_name]
 
         # Optionally perturb one key in param_space (threshold sweep).

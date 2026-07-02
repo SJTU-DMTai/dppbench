@@ -122,12 +122,24 @@ Example:
 2  3  30     16.5
 
 Example YAML:
-  - op: CreateFeature
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: CreateFeature
+    prev:
+    - s0
     params:
-      source_cols: [LIMIT_BAL, AGE]
+      source_cols:
+      - LIMIT_BAL
+      - AGE
       output_col: LIMIT_PER_AGE
       method: ratio
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

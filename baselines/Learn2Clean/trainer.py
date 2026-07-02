@@ -10,8 +10,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional
 
-from baselines.SAGA.pipeline import Pipeline
-from baselines.SAGA.pipeline_constraints import repair as repair_pipeline
+from baselines.common.pipeline import Pipeline, assign_dag_structure
+from baselines.common.pipeline_constraints import repair as repair_pipeline
 
 if TYPE_CHECKING:
     from .agent import TabularQAgent
@@ -95,8 +95,9 @@ class Learn2CleanTrainer:
 
             # Re-fetch terminal info: pipeline is already repaired by the env
             # at episode end (STOP / max_steps), so just snapshot it.
-            final_pipe = Pipeline(steps=list(self.env.pipeline.steps))
+            final_pipe = self.env.pipeline.copy()
             repair_pipeline(final_pipe, self.env.task_type, self.env.ctx)
+            assign_dag_structure(final_pipe, self.env.ctx)
 
             fitness: Optional[float] = None
             metrics: dict = {}
@@ -152,8 +153,9 @@ class Learn2CleanTrainer:
 
         if best_pipe is None:
             # Fall back to whatever the last episode produced.
-            best_pipe = Pipeline(steps=list(self.env.pipeline.steps))
+            best_pipe = self.env.pipeline.copy()
             repair_pipeline(best_pipe, self.env.task_type, self.env.ctx)
+            assign_dag_structure(best_pipe, self.env.ctx)
             best_fit = float(self.env.baseline_fitness)
             best_metrics = {}
 

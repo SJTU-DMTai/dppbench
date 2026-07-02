@@ -1,0 +1,88 @@
+dag:
+  sources:
+  - id: s0
+    table: interaction
+  - id: s1
+    table: item
+  ops:
+  - id: o1
+    op: Deduplicate
+    prev:
+    - s1
+    params:
+      subset:
+      - item_id
+      keep: first
+  - id: o2
+    op: HandleMV
+    prev:
+    - o1
+    params:
+      cols:
+      - item_brand
+      na_values:
+      - ''
+      action: mark
+  - id: o3
+    op: JoinTable
+    prev:
+    - s0
+    - o2
+    params:
+      user_col: user_id
+      item_col: item_id
+      how: left
+      method: rec
+  - id: o4
+    op: HandleMV
+    prev:
+    - o3
+    params:
+      cols:
+      - item_brand
+      method: constant
+      fill_value: 0
+      action: impute
+  - id: o5
+    op: FilterKCore
+    prev:
+    - o4
+    params:
+      user_col: user_id
+      item_col: item_id
+      k: 2
+  - id: o6
+    op: CreateSequence
+    prev:
+    - o5
+    params:
+      user_col: user_id
+      item_col: item_id
+      time_col: timestamp
+      seq_col: item_id_seq
+      max_len: 20
+  - id: o7
+    op: CreateSequence
+    prev:
+    - o6
+    params:
+      user_col: user_id
+      item_col: item_brand
+      time_col: timestamp
+      seq_col: cate_id_seq
+      max_len: 20
+  - id: o8
+    op: SampleNegative
+    prev:
+    - o7
+    params:
+      user_col: user_id
+      item_col: item_id
+      target_col: rating
+      n_negatives: 1
+      positive_label: 1
+      negative_label: 0
+      seed: 42
+  train:
+    prev:
+    - o8

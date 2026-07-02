@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from baselines.SAGA.pipeline import PipelineStep
+from baselines.common.pipeline import PipelineStep
 
 
 # ---------------------------------------------------------------------------

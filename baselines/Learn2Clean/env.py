@@ -27,13 +27,13 @@ import math
 import random as _random
 from typing import TYPE_CHECKING, FrozenSet, Optional, Tuple
 
-from baselines.SAGA.pipeline import Pipeline, make_step
-from baselines.SAGA.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import Pipeline, assign_dag_structure, make_step
+from baselines.common.pipeline_constraints import is_legal, repair
 
 from .operator_catalog import operators_for_task
 
 if TYPE_CHECKING:
-    from baselines.SAGA.pipeline import DataContext
+    from baselines.common.pipeline import DataContext
     from baselines.CtxPipe.evaluator import CtxPipeEvaluator
 
 
@@ -80,9 +80,13 @@ class Learn2CleanEnv:
         self._baseline_fitness: float = self._eval_baseline()
 
     # ------------------------------------------------------------------
+    def _repair_and_assign(self, pipe: Pipeline) -> Pipeline:
+        repair(pipe, self.task_type, self.ctx)
+        assign_dag_structure(pipe, self.ctx, self._rng)
+        return pipe
+
     def _eval_baseline(self) -> float:
-        empty = Pipeline(steps=[])
-        repair(empty, self.task_type, self.ctx)
+        empty = self._repair_and_assign(Pipeline(steps=[]))
         ev = self.evaluator.evaluate(empty)
         if ev.success and ev.fitness is not None:
             return float(ev.fitness)
@@ -116,8 +120,7 @@ class Learn2CleanEnv:
         # Repair is non-destructive at this point because it only injects
         # mandatory ops; for intermediate scoring we make a temporary copy so
         # repair-injected ops don't accumulate in the agent's view.
-        tmp = Pipeline(steps=list(self.pipeline.steps))
-        repair(tmp, self.task_type, self.ctx)
+        tmp = self._repair_and_assign(self.pipeline.copy())
         ev = self.evaluator.evaluate(tmp)
         if ev.success and ev.fitness is not None:
             return float(ev.fitness)
@@ -125,7 +128,7 @@ class Learn2CleanEnv:
 
     def _terminal_reward(self) -> tuple[float, dict]:
         """Apply repair() to ``self.pipeline`` and return (reward, info)."""
-        repair(self.pipeline, self.task_type, self.ctx)
+        self._repair_and_assign(self.pipeline)
         if len(self.pipeline) == 0:
             return self.illegal_reward, {"empty": True, "success": False}
         ev = self.evaluator.evaluate(self.pipeline)

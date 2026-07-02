@@ -58,11 +58,29 @@ Example:
 3  4  40
 
 Example YAML:
-  - op: ConcatTable
-    target: train
+dag:
+  sources:
+  - id: s0
+    table: main
+  - id: s1
+    table: year2
+  - id: s2
+    table: year3
+  - id: s3
+    table: year4
+  ops:
+  - id: o1
+    op: ConcatTable
+    prev:
+    - s0
+    - s1
+    - s2
+    - s3
     params:
-      other_dfs: [$year2, $year3, $year4]
       axis: vertical
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

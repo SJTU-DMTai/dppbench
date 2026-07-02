@@ -41,12 +41,24 @@ Example:
 1      Bob Lee    Bob    Lee
 
 Example YAML:
-  - op: SplitColumn
-    target: both
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: SplitColumn
+    prev:
+    - s0
     params:
       col: full_name
       sep: ' '
-      output_cols: [first, last]
+      output_cols:
+      - first
+      - last
+  train:
+    prev:
+    - o1
 """
         return description.strip()
 

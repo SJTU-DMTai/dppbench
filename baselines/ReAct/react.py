@@ -17,9 +17,10 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal, repair
-from baselines.common.context import _infer_rec_context, _infer_tabular_context
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import is_legal, repair
+from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
 
@@ -185,8 +186,8 @@ class ReAct:
         if sandbox.data is None:
             sandbox.reset()
         if sandbox.task_type == "rec":
-            return _infer_rec_context(self.data_name, {}, sandbox.data)
-        return _infer_tabular_context(self.data_name, {}, sandbox.data)
+            return _infer_rec_context(self.data_name, sandbox.data)
+        return _infer_tabular_context(self.data_name, sandbox.data)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:

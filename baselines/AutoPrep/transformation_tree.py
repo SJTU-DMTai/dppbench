@@ -13,7 +13,7 @@ from __future__ import annotations
 import random as _random
 from dataclasses import dataclass, field
 
-from baselines.common.pipeline import DataContext
+from baselines.common.data_ctx import DataContext
 
 from .operator_catalog import CATALOG, OpCategory, operators_for_task
 from .pipeline_factory import build_default_params

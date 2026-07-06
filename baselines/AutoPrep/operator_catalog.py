@@ -1,7 +1,7 @@
 """Auto-Prep operator catalog adapter.
 
 The executable operator universe is defined once in
-``baselines.common.operator_catalog``. Auto-Prep adds only the metadata that is
+``baselines.common.op_spec``. Auto-Prep adds only the metadata that is
 specific to its probabilistic transformation prior: ``prior_features`` and
 human-readable ``description`` strings used for cold-start scoring and display.
 
@@ -14,11 +14,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from baselines.common.operator_catalog import (
+from baselines.common.op_spec import (
     CATALOG as BASE_CATALOG,
     OpCategory,
+    is_mandatory as _base_is_mandatory,
+    needs_context as _base_needs_context,
     operators_by_category as _base_operators_by_category,
     operators_for_task as _base_operators_for_task,
+    valid_targets_for as _base_valid_targets_for,
 )
 
 
@@ -261,9 +264,9 @@ def _adapt_spec(name: str) -> OpSpec:
         task_type=base.task_type,
         default_params=dict(base.default_params),
         param_space=dict(base.param_space),
-        valid_targets=tuple(base.valid_targets),
-        needs_context=base.needs_context,
-        mandatory=base.mandatory,
+        valid_targets=tuple(_base_valid_targets_for(name)),
+        needs_context=_base_needs_context(name),
+        mandatory=_base_is_mandatory(name),
         prior_features=dict(extra.get("prior_features", {})),
         description=str(extra.get("description", "")),
     )

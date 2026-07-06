@@ -124,6 +124,11 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "supports_eval_full": True,
         "kwargs": {},
     },
+    "Random": {
+        "cls_path": "baselines.Random.random_baseline.RandomBaseline",
+        "supports_eval_full": True,
+        "kwargs": {},
+    },
     "DiffPrep": {
         "cls_path": "baselines.DiffPrep.diffprep.DiffPrep",
         "supports_eval_full": True,

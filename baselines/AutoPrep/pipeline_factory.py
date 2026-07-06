@@ -17,7 +17,8 @@ import copy
 import random as _random
 from typing import Optional
 
-from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, PipelineStep
 
 from .operator_catalog import CATALOG, OpCategory
 
@@ -185,7 +186,8 @@ def build_default_params(
                 return None
             aux = rng.choice(ctx.aux_dfs)
             p["aux_df"] = f"${aux}"
-            p["key_col"] = ctx.id_col
+            join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
+            p["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
             p["method"] = "key"
             if rng.random() < 0.5:
                 p["prefix"] = aux.upper()[:8]

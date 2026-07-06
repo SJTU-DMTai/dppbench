@@ -25,7 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
 
 from .evaluator import DeepPrepEvaluator
 from .llm_client import LLMClient
@@ -203,13 +204,13 @@ class RLTrainer:
     def _infer_ctx(sandbox: Sandbox, data_name: str) -> DataContext:
         """Lazy import to avoid a hard dep on ``baselines.SAGA.saga`` at
         module import time."""
-        from baselines.common.context import _infer_rec_context, _infer_tabular_context
+        from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
         # Force an initial reset so ``sandbox.data`` is populated.
         if sandbox.data is None:
             sandbox.reset()
         if sandbox.task_type == "rec":
-            return _infer_rec_context(data_name, {}, sandbox.data)
-        return _infer_tabular_context(data_name, {}, sandbox.data)
+            return _infer_rec_context(data_name, sandbox.data)
+        return _infer_tabular_context(data_name, sandbox.data)
 
 
 # ---------------------------------------------------------------------------

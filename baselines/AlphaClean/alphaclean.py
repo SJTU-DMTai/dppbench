@@ -21,9 +21,9 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.CtxPipe.evaluator import CtxPipeEvaluator
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal
-from baselines.common.context import _infer_rec_context, _infer_tabular_context
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, check_pipeline
+from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .operator_catalog import CATALOG
 from .parameter_sampler import ParameterSampler
@@ -116,11 +116,11 @@ class AlphaClean:
 
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: CtxPipeEvaluator) -> Tuple[DataContext, object]:
-        data = evaluator._executor._load_data()
+        data = evaluator.load_data()
         if evaluator.task_type == "rec":
-            ctx = _infer_rec_context(self.data_name, {}, data)
+            ctx = _infer_rec_context(self.data_name, data)
         else:
-            ctx = _infer_tabular_context(self.data_name, {}, data)
+            ctx = _infer_tabular_context(self.data_name, data)
         return ctx, data
 
     # ------------------------------------------------------------------
@@ -263,7 +263,7 @@ class AlphaClean:
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
             "eval_error": eval_error,
-            "is_legal": is_legal(best.pipeline, ctx.task_type),
+            "is_legal": check_pipeline(best.pipeline, ctx).valid,
             "final_pipeline_ops": best.pipeline.op_names(),
             "search_history": list(searcher.history),
             "n_unique_evaluations": train_evaluator.n_unique_evaluations,

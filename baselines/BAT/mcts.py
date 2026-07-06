@@ -17,7 +17,7 @@ import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
-from baselines.common.pipeline import DataContext
+from baselines.common.data_ctx import DataContext
 
 from .action import (
     ActionContext,

@@ -28,12 +28,12 @@ import random as _random
 from typing import TYPE_CHECKING, FrozenSet, Optional, Tuple
 
 from baselines.common.pipeline import Pipeline, assign_dag_structure, make_step
-from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import is_legal, repair
 
 from .operator_catalog import operators_for_task
 
 if TYPE_CHECKING:
-    from baselines.common.pipeline import DataContext
+    from baselines.common.data_ctx import DataContext
     from baselines.CtxPipe.evaluator import CtxPipeEvaluator
 
 

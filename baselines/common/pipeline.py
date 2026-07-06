@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
+import os
 import random as _random
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
-from baselines.common.operator_catalog import CATALOG, OpCategory, OpSpec, operators_for_task
+from baselines.common.data_ctx import DataContext
+from baselines.common.op_spec import (
+    CATALOG, OpCategory, is_mandatory, operators_for_task, valid_targets_for,
+)
 
 _DF_PARAM_KEYS = ("aux_df", "user_df", "item_df")
 _DF_LIST_PARAM_KEYS = {"other_dfs"}
@@ -49,17 +54,10 @@ def _target_table(target: str, root_table: str) -> str:
 
 def _source_entries_for_context(ctx: "DataContext", selected_aux: list[str] | None = None) -> list[dict]:
     if ctx.task_type == "rec":
-        tables = ["interaction"]
-        if ctx.has_user_df:
-            tables.append("user")
-        if ctx.has_item_df:
-            tables.append("item")
+        selected = list(ctx.secondary_tables)
     else:
-        tables = ["main"]
-        for name in selected_aux or []:
-            if name not in tables:
-                tables.append(name)
-    return [{"id": f"s{idx}", "table": table} for idx, table in enumerate(tables)]
+        selected = selected_aux or []
+    return ctx.source_entries(selected)
 
 
 def _strip_df_params(params: dict) -> tuple[dict, list[str]]:
@@ -269,30 +267,14 @@ class Pipeline:
         return len(self.steps)
 
 
-# -----------------------------------------------------------------------------
-# Schema / context used to construct context-dependent operator parameters
-# -----------------------------------------------------------------------------
 @dataclass
-class DataContext:
-    task_type: str
-    data_name: str
-    numeric_cols: list[str] = field(default_factory=list)
-    categorical_cols: list[str] = field(default_factory=list)
-    list_cols: list[str] = field(default_factory=list)
-    text_cols: list[str] = field(default_factory=list)
-    target_col: str | None = None
-    id_col: str | None = None
-    time_col: str | None = None
-    user_col: str = "user_id"
-    item_col: str = "item_id"
-    has_user_df: bool = False
-    has_item_df: bool = False
-    aux_dfs: list[str] = field(default_factory=list)  # names available as $name
-    sentinel_rules: list[dict] = field(default_factory=list)  # for CustomClean
+class PipelineCheckReport:
+    valid: bool
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-    @property
-    def all_cols(self) -> list[str]:
-        return self.numeric_cols + self.categorical_cols + self.list_cols + self.text_cols
+    def __bool__(self) -> bool:
+        return self.valid
 
 
 # -----------------------------------------------------------------------------
@@ -344,7 +326,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
                 return None
             aux = rng.choice(ctx.aux_dfs)
             p["aux_df"] = f"${aux}"
-            p["key_col"] = ctx.id_col
+            join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
+            p["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
             p["method"] = "key"
             if rng.random() < 0.5:
                 p["prefix"] = aux.upper()[:8]
@@ -707,8 +690,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 
 
 def default_target_for(op_name: str, task_type: str) -> str:
-    spec = CATALOG[op_name]
-    if spec.valid_targets == ("interaction",):
+    if valid_targets_for(op_name) == ("interaction",):
         return "interaction"
     if task_type == "tabular":
         return "both"
@@ -761,7 +743,7 @@ def assign_dag_structure(pipeline: Pipeline, ctx: DataContext, rng: _random.Rand
     aux_tables = _selected_aux_tables(ctx, pipeline.steps, rng)
     sources = _source_entries_for_context(ctx, aux_tables)
     source_by_table = _table_to_source_id(sources)
-    root_table = "interaction" if ctx.task_type == "rec" else "main"
+    root_table = ctx.primary_table
     current = source_by_table[root_table]
 
     for idx, step in enumerate(pipeline.steps, start=1):
@@ -792,56 +774,119 @@ def assign_dag_structure(pipeline: Pipeline, ctx: DataContext, rng: _random.Rand
 
 
 # -----------------------------------------------------------------------------
-# Random pipeline factory
+# Pipeline legality checks, repair, and random factory
 # -----------------------------------------------------------------------------
-# Canonical category order per task type. Operators are picked one category at
-# a time, in order.
+# Canonical ordering of categories used to sort steps. Lower index = earlier.
 _TABULAR_ORDER: list[OpCategory] = [
-    OpCategory.SCHEMA,            # CastType, RenameColumn
-    OpCategory.DATETIME_PARSE,    # ParseDate, ParseDate
-    OpCategory.CLEAN_VALUE,       # CustomClean, CustomClean
-    OpCategory.ERROR_DETECTION,   # HandleError, HandleNonIID, ReweightUPG
-    OpCategory.DEDUPLICATE,       # Deduplicate
-    OpCategory.JOIN,              # JoinTable, JoinTable, ConcatTable
-    OpCategory.SORT_ORDER,        # SortRows
-    OpCategory.FEATURE_GEN,       # FrequencyEncode, CreateFeature, CrossFeature, ...
-    OpCategory.FEATURE_TIME,      # ExtractDateTimeFeature, CreateLagFeature, CreateRollingFeature
-    OpCategory.OUTLIER,           # HandleOutlier
-    OpCategory.MISSING_VALUE,     # HandleMV, HandleMV, HandleMV
-    OpCategory.DISCRETIZATION,    # DiscretizeFeature
-    OpCategory.ENCODING,          # OneHotEncode, TargetEncode, ...
-    OpCategory.NORMALIZATION,     # TransformPower
-    OpCategory.SCALING,           # ScaleFeature, ScaleFeature, ...
-    OpCategory.DISTRIBUTION_RESHAPE,  # TransformPower, TransformPower
-    OpCategory.FEATURE_REDUCTION, # ReduceDimension, ReduceDimension, ReduceDimension, ReduceDimension
-    OpCategory.FEATURE_SELECTION, # SelectFeature, SelectFeature
-    OpCategory.FILTER_COL,        # CustomProcess, SelectFeature
-    OpCategory.FILTER_ROW,        # (rare in tabular)
-    OpCategory.IMBALANCE,         # Oversample, Undersample, ...
-    OpCategory.AUGMENT,           # AugmentNoise
+    OpCategory.SCHEMA,
+    OpCategory.DATETIME_PARSE,
+    OpCategory.CLEAN_VALUE,
+    OpCategory.ERROR_DETECTION,
+    OpCategory.DEDUPLICATE,
+    OpCategory.JOIN,
+    OpCategory.RESHAPE_PIVOT,
+    OpCategory.RESHAPE_LONGWIDE,
+    OpCategory.RESHAPE_STRING,
+    OpCategory.GROUP_AGG,
+    OpCategory.SORT_ORDER,
+    OpCategory.FEATURE_GEN,
+    OpCategory.FEATURE_TIME,
+    OpCategory.OUTLIER,
+    OpCategory.MISSING_VALUE,
+    OpCategory.DISCRETIZATION,
+    OpCategory.ENCODING,
+    OpCategory.NORMALIZATION,
+    OpCategory.SCALING,
+    OpCategory.DISTRIBUTION_RESHAPE,
+    OpCategory.FEATURE_REDUCTION,
+    OpCategory.FEATURE_SELECTION,
+    OpCategory.FILTER_COL,
+    OpCategory.FILTER_ROW,
+    OpCategory.IMBALANCE,
+    OpCategory.AUGMENT,
 ]
+_TABULAR_RANK = {c: i for i, c in enumerate(_TABULAR_ORDER)}
 
 _REC_ORDER: list[OpCategory] = [
     OpCategory.SCHEMA,
-    OpCategory.JOIN,            # JoinTable (mandatory)
+    OpCategory.JOIN,
     OpCategory.DATETIME_PARSE,
     OpCategory.CLEAN_VALUE,
     OpCategory.FILTER_COL,
-    OpCategory.FILTER_ROW,      # FilterKCore, FilterSample
-    OpCategory.OUTLIER,         # HandleOutlier
-    OpCategory.NORMALIZATION,   # TransformPower
+    OpCategory.FILTER_ROW,
+    OpCategory.OUTLIER,
+    OpCategory.NORMALIZATION,
     OpCategory.SCALING,
     OpCategory.DISTRIBUTION_RESHAPE,
     OpCategory.FEATURE_GEN,
     OpCategory.FEATURE_TIME,
     OpCategory.FEATURE_REDUCTION,
     OpCategory.FEATURE_SELECTION,
-    OpCategory.ENCODING,        # TargetEncode
-    OpCategory.SEQUENCE,        # CreateSequence (mandatory)
-    OpCategory.DISCRETIZATION,  # DiscretizeFeature (optional)
+    OpCategory.ENCODING,
+    OpCategory.SEQUENCE,
+    OpCategory.DISCRETIZATION,
     OpCategory.MISSING_VALUE,
-    OpCategory.SAMPLING,        # SampleNegative
+    OpCategory.SAMPLING,
 ]
+_REC_RANK = {c: i for i, c in enumerate(_REC_ORDER)}
+
+
+def _rank(op_name: str, task_type: str) -> int:
+    spec = CATALOG[op_name]
+    if task_type == "tabular":
+        return _TABULAR_RANK.get(spec.category, len(_TABULAR_ORDER))
+    return _REC_RANK.get(spec.category, len(_REC_ORDER))
+
+
+def is_legal(pipeline: "Pipeline", task_type: str) -> bool:
+    """Return whether pipeline operators follow the canonical category order."""
+    ranks = [_rank(n, task_type) for n in pipeline.op_names()]
+    return ranks == sorted(ranks)
+
+
+def repair(pipeline: "Pipeline", task_type: str, ctx: DataContext) -> "Pipeline":
+    """In-place structural repair. Returns the same pipeline."""
+    seen = set()
+    deduped: list[PipelineStep] = []
+    for step in pipeline.steps:
+        if step.op in seen:
+            continue
+        seen.add(step.op)
+        deduped.append(step)
+    pipeline.steps = deduped
+
+    pipeline.steps = [
+        step for step in pipeline.steps
+        if CATALOG[step.op].task_type in (task_type, "both")
+    ]
+
+    if task_type == "rec":
+        rng = _random.Random()
+        existing = {step.op for step in pipeline.steps}
+        for op_name in ("JoinTable", "CreateSequence", "SampleNegative"):
+            if op_name not in existing:
+                step = make_step(op_name, ctx, rng)
+                if step is not None:
+                    pipeline.steps.append(step)
+    else:
+        ensure_tabular_tail(pipeline, ctx)
+
+    pipeline.steps.sort(key=lambda step: _rank(step.op, task_type))
+    return pipeline
+
+
+def ensure_tabular_tail(pipeline: "Pipeline", ctx: DataContext) -> None:
+    """Ensure tabular pipelines include LabelEncode and HandleMV."""
+    rng = _random.Random()
+    if "LabelEncode" not in pipeline.op_names():
+        step = make_step("LabelEncode", ctx, rng)
+        if step is not None:
+            pipeline.steps.append(step)
+    if "HandleMV" not in pipeline.op_names():
+        step = make_step("HandleMV", ctx, rng)
+        if step is not None:
+            pipeline.steps.append(step)
+
 
 
 def _ops_in_category(cat: OpCategory, task_type: str) -> list[str]:
@@ -873,13 +918,13 @@ def random_pipeline(
         candidates = _ops_in_category(cat, task_type)
         if not candidates:
             continue
-        mandatory = [n for n in candidates if CATALOG[n].mandatory]
+        mandatory = [n for n in candidates if is_mandatory(n, task_type)]
         for op_name in mandatory:
             step = make_step(op_name, ctx, rng)
             if step is not None:
                 steps.append(step)
         # also pick at most one optional from this category
-        optional = [n for n in candidates if not CATALOG[n].mandatory]
+        optional = [n for n in candidates if not is_mandatory(n, task_type)]
         if optional and rng.random() < p_optional:
             chosen = rng.choice(optional)
             step = make_step(chosen, ctx, rng)
@@ -891,11 +936,290 @@ def random_pipeline(
     # Tabular tail: ensure LabelEncode + HandleMV are present (mandatory in
     # practice for the LightGBM training path).
     if task_type == "tabular":
-        from baselines.common.pipeline_constraints import ensure_tabular_tail
         ensure_tabular_tail(pipe, ctx)
 
     # Rec post-condition: ensure SampleNegative order is correct.
-    from baselines.common.pipeline_constraints import repair
     repair(pipe, task_type, ctx)
     assign_dag_structure(pipe, ctx, rng)
     return pipe
+
+
+# -----------------------------------------------------------------------------
+# Public DAG/YAML interfaces exposed to baseline implementations
+# -----------------------------------------------------------------------------
+def get_source_tables(ctx: DataContext) -> list[dict]:
+    """Return source table entries for a baseline-visible DAG.
+
+    ``s0`` is always the task primary table; ``s1...`` are secondary tables in
+    the order carried by :class:`DataContext`.
+    """
+    return ctx.source_entries()
+
+
+def init_pipeline(ctx: DataContext) -> Pipeline:
+    """Create an empty DAG pipeline with sources and ``train.prev`` populated."""
+    sources = get_source_tables(ctx)
+    train_prev = [sources[0]["id"]] if sources else []
+    return Pipeline(steps=[], sources=sources, train_prev=train_prev)
+
+
+def init_piepeline(ctx: DataContext) -> Pipeline:
+    """Backward-compatible alias preserving the spelling used in early notes."""
+    return init_pipeline(ctx)
+
+
+def _op_name(op: str | object) -> str:
+    return getattr(op, "op_name", op)
+
+
+def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
+    """Return a context-aware parameter space for one operator.
+
+    The static ``OpSpec.param_space`` is augmented with task columns, source
+    tables, and join keys so baselines can sample valid parameters without
+    duplicating dataset-specific logic.
+    """
+    name = _op_name(op)
+    spec = CATALOG.get(name)
+    if spec is None:
+        raise KeyError(f"Unknown operator: {name}")
+    space = copy.deepcopy(spec.param_space or {})
+    numeric_cols = _exclude_special(ctx.numeric_cols, ctx)
+    categorical_cols = _exclude_special(ctx.categorical_cols, ctx)
+    all_cols = _exclude_special(ctx.all_cols, ctx)
+
+    if name == "JoinTable":
+        space["source_tables"] = get_source_tables(ctx)
+        if ctx.task_type == "rec":
+            space["user_df"] = ["$user"] if ctx.has_user_df else []
+            space["item_df"] = ["$item"] if ctx.has_item_df else []
+            space["user_col"] = [ctx.user_col]
+            space["item_col"] = [ctx.item_col]
+        else:
+            aux_tables = list(ctx.secondary_tables)
+            space["aux_df"] = [f"${table}" for table in aux_tables]
+            join_cols = []
+            for table in aux_tables:
+                table_ctx = ctx.tables.get(table)
+                for key in (table_ctx.join_keys_to_primary if table_ctx else []):
+                    primary_key = key.get("primary")
+                    if primary_key and primary_key not in join_cols:
+                        join_cols.append(primary_key)
+            if not join_cols and ctx.id_col:
+                join_cols.append(ctx.id_col)
+            space["key_col"] = join_cols
+        return space
+
+    if name == "ConcatTable":
+        space["other_dfs"] = [[f"${table}"] for table in ctx.secondary_tables]
+        return space
+
+    if name in {
+        "HandleMV", "HandleOutlier", "ClipOutlier", "ScaleFeature",
+        "TransformPower", "DiscretizeFeature", "AugmentNoise",
+        "CreatePolynomialFeature", "ReduceDimension",
+    }:
+        space.setdefault("cols", numeric_cols)
+    elif name in {"OneHotEncode", "OrdinalEncode", "HashEncode", "TargetEncode", "FrequencyEncode"}:
+        space.setdefault("cols", categorical_cols)
+    elif name in {"ParseDate", "ExtractDateTimeFeature"} and ctx.time_col:
+        space.setdefault("cols", [ctx.time_col])
+    elif name in {"ParseNumber", "CorrectTypo", "ExtractTextFeature", "ExtractTextEmbedding"}:
+        space.setdefault("cols", ctx.text_cols or categorical_cols)
+    elif name in {"DropColumns"}:
+        space.setdefault("cols", all_cols)
+
+    if name in {"SelectFeature", "TargetEncode", "Oversample", "Undersample", "SampleNegative"} and ctx.target_col:
+        space.setdefault("target_col", [ctx.target_col])
+    if name in {"CreateLagFeature", "CreateRollingFeature"}:
+        if ctx.target_col:
+            space.setdefault("target_col", [ctx.target_col])
+        if ctx.time_col:
+            space.setdefault("time_col", [ctx.time_col])
+    if name in {"FilterKCore", "CreateSequence", "SampleNegative"}:
+        space.setdefault("user_col", [ctx.user_col])
+        space.setdefault("item_col", [ctx.item_col])
+    return space
+
+
+def get_order_constraints(task_type: str) -> list[OpCategory]:
+    """Return the canonical operator-category order for a task type."""
+    if task_type == "rec":
+        return list(_REC_ORDER)
+    if task_type == "tabular":
+        return list(_TABULAR_ORDER)
+    return []
+
+
+def _pipeline_data(pipeline: Pipeline | str | dict) -> dict:
+    if isinstance(pipeline, Pipeline):
+        return yaml.safe_load(pipeline.to_yaml()) or {}
+    if isinstance(pipeline, str):
+        return yaml.safe_load(pipeline) or {}
+    if isinstance(pipeline, dict):
+        return copy.deepcopy(pipeline)
+    raise TypeError(f"Unsupported pipeline type: {type(pipeline).__name__}")
+
+
+def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = None) -> PipelineCheckReport:
+    """Validate the shared DAG pipeline format.
+
+    Checks source/op id uniqueness, predecessor references, operator input
+    counts, reachability from ``train.prev``, and canonical category ordering
+    when a task context is provided.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    try:
+        data = _pipeline_data(pipeline)
+    except Exception as exc:
+        return PipelineCheckReport(False, [f"invalid yaml: {type(exc).__name__}: {exc}"], [])
+
+    dag = data.get("dag") if isinstance(data, dict) else None
+    if not isinstance(dag, dict):
+        return PipelineCheckReport(False, ["pipeline must contain a dag mapping"], [])
+
+    sources = dag.get("sources") or []
+    ops = dag.get("ops") or []
+    train = dag.get("train") or {}
+    if not sources:
+        errors.append("dag.sources must contain at least one source")
+    if not isinstance(ops, list):
+        errors.append("dag.ops must be a list")
+        ops = []
+
+    known: set[str] = set()
+    for idx, source in enumerate(sources):
+        sid = source.get("id") if isinstance(source, dict) else None
+        if not sid:
+            errors.append(f"source at index {idx} is missing id")
+            continue
+        if sid in known:
+            errors.append(f"source id {sid} is duplicated")
+        known.add(sid)
+
+    op_by_id: dict[str, dict] = {}
+    deps: dict[str, list[str]] = {}
+    for idx, node in enumerate(ops):
+        if not isinstance(node, dict):
+            errors.append(f"op at index {idx} must be a mapping")
+            continue
+        oid = node.get("id")
+        op_name = node.get("op")
+        if not oid:
+            errors.append(f"op at index {idx} is missing id")
+            continue
+        if oid in known:
+            errors.append(f"op id {oid} is duplicated")
+        if op_name not in CATALOG:
+            errors.append(f"op {oid} has unknown operator {op_name}")
+        prev = node.get("prev") or []
+        if not isinstance(prev, list):
+            errors.append(f"op {oid} prev must be a list")
+            prev = []
+        for pid in prev:
+            if pid not in known:
+                errors.append(f"op {oid} prev points to unknown or later node {pid}")
+        if op_name in CATALOG:
+            expected = CATALOG[op_name].prev_op_num
+            if expected <= 1 and len(prev) != expected:
+                errors.append(f"{op_name} {oid} expects {expected} prev nodes, got {len(prev)}")
+            elif expected > 1 and len(prev) < expected:
+                errors.append(f"{op_name} {oid} expects at least {expected} prev nodes, got {len(prev)}")
+        known.add(oid)
+        op_by_id[oid] = node
+        deps[oid] = list(prev)
+
+    train_prev = train.get("prev") or []
+    if not isinstance(train_prev, list) or not train_prev:
+        errors.append("dag.train.prev must be a non-empty list")
+        train_prev = []
+    for pid in train_prev:
+        if pid not in known:
+            errors.append(f"train.prev points to unknown node {pid}")
+
+    reachable: set[str] = set()
+    stack = list(train_prev)
+    while stack:
+        nid = stack.pop()
+        if nid in reachable:
+            continue
+        reachable.add(nid)
+        stack.extend(deps.get(nid, []))
+    for oid in op_by_id:
+        if oid not in reachable:
+            errors.append(f"op {oid} is not reachable from train.prev")
+
+    if ctx is not None and not errors:
+        try:
+            parsed = Pipeline.from_yaml(yaml.safe_dump(data, sort_keys=False))
+            if not is_legal(parsed, ctx.task_type):
+                errors.append("pipeline violates canonical operator order constraints")
+        except Exception as exc:
+            warnings.append(f"order check skipped: {type(exc).__name__}: {exc}")
+
+    return PipelineCheckReport(not errors, errors, warnings)
+
+
+class Evaluator:
+    """Documented YAML-facing evaluator wrapper.
+
+    It delegates to :class:`baselines.common.evaluator.PipelineEvaluator`, so
+    scoring uses the same downstream training executor as every baseline.
+    """
+
+    def __init__(
+        self,
+        data_name: str,
+        metric_key: str = "auc",
+        device: str = "cpu",
+        data_dir: str | None = None,
+        task_dir: str | None = None,
+        model_name: str | None = None,
+        verbose: bool = False,
+    ) -> None:
+        self.data_name = data_name
+        self.metric_key = metric_key
+        self.device = device
+        self.data_dir = data_dir
+        self.model_name = model_name
+        self.verbose = verbose
+        if task_dir is None:
+            root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            task_dir = os.path.join(root, "dppbench", "tasks", data_name)
+        self.task_dir = task_dir
+        self._delegate = None
+
+    @property
+    def delegate(self):
+        if self._delegate is None:
+            from baselines.common.evaluator import PipelineEvaluator
+            self._delegate = PipelineEvaluator(
+                task_dir=self.task_dir,
+                data_name=self.data_name,
+                data_dir=self.data_dir,
+                metric_key=self.metric_key,
+                verbose=self.verbose,
+                device=self.device,
+                model_name=self.model_name,
+            )
+        return self._delegate
+
+    def evaluate(self, pipeline: Pipeline | str):
+        if isinstance(pipeline, str):
+            return self.evaluate_yaml(pipeline)
+        return self.delegate.evaluate(pipeline)
+
+    def evaluate_yaml(self, pipeline_yaml: str):
+        from baselines.common.evaluator import EvaluationResult
+        report = check_pipeline(pipeline_yaml)
+        if not report.valid:
+            return EvaluationResult(
+                fitness=-math.inf,
+                success=False,
+                metrics={},
+                error="; ".join(report.errors),
+                duration_seconds=0.0,
+            )
+        return self.delegate.evaluate(Pipeline.from_yaml(pipeline_yaml))
+

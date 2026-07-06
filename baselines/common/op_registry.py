@@ -9,11 +9,6 @@ import re
 OPERATOR_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dppbench", " operators")
 
 
-def _class_to_module(class_name):
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', class_name)
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-
-
 def _load_all_operators():
     ops = {}
     pkg_name = "_op_registry_pkg"

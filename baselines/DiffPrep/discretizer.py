@@ -6,7 +6,7 @@ candidate operator. Mandatory slots already have one-hot beta so the
 argmax simply returns the forced op. ``IDENTITY`` picks become no-ops.
 
 After collecting the per-slot ops we apply :func:`baselines.common.
-pipeline_constraints.repair` to inject mandatory operators that may have
+pipeline.repair` to inject mandatory operators that may have
 been omitted (e.g. ``LabelEncode`` + ``HandleMV`` for tabular tail) and
 to reorder according to the canonical category ranks.
 """
@@ -17,8 +17,9 @@ from typing import List, Optional
 
 import torch
 
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import repair
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import repair
 
 from .search_space import ContinuousPipeline
 from .slot_planner import IDENTITY, Slot, diffprep_make_step

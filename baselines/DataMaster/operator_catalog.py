@@ -6,12 +6,15 @@ this baseline in lock-step with the rest of dppbench.
 """
 from __future__ import annotations
 
-from baselines.common.operator_catalog import (
+from baselines.common.op_spec import (
     CATALOG,
     OpCategory,
     OpSpec,
     operators_by_category,
+    is_mandatory,
+    needs_context,
     operators_for_task,
+    valid_targets_for,
 )
 from baselines.DeepPrep.operator_catalog import format_op_descriptions
 

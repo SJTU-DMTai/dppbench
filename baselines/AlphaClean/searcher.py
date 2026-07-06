@@ -18,7 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 
 from .parameter_sampler import ParameterSampler
@@ -68,6 +69,13 @@ class AlphaCleanSearcher:
 
     # ------------------------------------------------------------------
     def _evaluate(self, pipe: Pipeline) -> ScoredPipeline:
+        report = check_pipeline(pipe, self.ctx)
+        if not report.valid:
+            return ScoredPipeline(
+                pipeline=pipe,
+                fitness=-math.inf,
+                metrics={"legal_errors": report.errors},
+            )
         ev: EvaluationResult = self.evaluator.evaluate(pipe)
         return ScoredPipeline(
             pipeline=pipe,

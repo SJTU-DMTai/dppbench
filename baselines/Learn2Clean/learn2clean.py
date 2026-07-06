@@ -21,9 +21,10 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.CtxPipe.evaluator import CtxPipeEvaluator
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal
-from baselines.common.context import _infer_rec_context, _infer_tabular_context
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import is_legal
+from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .agent import TabularQAgent
 from .env import Learn2CleanEnv
@@ -122,11 +123,11 @@ class Learn2Clean:
 
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: CtxPipeEvaluator) -> Tuple[DataContext, object]:
-        data = evaluator._executor._load_data()
+        data = evaluator.load_data()
         if evaluator.task_type == "rec":
-            ctx = _infer_rec_context(self.data_name, {}, data)
+            ctx = _infer_rec_context(self.data_name, data)
         else:
-            ctx = _infer_tabular_context(self.data_name, {}, data)
+            ctx = _infer_tabular_context(self.data_name, data)
         return ctx, data
 
     # ------------------------------------------------------------------

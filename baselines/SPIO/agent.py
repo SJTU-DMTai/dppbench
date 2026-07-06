@@ -28,7 +28,8 @@ from typing import Callable, Optional
 
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
-from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, PipelineStep
 
 from .prompts import (
     SYSTEM_SPIO,

@@ -12,16 +12,17 @@ import random
 from dataclasses import dataclass, field
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
-from .operator_catalog import CATALOG, operators_for_task
+from baselines.common.op_spec import CATALOG, is_mandatory, operators_for_task
+from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
-    DataContext,
     Pipeline,
     PipelineStep,
     assign_dag_structure,
     make_step,
     random_pipeline,
+    check_pipeline,
 )
-from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import repair
 
 
 @dataclass
@@ -133,6 +134,9 @@ class LogicalSearch:
     # Genetic operators
     # ------------------------------------------------------------------
     def _evaluate(self, pipeline: Pipeline) -> GAIndividual:
+        report = check_pipeline(pipeline, self.ctx)
+        if not report.valid:
+            return GAIndividual(pipeline=pipeline, fitness=-math.inf, metrics={"legal_errors": report.errors})
         ev: EvaluationResult = self.evaluator.evaluate(pipeline)
         return GAIndividual(pipeline=pipeline, fitness=ev.fitness, metrics=ev.metrics)
 
@@ -198,11 +202,11 @@ class LogicalSearch:
                 p.steps.append(step)
         elif choice == "remove" and len(p.steps) > 1:
             idx = self.rng.randrange(len(p.steps))
-            if not CATALOG[p.steps[idx].op].mandatory:
+            if not is_mandatory(p.steps[idx].op, self.ctx.task_type):
                 p.steps.pop(idx)
         elif choice == "replace":
             idx = self.rng.randrange(len(p.steps))
-            if not CATALOG[p.steps[idx].op].mandatory:
+            if not is_mandatory(p.steps[idx].op, self.ctx.task_type):
                 op_name = self.rng.choice(ops)
                 step = make_step(op_name, self.ctx, self.rng)
                 if step is not None:

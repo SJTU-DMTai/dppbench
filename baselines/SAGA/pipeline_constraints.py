@@ -1,5 +1,5 @@
 """Compatibility wrapper for shared pipeline legality utilities."""
-from baselines.common.pipeline_constraints import (
+from baselines.common.pipeline import (
     _REC_ORDER,
     _TABULAR_ORDER,
     ensure_tabular_tail,

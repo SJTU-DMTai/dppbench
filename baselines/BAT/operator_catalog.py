@@ -15,10 +15,11 @@ arithmetic / dateformat / add-drop columns) onto dppbench's
 """
 from __future__ import annotations
 
-from baselines.common.operator_catalog import (
+from baselines.common.op_spec import (
     CATALOG,
     OpCategory,
     OpSpec,
+    is_mandatory,
     operators_by_category,
     operators_for_task,
 )
@@ -37,7 +38,7 @@ def format_op_descriptions(task_type: str) -> str:
         lines.append(f"### {cat.value}")
         for op_name in ops:
             spec = CATALOG[op_name]
-            tag = "[mandatory]" if spec.mandatory else "[optional]"
+            tag = "[mandatory]" if is_mandatory(op_name, task_type) else "[optional]"
             params = list(spec.default_params.keys())
             params_str = ", ".join(params) if params else "(no params)"
             lines.append(

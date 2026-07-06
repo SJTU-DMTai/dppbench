@@ -22,16 +22,16 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from baselines.common.operator_catalog import CATALOG, operators_for_task
+from baselines.common.op_spec import CATALOG, operators_for_task
+from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
-    DataContext,
     Pipeline,
     PipelineStep,
     build_default_params,
     default_target_for,
     make_step,
 )
-from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.pipeline import is_legal, repair
 
 from .llm_client import LLMClient
 from .operator_catalog import format_op_descriptions

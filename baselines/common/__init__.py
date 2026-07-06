@@ -1,32 +1,33 @@
 """Shared baseline runtime utilities.
 
-Originally lived under the top-level ``agents/`` package; moved here so
-the dppbench repo only carries one location for baseline-shared code.
-
-Public exports mirror the legacy ``agents`` package import surface for
-the very small number of historic call sites (e.g.
-``scripts/run_agent.py``):
-
-- ``TrainingExecutor`` (the canonical downstream-training driver, used
-  by SAGA/DeepPrep/SPIO/CtxPipe/etc. to score a pipeline yaml).
-- ``PreprocOptAgent`` (a small LLM-based reference baseline that serves
-  as a smoke test for the operator library).
-- ``LLMCaller``
-- ``get_operator_descriptions`` / ``get_operator_summary`` /
-  ``get_operator_detail``
-- ``Pipeline`` / ``PipelineStep`` / ``DataContext`` and shared legality /
-  evaluation helpers used by all pipeline-search baselines.
+This package exposes the common DPPBench baseline contract: task loading,
+operator metadata, pipeline/DAG helpers, legality checks, and downstream
+pipeline evaluation. Baseline-specific search strategies should depend on
+these interfaces instead of keeping private operator spaces or executors.
 """
+from .data_loader import DATASET_REGISTRY, TaskDataLoader
+from .op_spec import OpCategory, OpSpec
+from .utils import get_avilable_ops, get_available_ops, get_data, get_data_ctx, get_op
 from .executor import TrainingExecutor
+from .data_ctx import DataContext, TableContext, infer_data_context
 from .pipeline import (
-    DataContext,
+    Evaluator,
     Pipeline,
+    PipelineCheckReport,
     PipelineStep,
     assign_dag_structure,
     build_default_params,
+    check_pipeline,
+    ensure_tabular_tail,
+    get_order_constraints,
+    get_param_space,
+    get_source_tables,
+    init_piepeline,
+    init_pipeline,
+    is_legal,
     make_step,
+    repair,
 )
-from .pipeline_constraints import ensure_tabular_tail, is_legal, repair
 from .evaluator import EvaluationResult, PipelineEvaluator
 from .op_registry import (
     get_operator_descriptions,
@@ -34,12 +35,3 @@ from .op_registry import (
     get_operator_detail,
 )
 
-# Optional: PreprocOptAgent / LLMCaller depend on the optional ``openai``
-# package. Import lazily to keep ``baselines.common.TrainingExecutor``
-# importable on machines without ``openai`` installed.
-try:  # pragma: no cover - optional dependency
-    from .llm_caller import LLMCaller  # noqa: F401
-    from .preproc_opt_agent import PreprocOptAgent  # noqa: F401
-except Exception:  # pragma: no cover
-    LLMCaller = None  # type: ignore
-    PreprocOptAgent = None  # type: ignore

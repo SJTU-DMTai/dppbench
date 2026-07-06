@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from baselines.common.pipeline import DataContext
+    from baselines.common.data_ctx import DataContext
 
 
 CONTEXT_DIM = 32
@@ -43,7 +43,7 @@ class ContextEncoder:
 
         # 6..7 : data size (log10 rows / cols), 8 : null ratio
         try:
-            data = executor._load_data()
+            data = executor.load_data()
             if ctx.task_type == "tabular":
                 df = data.train_df
             else:

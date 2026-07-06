@@ -18,7 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from baselines.common.pipeline import DataContext, Pipeline
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
 
 from . import prompts
 from .action import (

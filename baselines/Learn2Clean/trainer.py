@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional
 
 from baselines.common.pipeline import Pipeline, assign_dag_structure
-from baselines.common.pipeline_constraints import repair as repair_pipeline
+from baselines.common.pipeline import repair as repair_pipeline
 
 if TYPE_CHECKING:
     from .agent import TabularQAgent

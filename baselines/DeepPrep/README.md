@@ -131,7 +131,7 @@ called, so installing the OpenAI SDK alone is enough for the API path.
 * Operator parameters are auto-filled with `build_default_params(...)`,
   so the LLM only needs to write `OpName(arg=value)` (or just `OpName`).
 * After the agent emits a `<solution>`, the pipeline is passed through
-  `pipeline_constraints.repair(...)`. This guarantees mandatory operators
+  `pipeline.repair(...)`. This guarantees mandatory operators
   are present (rec: `JoinTable`, `CreateSequence`,
   `DataSplit`; tabular: `LabelEncode`+`HandleMV` tail) so the final
   evaluator always receives an executable pipeline.

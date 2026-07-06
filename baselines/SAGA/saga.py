@@ -19,8 +19,8 @@ from baselines.common.config import (
 from baselines.common.evaluator import PipelineEvaluator
 from .logical_search import LogicalSearch
 from .physical_search import PhysicalSearch, TunedPipeline
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, check_pipeline
 
 # CtxPipeEvaluator extends PipelineEvaluator with row-level subsampling so the
 # search loop can iterate cheaply; SAGA reuses it when small_n is set.
@@ -30,7 +30,7 @@ from baselines.common.pipeline_constraints import is_legal
 # ``baselines.SAGA.saga`` while it is still partially initialized.
 
 
-from baselines.common.context import (
+from baselines.common.data_ctx import (
     _infer_graph_context,
     _infer_rec_context,
     _infer_tabular_context,
@@ -137,13 +137,12 @@ class SAGA:
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: PipelineEvaluator) -> DataContext:
         # Force the executor to load data so we can inspect the schema.
-        data = evaluator._executor._load_data()
-        summary = evaluator.get_data_summary()
+        data = evaluator.load_data()
         if evaluator.task_type == "rec":
-            return _infer_rec_context(self.data_name, summary, data)
+            return _infer_rec_context(self.data_name, data)
         if evaluator.task_type == "graph":
-            return _infer_graph_context(self.data_name, summary, data)
-        return _infer_tabular_context(self.data_name, summary, data)
+            return _infer_graph_context(self.data_name, data)
+        return _infer_tabular_context(self.data_name, data)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:
@@ -290,7 +289,7 @@ class SAGA:
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
             "eval_error": eval_error,
-            "is_legal": is_legal(best.pipeline, ctx.task_type),
+            "is_legal": check_pipeline(best.pipeline, ctx).valid,
             "final_pipeline_ops": best.pipeline.op_names(),
             "top_k": [
                 {

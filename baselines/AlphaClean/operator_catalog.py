@@ -1,19 +1,18 @@
 """AlphaClean operator catalog adapter.
 
-AlphaClean uses the shared operator universe through DiffPrep's adapter because
-that layer also exposes the ``SLOT_KIND`` annotation used by shared sampling and
-repair utilities.
+AlphaClean uses the shared DPPBench operator universe exposed by
+``baselines.common.op_spec`` so it sees the same search space and metadata as
+other baselines.
 """
 from __future__ import annotations
 
-from baselines.DiffPrep.operator_catalog import (
+from baselines.common.op_spec import (
     CATALOG,
     OpCategory,
     OpSpec,
-    SLOT_KIND,
     operators_by_category,
     operators_for_task,
-    slot_kind_of,
+    valid_targets_for,
 )
 
 __all__ = [
@@ -22,6 +21,5 @@ __all__ = [
     "OpSpec",
     "operators_for_task",
     "operators_by_category",
-    "SLOT_KIND",
-    "slot_kind_of",
+    "valid_targets_for",
 ]

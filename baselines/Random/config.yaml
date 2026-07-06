@@ -1,0 +1,12 @@
+# n_trials (default: 8): Number of random candidate pipelines to evaluate.
+n_trials: 8
+# random_pipeline_p_optional (default: 0.5): Probability to add optional ops per category.
+random_pipeline_p_optional: 0.5
+# small_n (default: 3000): Search-time row subsample size; 0 disables.
+small_n: 3000
+# eval_full (default: true): Re-evaluate the best pipeline on full data.
+eval_full: true
+# seed (default: 42): Random seed for pipeline sampling and evaluation.
+seed: 42
+# fast_train (default: true): Enable search-time fast training overrides.
+fast_train: true

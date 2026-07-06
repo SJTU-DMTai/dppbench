@@ -13,10 +13,11 @@ import random as _random
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from baselines.common.pipeline import DataContext, PipelineStep, build_default_params
-from baselines.common.pipeline_constraints import _TABULAR_ORDER, _REC_ORDER
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import PipelineStep, build_default_params
+from baselines.common.pipeline import _TABULAR_ORDER, _REC_ORDER
 
-from .operator_catalog import CATALOG, OpCategory, slot_kind_of
+from .operator_catalog import CATALOG, OpCategory, is_mandatory, slot_kind_of, valid_targets_for
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ def make_slots(task_type: str, ctx: DataContext) -> List[Slot]:
 
         # Mandatory categories: pick the unique mandatory op as the forced
         # candidate (still keep IDENTITY if user disables forcing).
-        mandatory_ops = [n for n in cands if CATALOG[n].mandatory]
+        mandatory_ops = [n for n in cands if is_mandatory(n, ctx.task_type)]
         forced_op = mandatory_ops[0] if mandatory_ops else None
         is_mandatory = forced_op is not None
 
@@ -149,8 +150,7 @@ def _candidates_in_category(cat: OpCategory, task_type: str, ctx: DataContext) -
 
 
 def _default_target_for(op_name: str, task_type: str) -> str:
-    spec = CATALOG[op_name]
-    if spec.valid_targets == ("interaction",):
+    if valid_targets_for(op_name) == ("interaction",):
         return "interaction"
     if task_type == "tabular":
         return "both"
@@ -183,9 +183,11 @@ def _diffprep_custom_default_params(op_name: str, ctx: DataContext) -> Optional[
         if not ctx.aux_dfs or ctx.id_col is None:
             return None
         # Pick the first aux table; user may override later.
+        aux = ctx.aux_dfs[0]
+        join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
         return {
-            "aux_df": f"${ctx.aux_dfs[0]}",
-            "key_col": ctx.id_col,
+            "aux_df": f"${aux}",
+            "key_col": join_keys[0]["primary"] if join_keys else ctx.id_col,
             "how": "left",
         }
 

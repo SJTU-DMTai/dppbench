@@ -24,8 +24,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal, repair
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import is_legal, repair
 from baselines.DeepPrep.tree_agent import (
     ChainParseError,
     chain_to_steps,
@@ -212,10 +213,10 @@ class DataMasterAgent:
         """Render the canonical category order with a few example ops per
         bucket, so the LLM can sort its delta chain to satisfy ``is_legal``.
         """
-        from baselines.common.pipeline_constraints import (
+        from baselines.common.pipeline import (
             _TABULAR_ORDER, _REC_ORDER,
         )
-        from baselines.common.operator_catalog import CATALOG
+        from baselines.common.op_spec import CATALOG
         order = _REC_ORDER if self.ctx.task_type == "rec" else _TABULAR_ORDER
         # Group operators by category, restricted to the current task type.
         by_cat: dict = {}

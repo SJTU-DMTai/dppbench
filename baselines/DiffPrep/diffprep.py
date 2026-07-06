@@ -35,9 +35,10 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.common.pipeline import DataContext, Pipeline
-from baselines.common.pipeline_constraints import is_legal
-from baselines.common.context import _infer_rec_context, _infer_tabular_context
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import is_legal
+from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .discretizer import argmax_op_names, discretize, slot_order
 from .evaluator import DiffPrepEvaluator
@@ -271,11 +272,11 @@ class DiffPrep:
 
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: DiffPrepEvaluator) -> Tuple[DataContext, object]:
-        data = evaluator._executor._load_data()
+        data = evaluator.load_data()
         if evaluator.task_type == "rec":
-            ctx = _infer_rec_context(self.data_name, {}, data)
+            ctx = _infer_rec_context(self.data_name, data)
         else:
-            ctx = _infer_tabular_context(self.data_name, {}, data)
+            ctx = _infer_tabular_context(self.data_name, data)
         return ctx, data
 
     # ------------------------------------------------------------------

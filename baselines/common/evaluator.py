@@ -64,8 +64,8 @@ class PipelineEvaluator:
     def task_type(self) -> str:
         return self._executor.task_type
 
-    def get_data_summary(self) -> dict:
-        return self._executor.get_data_summary()
+    def load_data(self):
+        return self._executor.load_data()
 
     def evaluate(self, pipeline: Pipeline) -> EvaluationResult:
         key = pipeline.hash()

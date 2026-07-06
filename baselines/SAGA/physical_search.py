@@ -12,8 +12,8 @@ import random
 from dataclasses import dataclass
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
-from .operator_catalog import CATALOG
-from baselines.common.pipeline import Pipeline, assign_dag_structure
+from baselines.common.op_spec import CATALOG
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
 
 
 @dataclass
@@ -73,7 +73,17 @@ class PhysicalSearch:
             ctx = getattr(self.evaluator, "ctx", None)
             if ctx is not None:
                 assign_dag_structure(cand, ctx, self.rng)
-            ev: EvaluationResult = self.evaluator.evaluate(cand)
+            report = check_pipeline(cand, ctx) if ctx is not None else check_pipeline(cand)
+            if not report.valid:
+                ev = EvaluationResult(
+                    fitness=-math.inf,
+                    success=False,
+                    metrics={"legal_errors": report.errors},
+                    error="; ".join(report.errors),
+                    duration_seconds=0.0,
+                )
+            else:
+                ev: EvaluationResult = self.evaluator.evaluate(cand)
             if ev.fitness > best_fitness:
                 best_fitness = ev.fitness
                 best_pipe = cand

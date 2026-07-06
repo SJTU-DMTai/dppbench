@@ -1,6 +1,6 @@
 """DiffPrep operator catalog.
 
-Re-exports the shared base catalog from ``baselines.common.operator_catalog``
+Re-exports the shared base catalog from ``baselines.common.op_spec``
 and annotates every operator with a ``slot_kind`` flag:
 
 * ``"soft"``  -- feature-wise + tensor-friendly. Eligible for the DARTS
@@ -20,12 +20,15 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Dict
 
-from baselines.common.operator_catalog import (
+from baselines.common.op_spec import (
     CATALOG as _BASE_CATALOG,
     OpCategory,
     OpSpec,
+    is_mandatory,
+    needs_context,
     operators_for_task as _base_operators_for_task,
     operators_by_category as _base_operators_by_category,
+    valid_targets_for,
 )
 
 
@@ -130,6 +133,9 @@ __all__ = [
     "OpSpec",
     "SLOT_KIND",
     "slot_kind_of",
+    "is_mandatory",
+    "needs_context",
     "operators_for_task",
     "operators_by_category",
+    "valid_targets_for",
 ]

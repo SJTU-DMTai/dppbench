@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-from baselines.common.pipeline import DataContext
+from baselines.common.data_ctx import DataContext
 
 from .operator_catalog import CATALOG, OpCategory
 

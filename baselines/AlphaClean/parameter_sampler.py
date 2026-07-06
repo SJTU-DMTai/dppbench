@@ -1,12 +1,11 @@
 """ParameterSampler -- AlphaClean's "Library + ParameterSampler" stage.
 
 For each requested repair, picks an operator at random from the task-applicable
-subset of the dppbench catalog, then samples a concrete parameter set using
-:func:`baselines.DiffPrep.slot_planner.diffprep_make_step`, which already has
-context-aware default-params logic for the shared operator catalog.
+subset of the shared DPPBench catalog, then samples a concrete parameter set
+through ``baselines.common.pipeline``.
 
-For ops with a non-empty ``param_space`` we additionally perturb a single key
-to mimic the paper's "threshold parameter sweep" (§6.1).
+For ops with a non-empty context-aware parameter space we additionally perturb
+a single key to mimic the paper's parameter sweep.
 """
 from __future__ import annotations
 
@@ -14,8 +13,8 @@ import copy
 import random as _random
 from typing import List, Optional
 
-from baselines.DiffPrep.slot_planner import diffprep_make_step
-from baselines.common.pipeline import DataContext
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import get_param_space, make_step
 
 from .operator_catalog import CATALOG, operators_for_task
 from .repair import Repair
@@ -58,27 +57,34 @@ class ParameterSampler:
 
     # ------------------------------------------------------------------
     def _sample_one(self, op_name: str) -> Optional[Repair]:
-        step = diffprep_make_step(op_name, self.ctx, self.rng)
+        step = make_step(op_name, self.ctx, self.rng)
         if step is None:
             return None
         params = copy.deepcopy(step.params)
         if op_name == "JoinTable" and self.ctx.task_type != "rec" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["aux_df"] = f"${aux}"
+            join_keys = self.ctx.tables.get(aux).join_keys_to_primary if aux in self.ctx.tables else []
+            params["key_col"] = join_keys[0]["primary"] if join_keys else self.ctx.id_col
             if params.get("prefix"):
                 params["prefix"] = aux.upper()[:8]
         elif op_name == "ConcatTable" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["other_dfs"] = [f"${aux}"]
-        spec = CATALOG[op_name]
+        param_space = get_param_space(CATALOG[op_name], self.ctx)
 
-        # Optionally perturb one key in param_space (threshold sweep).
-        if spec.param_space:
-            keys = [k for k in spec.param_space.keys() if k in params or True]
-            if keys:
-                key = self.rng.choice(keys)
-                choices = spec.param_space[key]
-                if isinstance(choices, list) and choices:
+        # Optionally perturb one key in the shared context-aware parameter space.
+        keys = [k for k, v in param_space.items() if k != "source_tables" and v]
+        if keys:
+            key = self.rng.choice(keys)
+            choices = param_space[key]
+            if isinstance(choices, list) and choices:
+                if key in {"cols", "source_cols", "group_cols", "agg_cols", "feature_cols"}:
+                    flat_choices = [c for c in choices if isinstance(c, str)]
+                    if flat_choices:
+                        n_cols = self.rng.randint(1, min(3, len(flat_choices)))
+                        params[key] = self.rng.sample(flat_choices, n_cols)
+                else:
                     params[key] = copy.deepcopy(self.rng.choice(choices))
 
         return Repair(op_name=op_name, target=step.target, params=params)

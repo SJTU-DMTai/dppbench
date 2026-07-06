@@ -58,7 +58,7 @@ class CtxPipeEvaluator(PipelineEvaluator):
         # Cache must be invalidated because identical YAMLs may now refer to a
         # different dataset size.
         self._cache.clear()
-        self._executor._data = None
+        self._executor.clear_data_cache()
 
     # ------------------------------------------------------------------
     def _patched_make_data_instance(self):

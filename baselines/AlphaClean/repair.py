@@ -15,13 +15,13 @@ from typing import List, Optional
 
 import numpy as np
 
+from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
-    DataContext,
     Pipeline,
     PipelineStep,
     assign_dag_structure,
 )
-from baselines.common.pipeline_constraints import repair as repair_pipeline
+from baselines.common.pipeline import repair as repair_pipeline
 
 from .operator_catalog import CATALOG, OpCategory
 

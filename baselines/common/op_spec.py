@@ -1,4 +1,4 @@
-"""Shared operator catalog for the dppbench operators.
+"""Shared operator specs for the dppbench operators.
 
 This is the single metadata source imported by baseline-specific catalogs.
 The callable operator implementations live under ``dppbench/ operators/`` and
@@ -46,21 +46,41 @@ class OpCategory(str, Enum):
 @dataclass
 class OpSpec:
     op_name: str
-    category: OpCategory
-    task_type: str  # "tabular" | "rec" | "both"
-    default_params: dict[str, Any] = field(default_factory=dict)
-    param_space: dict[str, Any] = field(default_factory=dict)
-    valid_targets: tuple[str, ...] = ("both",)
-    needs_context: bool = False
-    mandatory: bool = False
+    category: OpCategory    # 算子所属阶段
+    task_type: str
+    prev_op_num: int = 1    # 前序算子数量；多表集成算子至少需要 2 个输入
+    default_params: dict[str, Any] = field(default_factory=dict)    # 算子默认参数
+    param_space: dict[str, Any] = field(default_factory=dict)    # 算子参数取值空间
+    nl_description: str = ""    # 算子的功能说明与用例，供 LLM-driven baseline 使用
 
 
 CATALOG: dict[str, OpSpec] = {}
 
 
+VALID_TARGETS: dict[str, tuple[str, ...]] = {}
+NEEDS_CONTEXT: set[str] = set()
+TABULAR_MANDATORY_OPS: set[str] = {"LabelEncode", "HandleMV"}
+REC_MANDATORY_OPS: set[str] = {"JoinTable", "CreateSequence", "SampleNegative"}
+
+
+_OP_DESCRIPTIONS: dict[str, str] | None = None
+
+
+def _nl_description(name: str) -> str:
+    global _OP_DESCRIPTIONS
+    if _OP_DESCRIPTIONS is None:
+        try:
+            from baselines.common.op_registry import get_operator_descriptions
+            _OP_DESCRIPTIONS = get_operator_descriptions()
+        except Exception:
+            _OP_DESCRIPTIONS = {}
+    return _OP_DESCRIPTIONS.get(name, "")
+
+
 def _add(name: str, category: OpCategory, task_type: str = "both",
          default_params: dict[str, Any] | None = None,
          param_space: dict[str, Any] | None = None,
+         prev_op_num: int = 1,
          valid_targets: tuple[str, ...] = ("both",),
          needs_context: bool = False,
          mandatory: bool = False) -> None:
@@ -68,17 +88,28 @@ def _add(name: str, category: OpCategory, task_type: str = "both",
         op_name=name,
         category=category,
         task_type=task_type,
+        prev_op_num=prev_op_num,
         default_params=default_params or {},
         param_space=param_space or {},
-        valid_targets=valid_targets,
-        needs_context=needs_context,
-        mandatory=mandatory,
+        nl_description=_nl_description(name),
     )
+    if valid_targets != ("both",):
+        VALID_TARGETS[name] = valid_targets
+    if needs_context:
+        NEEDS_CONTEXT.add(name)
+    if mandatory:
+        if task_type == "rec":
+            REC_MANDATORY_OPS.add(name)
+        elif task_type == "tabular":
+            TABULAR_MANDATORY_OPS.add(name)
+        else:
+            TABULAR_MANDATORY_OPS.add(name)
+            REC_MANDATORY_OPS.add(name)
 
 
 # S1. Data Integration
-_add("JoinTable", OpCategory.JOIN, default_params={"method": "key"}, needs_context=True)
-_add("ConcatTable", OpCategory.RESHAPE_LONGWIDE, default_params={"axis": "vertical"}, needs_context=True)
+_add("JoinTable", OpCategory.JOIN, default_params={"method": "key"}, prev_op_num=2, needs_context=True)
+_add("ConcatTable", OpCategory.RESHAPE_LONGWIDE, default_params={"axis": "vertical"}, prev_op_num=2, needs_context=True)
 _add("AlignSchema", OpCategory.SCHEMA, needs_context=True)
 _add("RenameColumn", OpCategory.SCHEMA, needs_context=True)
 _add("DropColumns", OpCategory.FILTER_COL, needs_context=True)
@@ -202,6 +233,22 @@ assert len(CATALOG) == EXPECTED_OP_COUNT, (
 )
 
 
+def valid_targets_for(op_name: str) -> tuple[str, ...]:
+    return VALID_TARGETS.get(op_name, ("both",))
+
+
+def needs_context(op_name: str) -> bool:
+    return op_name in NEEDS_CONTEXT
+
+
+def is_mandatory(op_name: str, task_type: str | None = None) -> bool:
+    if task_type == "tabular":
+        return op_name in TABULAR_MANDATORY_OPS
+    if task_type == "rec":
+        return op_name in REC_MANDATORY_OPS
+    return op_name in TABULAR_MANDATORY_OPS or op_name in REC_MANDATORY_OPS
+
+
 def operators_for_task(task_type: str) -> list[str]:
     """Return operator names applicable to the task type."""
     if task_type not in ("tabular", "rec"):
@@ -210,6 +257,27 @@ def operators_for_task(task_type: str) -> list[str]:
         name for name, spec in CATALOG.items()
         if spec.task_type == task_type or spec.task_type == "both"
     ]
+
+
+def get_op(op_name: str) -> OpSpec:
+    """Return the OpSpec for one operator name."""
+    try:
+        return CATALOG[op_name]
+    except KeyError as exc:
+        raise KeyError(f"Unknown operator: {op_name}") from exc
+
+
+def get_avilable_ops(task_type: str) -> list[OpSpec]:
+    """Return OpSpec objects applicable to the task type.
+
+    The misspelling is kept because it is the public name used in the docs.
+    """
+    return [CATALOG[name] for name in operators_for_task(task_type)]
+
+
+def get_available_ops(task_type: str) -> list[OpSpec]:
+    """Spelled alias for get_avilable_ops()."""
+    return get_avilable_ops(task_type)
 
 
 def operators_by_category(task_type: str) -> dict[OpCategory, list[str]]:
@@ -223,8 +291,18 @@ def operators_by_category(task_type: str) -> dict[OpCategory, list[str]]:
 __all__ = [
     "CATALOG",
     "EXPECTED_OP_COUNT",
+    "NEEDS_CONTEXT",
+    "REC_MANDATORY_OPS",
+    "TABULAR_MANDATORY_OPS",
+    "VALID_TARGETS",
     "OpCategory",
     "OpSpec",
+    "get_available_ops",
+    "get_avilable_ops",
+    "get_op",
+    "is_mandatory",
+    "needs_context",
     "operators_by_category",
     "operators_for_task",
+    "valid_targets_for",
 ]

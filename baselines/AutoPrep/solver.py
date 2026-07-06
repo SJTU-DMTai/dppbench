@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Optional
 
-from baselines.common.pipeline import DataContext, Pipeline, PipelineStep
-from baselines.common.pipeline_constraints import repair
+from baselines.common.data_ctx import DataContext
+from baselines.common.pipeline import Pipeline, PipelineStep
+from baselines.common.pipeline import repair
 
 from .operator_catalog import CATALOG
 from .pipeline_factory import build_default_params, make_step
@@ -71,7 +72,8 @@ def _add_join_steps(
                 continue
             if edge.aux_ref is not None and ctx.task_type != "rec":
                 params["aux_df"] = f"${edge.aux_ref}"
-                params["key_col"] = ctx.id_col
+                join_keys = ctx.tables.get(edge.aux_ref).join_keys_to_primary if edge.aux_ref in ctx.tables else []
+                params["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
                 params["method"] = "key"
                 if "prefix" not in params:
                     pass

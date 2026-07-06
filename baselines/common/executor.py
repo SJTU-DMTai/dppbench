@@ -8,75 +8,10 @@ import shutil
 import copy
 import pandas as pd
 
+from baselines.common.data_loader import DATASET_REGISTRY, TaskDataLoader
+
 # Repo root (= parent of baselines/) so ``import dppbench`` works.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-DATASET_REGISTRY = {
-    # --- tabular binary classification ---------------------------------
-    "berka": ("tabular", "dppbench.tasks.berka.berka_data.BerkaData"),
-    "bondora": ("tabular", "dppbench.tasks.bondora.bondora_data.BondoraData"),
-    "default_credit": (
-        "tabular",
-        "dppbench.tasks.default_credit.default_credit_data.DefaultCreditData",
-    ),
-    "fraud_detection": (
-        "tabular",
-        "dppbench.tasks.fraud_detection.fraud_detection_data.FraudDetectionData",
-    ),
-    "home_credit": (
-        "tabular",
-        "dppbench.tasks.home_credit.home_credit_data.HomeCreditData",
-    ),
-    "polish_bankruptcy": (
-        "tabular",
-        "dppbench.tasks.polish_bankruptcy.polish_bankruptcy_data.PolishBankruptcyData",
-    ),
-    # --- tabular time-series regression --------------------------------
-    "beijing_air_quality": (
-        "tabular",
-        "dppbench.tasks.beijing_air_quality.beijing_air_quality_data.BeijingAirQualityData",
-    ),
-    "bike_sharing": (
-        "tabular",
-        "dppbench.tasks.bike_sharing.bike_sharing_data.BikeSharingData",
-    ),
-    "citibike_jc_hourly": (
-        "tabular",
-        "dppbench.tasks.citibike_jc_hourly.citibike_jc_hourly_data.CitibikeJcHourlyData",
-    ),
-    "nyc_taxi_hourly": (
-        "tabular",
-        "dppbench.tasks.nyc_taxi_hourly.nyc_taxi_hourly_data.NycTaxiHourlyData",
-    ),
-    # --- graph node classification ------------------------------------
-    "elliptic_bitcoin": (
-        "graph",
-        "dppbench.tasks.elliptic_bitcoin.elliptic_bitcoin_data.EllipticBitcoinData",
-    ),
-    # --- recommendation -----------------------------------------------
-    "amazon_beauty": (
-        "rec",
-        "dppbench.tasks.amazon_beauty.amazon_beauty_data.AmazonBeautyData",
-    ),
-    "kuairec": (
-        "rec",
-        "dppbench.tasks.kuairec.kuairec_data.KuairecData",
-    ),
-    "movielens": (
-        "rec",
-        "dppbench.tasks.movielens.movielens_data.MovielensData",
-    ),
-    "yelp": ("rec", "dppbench.tasks.yelp.yelp_data.YelpData"),
-    "tenrec": ("rec", "dppbench.tasks.tenrec.tenrec_data.TenrecData"),
-}
-
-
-def _import_class(dotted_path):
-    import importlib
-    module_path, class_name = dotted_path.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
 
 
 # Default search-time fast-training overrides. Each key targets a class of
@@ -107,11 +42,14 @@ class TrainingExecutor:
         self.model_config = model_config
         self.original_yaml = os.path.join(task_dir, "prepare.yaml")
         self.model_yaml = os.path.join(task_dir, "model.yaml")
-        self._data = None
-
         if data_name not in DATASET_REGISTRY:
             raise ValueError(f"Unknown dataset: {data_name}. Available: {list(DATASET_REGISTRY.keys())}")
-        self._task_type, self._data_cls_path = DATASET_REGISTRY[data_name]
+        self._data_loader = TaskDataLoader(
+            data_name,
+            data_dir=data_dir,
+            model_config_provider=self.get_model_config,
+        )
+        self._task_type = self._data_loader.task_type
 
         self._work_dir = tempfile.mkdtemp(prefix="preproc_opt_")
         self._working_yaml = os.path.join(self._work_dir, "prepare.yaml")
@@ -158,23 +96,14 @@ class TrainingExecutor:
         return self._task_type
 
     def _resolved_data_dir(self):
-        if not self.data_dir:
-            return None
-        data_dir = os.path.abspath(self.data_dir)
-        task_data_dir = os.path.join(data_dir, self.data_name, "data")
-        if os.path.isdir(task_data_dir):
-            return task_data_dir
-        return data_dir
+        return self._data_loader.resolved_data_dir()
 
     def _make_data_instance(self):
-        cls = _import_class(self._data_cls_path)
-        return cls(data_dir=self._resolved_data_dir())
+        return self._data_loader.make_data_instance()
 
     def _make_configured_data_instance(self):
         data = self._make_data_instance()
-        if hasattr(data, "set_model_config"):
-            data.set_model_config(self.get_model_config())
-        return data
+        return self._data_loader.configure_data_instance(data)
 
     def get_current_yaml(self):
         with open(self._working_yaml, "r", encoding="utf-8") as f:
@@ -230,75 +159,17 @@ class TrainingExecutor:
                 merged[key] = copy.deepcopy(value)
         return merged
 
-    def get_data_summary(self):
-        data = self._load_data()
-        if self._task_type == "tabular":
-            return self._tabular_data_summary(data)
-        if self._task_type == "graph":
-            return self._graph_data_summary(data)
-        return self._rec_data_summary(data)
-
-    def _tabular_data_summary(self, data):
-        train_df = data.train_df
-        return {
-            "task_type": "tabular",
-            "train_shape": train_df.shape,
-            "columns": list(train_df.columns[:30]),
-            "dtypes_summary": {str(k): int(v) for k, v in train_df.dtypes.value_counts().items()},
-            "null_ratio": float(train_df.isnull().mean().mean()),
-            "target_col": data.target_col,
-            "target_distribution": {str(k): int(v) for k, v in train_df[data.target_col].value_counts().items()} if data.target_col in train_df.columns else {},
-            "auxiliary_tables": {k: list(v.shape) if v is not None else None for k, v in data.auxiliary_dfs.items()},
-        }
-
-    def _rec_data_summary(self, data):
-        interaction_df = data.interaction_df
-        return {
-            "task_type": "rec",
-            "interaction_shape": interaction_df.shape,
-            "columns": list(interaction_df.columns[:30]),
-            "col_types": data.col_types,
-            "null_ratio": float(interaction_df.isnull().mean().mean()),
-            "has_user_df": data.user_df is not None,
-            "has_item_df": data.item_df is not None,
-            "user_df_shape": list(data.user_df.shape) if data.user_df is not None else None,
-            "item_df_shape": list(data.item_df.shape) if data.item_df is not None else None,
-        }
-
-    def _graph_data_summary(self, data):
-        train_df = data.train_df
-        edges = data.auxiliary_dfs.get("edges") if data.auxiliary_dfs else None
-        classes = data.auxiliary_dfs.get("classes") if data.auxiliary_dfs else None
-        feat_cols = [c for c in train_df.columns if str(c).startswith("feat_")]
-        target_col = getattr(data, "target_col", None)
-        id_col = getattr(data, "id_col", None)
-        target_distribution = {}
-        if target_col in train_df.columns:
-            target_distribution = {
-                str(k): int(v)
-                for k, v in train_df[target_col].value_counts(dropna=False).items()
-            }
-        return {
-            "task_type": "graph",
-            "train_shape": train_df.shape,
-            "columns": list(train_df.columns[:30]),
-            "feature_cols": feat_cols[:30],
-            "n_feature_cols": len(feat_cols),
-            "dtypes_summary": {str(k): int(v) for k, v in train_df.dtypes.value_counts().items()},
-            "null_ratio": float(train_df.isnull().mean().mean()),
-            "target_col": target_col,
-            "id_col": id_col,
-            "target_distribution": target_distribution,
-            "edges_shape": list(edges.shape) if edges is not None else None,
-            "classes_shape": list(classes.shape) if classes is not None else None,
-            "auxiliary_tables": {k: list(v.shape) if v is not None else None for k, v in data.auxiliary_dfs.items()},
-        }
-
     def _load_data(self):
-        if self._data is None:
-            self._data = self._make_configured_data_instance()
-            self._data.load_data()
-        return self._data
+        return self.load_data()
+
+    def load_data(self):
+        if self._data_loader._data is None:
+            self._data_loader._data = self._make_configured_data_instance()
+            self._data_loader._data.load_data()
+        return self._data_loader._data
+
+    def clear_data_cache(self):
+        self._data_loader.clear_cache()
 
     def run_training(self):
         if self._task_type == "tabular":

@@ -63,6 +63,6 @@ Outputs land in `outputs/DiffPrep/<data_name>/`:
 | `surrogate.py` | `TabularSurrogate` and `RecSurrogate` -- inner-loop learners. |
 | `trainer.py` | `DiffPrepTrainer` -- bilevel optimisation loop. |
 | `discretizer.py` | Argmax projection from continuous parameters to a `Pipeline`. |
-| `evaluator.py` | Re-exports `CtxPipeEvaluator` so DiffPrep gets `small_n` subsampling. |
+| `evaluator.py` | Re-exports `SearchPipelineEvaluator` so DiffPrep gets `small_n` subsampling. |
 | `diffprep.py` | Top-level orchestrator. |
 | `run_diffprep.py` | CLI entry. |

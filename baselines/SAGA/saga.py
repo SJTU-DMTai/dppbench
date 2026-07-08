@@ -22,7 +22,7 @@ from .physical_search import PhysicalSearch, TunedPipeline
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline, check_pipeline
 
-# CtxPipeEvaluator extends PipelineEvaluator with row-level subsampling so the
+# SearchPipelineEvaluator extends PipelineEvaluator with row-level subsampling so the
 # search loop can iterate cheaply; SAGA reuses it when small_n is set.
 # Imported lazily inside ``run`` to avoid a circular import:
 # ``baselines.CtxPipe.__init__`` imports ``CtxPipe`` which in turn imports
@@ -51,6 +51,7 @@ CONFIG_KEYS = (
     "tournament_size",
     "elitism_size",
     "random_pipeline_p_optional",
+    "max_pipeline_len",
     "small_n",
     "seed",
     "fast_train",
@@ -73,6 +74,7 @@ class SAGA:
         tournament_size: Optional[int] = None,
         elitism_size: Optional[int] = None,
         random_pipeline_p_optional: Optional[float] = None,
+        max_pipeline_len: Optional[int] = None,
         seed: Optional[int] = None,
         output_dir: Optional[str] = None,
         verbose: bool = True,
@@ -104,6 +106,9 @@ class SAGA:
         random_pipeline_p_optional = resolve_config_value(
             cfg, "random_pipeline_p_optional", random_pipeline_p_optional
         )
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
+        )
         small_n = resolve_config_value(cfg, "small_n", small_n)
         seed = resolve_config_value(cfg, "seed", seed)
         fast_train = resolve_config_value(cfg, "fast_train", fast_train)
@@ -121,6 +126,7 @@ class SAGA:
         self.tournament_size = int(tournament_size)
         self.elitism_size = int(elitism_size)
         self.random_pipeline_p_optional = float(random_pipeline_p_optional)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         self.seed = int(seed)
         self.verbose = bool(verbose)
         self.device = device
@@ -147,10 +153,10 @@ class SAGA:
     # ------------------------------------------------------------------
     def run(self) -> dict:
         # Lazy import to break a circular dependency with baselines.CtxPipe.
-        from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+        from baselines.common.search_evaluator import SearchPipelineEvaluator
 
         t0 = time.time()
-        evaluator = CtxPipeEvaluator(
+        evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -160,6 +166,10 @@ class SAGA:
             seed=self.seed,
             model_name=self.model_name,
         )
+        # Search fitness must come from the validation split only. Frozen
+        # std-test is reserved for the final benchmark replay in
+        # scripts/evaluate_baseline.py.
+        evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             evaluator.set_fast_mode(True)
         ctx = self._build_context(evaluator)
@@ -208,6 +218,7 @@ class SAGA:
             elitism_size=self.elitism_size,
             early_stop_patience=self.early_stop_patience,
             random_pipeline_p_optional=self.random_pipeline_p_optional,
+            max_pipeline_len=self.max_pipeline_len,
             seed=self.seed,
             verbose=self.verbose,
         )
@@ -249,7 +260,7 @@ class SAGA:
         eval_error: Optional[str] = None
         if not self.skip_final_eval and (self.fast_train or self.small_n > 0):
             try:
-                full_eval = CtxPipeEvaluator(
+                full_eval = SearchPipelineEvaluator(
                     task_dir=self.task_dir,
                     data_name=self.data_name,
                     data_dir=self.data_dir,
@@ -259,6 +270,7 @@ class SAGA:
                     seed=self.seed,
                     model_name=self.model_name,
                 )
+                full_eval.set_evaluate_std_test(False)
                 full_eval.ctx = ctx
                 ev = full_eval.evaluate(best.pipeline)
                 if ev.success:

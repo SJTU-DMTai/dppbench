@@ -20,7 +20,7 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
@@ -35,6 +35,7 @@ CONFIG_KEYS = (
     "beam_width",
     "n_iters",
     "batch_per_iter",
+    "max_pipeline_len",
     "gamma",
     "patience",
     "small_n",
@@ -56,6 +57,7 @@ class AlphaClean:
         beam_width: Optional[int] = None,
         n_iters: Optional[int] = None,
         batch_per_iter: Optional[int] = None,
+        max_pipeline_len: Optional[int] = None,
         gamma: Optional[int] = None,
         patience: Optional[int] = None,
         small_n: Optional[int] = None,
@@ -68,6 +70,7 @@ class AlphaClean:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -76,6 +79,9 @@ class AlphaClean:
         beam_width = resolve_config_value(cfg, "beam_width", beam_width)
         n_iters = resolve_config_value(cfg, "n_iters", n_iters)
         batch_per_iter = resolve_config_value(cfg, "batch_per_iter", batch_per_iter)
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
+        )
         gamma = resolve_config_value(cfg, "gamma", gamma)
         patience = resolve_config_value(cfg, "patience", patience)
         small_n = resolve_config_value(cfg, "small_n", small_n)
@@ -96,6 +102,7 @@ class AlphaClean:
         self.beam_width = int(beam_width)
         self.n_iters = int(n_iters)
         self.batch_per_iter = int(batch_per_iter)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         self.gamma = int(gamma)
         self.patience = int(patience)
         self.small_n = int(small_n) if small_n else 0
@@ -107,6 +114,7 @@ class AlphaClean:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "AlphaClean", data_name
@@ -115,7 +123,7 @@ class AlphaClean:
         os.makedirs(self.output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    def _build_context(self, evaluator: CtxPipeEvaluator) -> Tuple[DataContext, object]:
+    def _build_context(self, evaluator: SearchPipelineEvaluator) -> Tuple[DataContext, object]:
         data = evaluator.load_data()
         if evaluator.task_type == "rec":
             ctx = _infer_rec_context(self.data_name, data)
@@ -132,7 +140,7 @@ class AlphaClean:
         t0 = time.time()
 
         # 1) Search-time evaluator (subsampled).
-        train_evaluator = CtxPipeEvaluator(
+        train_evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -140,7 +148,9 @@ class AlphaClean:
             small_n=self.small_n,
             seed=self.seed,
             device=self.device,
+            model_name=self.model_name,
         )
+        train_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             train_evaluator.set_fast_mode(True)
         ctx, _data = self._build_context(train_evaluator)
@@ -175,6 +185,7 @@ class AlphaClean:
             beam_width=self.beam_width,
             n_iters=self.n_iters,
             batch_per_iter=self.batch_per_iter,
+            max_pipeline_len=self.max_pipeline_len,
             gamma=self.gamma,
             patience=self.patience,
             verbose=self.verbose,
@@ -220,7 +231,7 @@ class AlphaClean:
         eval_error: Optional[str] = None
         if self.eval_full:
             try:
-                full_eval = CtxPipeEvaluator(
+                full_eval = SearchPipelineEvaluator(
                     task_dir=self.task_dir,
                     data_name=self.data_name,
                     data_dir=self.data_dir,
@@ -228,7 +239,9 @@ class AlphaClean:
                     small_n=0,
                     seed=self.seed,
                     device=self.device,
+                    model_name=self.model_name,
                 )
+                full_eval.set_evaluate_std_test(False)
                 ev = full_eval.evaluate(best.pipeline)
                 if ev.success:
                     best_fitness = float(ev.fitness)

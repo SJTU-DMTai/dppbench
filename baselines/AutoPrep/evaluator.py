@@ -1,6 +1,6 @@
 """Evaluator for Auto-Prep candidates.
 
-Subclasses ``CtxPipeEvaluator`` so we get the small-data subsampling and the
+Subclasses ``SearchPipelineEvaluator`` so we get the small-data subsampling and the
 same downstream training stack (LightGBM AUC for tabular, DIN AUC for rec)
 used elsewhere in dppbench. Adds a single ``evaluate_for_agent`` wrapper
 that returns ``(fitness, metrics, error_str)`` triples and never raises.
@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator, EvaluationResult
+from baselines.common.evaluator import EvaluationResult
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
 
 
-class AutoPrepEvaluator(CtxPipeEvaluator):
+class AutoPrepEvaluator(SearchPipelineEvaluator):
     """Pipeline evaluator with small-N subsampling and a safe agent wrapper."""
 
     def __init__(
@@ -26,6 +27,7 @@ class AutoPrepEvaluator(CtxPipeEvaluator):
         small_n: Optional[int] = 3000,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -36,6 +38,7 @@ class AutoPrepEvaluator(CtxPipeEvaluator):
             small_n=small_n,
             seed=seed,
             device=device,
+            model_name=model_name,
         )
 
     def evaluate_for_agent(

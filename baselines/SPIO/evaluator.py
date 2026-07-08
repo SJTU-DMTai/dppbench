@@ -1,6 +1,6 @@
 """Final-pipeline evaluator for SPIO.
 
-Re-uses :class:`CtxPipeEvaluator` so SPIO shares identical downstream
+Re-uses :class:`SearchPipelineEvaluator` so SPIO shares identical downstream
 training (LightGBM/binary AUC for tabular, DIN/AUC for rec) with the other
 baselines. ``evaluate_for_agent`` is the contract used by the per-stage
 candidate selection loop; it never raises so a bad candidate just costs an
@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator, EvaluationResult
+from baselines.common.evaluator import EvaluationResult
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
 
 
-class SPIOEvaluator(CtxPipeEvaluator):
-    """Thin alias of :class:`CtxPipeEvaluator` for the SPIO baseline."""
+class SPIOEvaluator(SearchPipelineEvaluator):
+    """Thin alias of :class:`SearchPipelineEvaluator` for the SPIO baseline."""
 
     def __init__(
         self,
@@ -27,6 +28,7 @@ class SPIOEvaluator(CtxPipeEvaluator):
         small_n: Optional[int] = None,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -37,6 +39,7 @@ class SPIOEvaluator(CtxPipeEvaluator):
             small_n=small_n,
             seed=seed,
             device=device,
+            model_name=model_name,
         )
 
     # ------------------------------------------------------------------

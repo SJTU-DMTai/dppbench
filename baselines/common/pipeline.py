@@ -285,6 +285,60 @@ def _exclude_special(cols: list[str], ctx: DataContext) -> list[str]:
     return [c for c in cols if c not in bad]
 
 
+def _rec_required_id_cols(ctx: DataContext) -> list[str]:
+    cols = []
+    for col in (ctx.user_col, ctx.item_col):
+        if col and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _rec_protected_cols(ctx: DataContext) -> list[str]:
+    cols = []
+    for col in (ctx.user_col, ctx.item_col, ctx.target_col, ctx.time_col):
+        if col and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _missing_required_params(op_name: str, params: dict) -> list[str]:
+    spec = CATALOG.get(op_name)
+    if spec is None:
+        return []
+    missing = []
+    for name in spec.required_params:
+        value = (params or {}).get(name)
+        if value is None or value == [] or value == "":
+            missing.append(name)
+    return missing
+
+
+def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
+    if ctx.task_type != "rec":
+        return []
+    protected_ids = set(_rec_required_id_cols(ctx))
+    if not protected_ids:
+        return []
+    if op_name == "DropColumns":
+        dropped = protected_ids.intersection(_as_list((params or {}).get("cols")))
+        if dropped:
+            return [f"DropColumns cannot drop rec id columns: {sorted(dropped)}"]
+    if op_name == "SelectFeature":
+        excluded = set(_as_list((params or {}).get("exclude_cols")))
+        missing = protected_ids - excluded
+        if missing:
+            return [f"SelectFeature exclude_cols must protect rec id columns: {sorted(missing)}"]
+    return []
+
+
 def _pick_some(cols: list[str], rng: _random.Random, lo: int = 1, hi: int = 3) -> list[str]:
     if not cols:
         return []
@@ -381,9 +435,10 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["regex"] = True
         return p
     if op_name == "DropColumns":
-        if not ctx.id_col:
+        candidates = _exclude_special(ctx.all_cols, ctx)
+        if not candidates:
             return None
-        p["cols"] = [ctx.id_col]
+        p["cols"] = _pick_some(candidates, rng, 1, 2)
         return p
     if op_name == "CustomProcess":
         variant = rng.choice(["drop_null", "passthrough"])
@@ -407,6 +462,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         method = rng.choice(["variance", "univariate", "model"])
         p["target_col"] = ctx.target_col
         p["method"] = method
+        p["exclude_cols"] = _rec_protected_cols(ctx) if ctx.task_type == "rec" else [ctx.target_col]
         if method == "univariate":
             p["k"] = max(5, min(50, len(numeric_cols)))
         elif method == "model":
@@ -630,6 +686,9 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["max_len"] = 20
         return p
     if op_name == "TruncateSequence":
+        if ctx.task_type != "rec":
+            return None
+        p["cols"] = ["item_id_seq"]
         return p
 
     # ---- SAMPLING ----
@@ -702,6 +761,10 @@ def make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> PipelineSt
     operator is not applicable in the given context."""
     params = build_default_params(op_name, ctx, rng)
     if params is None:
+        return None
+    if _missing_required_params(op_name, params):
+        return None
+    if _rec_id_protection_errors(op_name, params, ctx):
         return None
     return PipelineStep(
         op=op_name,
@@ -844,6 +907,30 @@ def is_legal(pipeline: "Pipeline", task_type: str) -> bool:
     return ranks == sorted(ranks)
 
 
+def truncate_optional_steps(
+    pipeline: "Pipeline",
+    task_type: str,
+    max_len: int | None,
+) -> "Pipeline":
+    """Drop trailing non-mandatory operators until ``len(pipeline) <= max_len``.
+
+    Mandatory operators are preserved; callers should still run ``repair`` and
+    legality checks after truncation.
+    """
+    if max_len is None or max_len <= 0:
+        return pipeline
+    while len(pipeline.steps) > max_len:
+        drop_idx = None
+        for idx in range(len(pipeline.steps) - 1, -1, -1):
+            if not is_mandatory(pipeline.steps[idx].op, task_type):
+                drop_idx = idx
+                break
+        if drop_idx is None:
+            break
+        pipeline.steps.pop(drop_idx)
+    return pipeline
+
+
 def repair(pipeline: "Pipeline", task_type: str, ctx: DataContext) -> "Pipeline":
     """In-place structural repair. Returns the same pipeline."""
     seen = set()
@@ -902,6 +989,7 @@ def random_pipeline(
     ctx: DataContext,
     rng: _random.Random | None = None,
     p_optional: float = 0.5,
+    max_len: int | None = None,
 ) -> Pipeline:
     """Generate a random *legal* pipeline.
 
@@ -926,10 +1014,11 @@ def random_pipeline(
         # also pick at most one optional from this category
         optional = [n for n in candidates if not is_mandatory(n, task_type)]
         if optional and rng.random() < p_optional:
-            chosen = rng.choice(optional)
-            step = make_step(chosen, ctx, rng)
-            if step is not None:
-                steps.append(step)
+            if max_len is None or len(steps) < max_len:
+                chosen = rng.choice(optional)
+                step = make_step(chosen, ctx, rng)
+                if step is not None:
+                    steps.append(step)
 
     pipe = Pipeline(steps=steps)
 
@@ -940,6 +1029,7 @@ def random_pipeline(
 
     # Rec post-condition: ensure SampleNegative order is correct.
     repair(pipe, task_type, ctx)
+    truncate_optional_steps(pipe, task_type, max_len)
     assign_dag_structure(pipe, ctx, rng)
     return pipe
 
@@ -1029,6 +1119,10 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
     elif name in {"DropColumns"}:
         space.setdefault("cols", all_cols)
 
+    if name == "SelectFeature":
+        protected = _rec_protected_cols(ctx) if ctx.task_type == "rec" else ([ctx.target_col] if ctx.target_col else [])
+        if protected:
+            space.setdefault("exclude_cols", protected)
     if name in {"SelectFeature", "TargetEncode", "Oversample", "Undersample", "SampleNegative"} and ctx.target_col:
         space.setdefault("target_col", [ctx.target_col])
     if name in {"CreateLagFeature", "CreateRollingFeature"}:
@@ -1036,10 +1130,12 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
             space.setdefault("target_col", [ctx.target_col])
         if ctx.time_col:
             space.setdefault("time_col", [ctx.time_col])
+    if name == "TruncateSequence":
+        space.setdefault("cols", ["item_id_seq"])
     if name in {"FilterKCore", "CreateSequence", "SampleNegative"}:
         space.setdefault("user_col", [ctx.user_col])
         space.setdefault("item_col", [ctx.item_col])
-    return space
+    return {k: v for k, v in space.items() if v not in (None, [])}
 
 
 def get_order_constraints(task_type: str) -> list[OpCategory]:
@@ -1121,6 +1217,19 @@ def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = No
             if pid not in known:
                 errors.append(f"op {oid} prev points to unknown or later node {pid}")
         if op_name in CATALOG:
+            params = node.get("params") or {}
+            if ctx is not None:
+                spec_task = CATALOG[op_name].task_type
+                if spec_task not in (ctx.task_type, "both"):
+                    errors.append(
+                        f"{op_name} {oid} is not applicable to "
+                        f"task_type={ctx.task_type}"
+                    )
+            missing_params = _missing_required_params(op_name, params)
+            if missing_params:
+                errors.append(f"{op_name} {oid} missing required params: {missing_params}")
+            if ctx is not None:
+                errors.extend(_rec_id_protection_errors(op_name, params, ctx))
             expected = CATALOG[op_name].prev_op_num
             if expected <= 1 and len(prev) != expected:
                 errors.append(f"{op_name} {oid} expects {expected} prev nodes, got {len(prev)}")
@@ -1177,6 +1286,7 @@ class Evaluator:
         task_dir: str | None = None,
         model_name: str | None = None,
         verbose: bool = False,
+        scoring_method: str = "full_train",
     ) -> None:
         self.data_name = data_name
         self.metric_key = metric_key
@@ -1184,6 +1294,7 @@ class Evaluator:
         self.data_dir = data_dir
         self.model_name = model_name
         self.verbose = verbose
+        self.scoring_method = scoring_method
         if task_dir is None:
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
             task_dir = os.path.join(root, "dppbench", "tasks", data_name)
@@ -1202,15 +1313,16 @@ class Evaluator:
                 verbose=self.verbose,
                 device=self.device,
                 model_name=self.model_name,
+                scoring_method=self.scoring_method,
             )
         return self._delegate
 
-    def evaluate(self, pipeline: Pipeline | str):
+    def evaluate(self, pipeline: Pipeline | str, scoring_method: str | None = None):
         if isinstance(pipeline, str):
-            return self.evaluate_yaml(pipeline)
-        return self.delegate.evaluate(pipeline)
+            return self.evaluate_yaml(pipeline, scoring_method=scoring_method)
+        return self.delegate.evaluate(pipeline, scoring_method=scoring_method)
 
-    def evaluate_yaml(self, pipeline_yaml: str):
+    def evaluate_yaml(self, pipeline_yaml: str, scoring_method: str | None = None):
         from baselines.common.evaluator import EvaluationResult
         report = check_pipeline(pipeline_yaml)
         if not report.valid:
@@ -1221,5 +1333,8 @@ class Evaluator:
                 error="; ".join(report.errors),
                 duration_seconds=0.0,
             )
-        return self.delegate.evaluate(Pipeline.from_yaml(pipeline_yaml))
+        return self.delegate.evaluate(
+            Pipeline.from_yaml(pipeline_yaml),
+            scoring_method=scoring_method,
+        )
 

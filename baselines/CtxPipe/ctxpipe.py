@@ -21,7 +21,7 @@ from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .agent import DQNAgent
 from .env import PipelineEnv
-from .evaluator import CtxPipeEvaluator
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from .tester import CtxPipeTester
 from .trainer import CtxPipeTrainer
 
@@ -75,6 +75,7 @@ class CtxPipe:
         output_dir: Optional[str] = None,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -129,6 +130,7 @@ class CtxPipe:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
         self.eps_decay_episodes = (
             int(eps_decay_episodes) if eps_decay_episodes is not None else None
         )
@@ -140,7 +142,7 @@ class CtxPipe:
         os.makedirs(self.output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    def _build_context(self, evaluator: CtxPipeEvaluator) -> DataContext:
+    def _build_context(self, evaluator: SearchPipelineEvaluator) -> DataContext:
         data = evaluator.load_data()
         if evaluator.task_type == "rec":
             return _infer_rec_context(self.data_name, data)
@@ -151,7 +153,7 @@ class CtxPipe:
         t0 = time.time()
 
         # 1. Training-time evaluator with optional small_n subsampling.
-        train_evaluator = CtxPipeEvaluator(
+        train_evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -159,7 +161,9 @@ class CtxPipe:
             small_n=self.small_n,
             seed=self.seed,
             device=self.device,
+            model_name=self.model_name,
         )
+        train_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             train_evaluator.set_fast_mode(True)
 
@@ -227,9 +231,9 @@ class CtxPipe:
         tester = CtxPipeTester(verbose=self.verbose)
 
         # If eval_full is requested, build a separate full-data evaluator.
-        full_eval: Optional[CtxPipeEvaluator] = None
+        full_eval: Optional[SearchPipelineEvaluator] = None
         if self.eval_full:
-            full_eval = CtxPipeEvaluator(
+            full_eval = SearchPipelineEvaluator(
                 task_dir=self.task_dir,
                 data_name=self.data_name,
                 data_dir=self.data_dir,
@@ -237,7 +241,9 @@ class CtxPipe:
                 small_n=0,
                 seed=self.seed,
                 device=self.device,
+                model_name=self.model_name,
             )
+            full_eval.set_evaluate_std_test(False)
 
         test_out = tester.run(agent=agent, env=env, eval_full_with=full_eval)
         final_pipeline = test_out["pipeline"]

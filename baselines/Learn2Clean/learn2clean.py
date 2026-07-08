@@ -20,7 +20,7 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
 from baselines.common.pipeline import is_legal
@@ -71,6 +71,7 @@ class Learn2Clean:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -114,6 +115,7 @@ class Learn2Clean:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "Learn2Clean", data_name
@@ -122,7 +124,7 @@ class Learn2Clean:
         os.makedirs(self.output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    def _build_context(self, evaluator: CtxPipeEvaluator) -> Tuple[DataContext, object]:
+    def _build_context(self, evaluator: SearchPipelineEvaluator) -> Tuple[DataContext, object]:
         data = evaluator.load_data()
         if evaluator.task_type == "rec":
             ctx = _infer_rec_context(self.data_name, data)
@@ -138,7 +140,7 @@ class Learn2Clean:
 
         t0 = time.time()
 
-        train_evaluator = CtxPipeEvaluator(
+        train_evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -146,7 +148,9 @@ class Learn2Clean:
             small_n=self.small_n,
             seed=self.seed,
             device=self.device,
+            model_name=self.model_name,
         )
+        train_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             train_evaluator.set_fast_mode(True)
         ctx, _data = self._build_context(train_evaluator)
@@ -238,7 +242,7 @@ class Learn2Clean:
         # Final full-data evaluation.
         if self.eval_full:
             try:
-                full_eval = CtxPipeEvaluator(
+                full_eval = SearchPipelineEvaluator(
                     task_dir=self.task_dir,
                     data_name=self.data_name,
                     data_dir=self.data_dir,
@@ -246,7 +250,9 @@ class Learn2Clean:
                     small_n=0,
                     seed=self.seed,
                     device=self.device,
+                    model_name=self.model_name,
                 )
+                full_eval.set_evaluate_std_test(False)
                 ev = full_eval.evaluate(best_pipe)
                 if ev.success and ev.fitness is not None:
                     best_fitness = float(ev.fitness)

@@ -49,7 +49,7 @@ baselines/DataMaster/
 ├── prompts.py              # SYSTEM_DATAMASTER + user prompt
 ├── agent.py                # DataMasterAgent main loop
 ├── data_master.py          # top-level DataMaster class
-├── evaluator.py            # DataMasterEvaluator (CtxPipeEvaluator subclass)
+├── evaluator.py            # DataMasterEvaluator (SearchPipelineEvaluator subclass)
 └── run_data_master.py      # CLI entry point
 ```
 

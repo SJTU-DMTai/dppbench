@@ -17,6 +17,7 @@ n_candidates: 2
 # max_retry (default: 2): Retry budget when LLM replies fail to parse.
 max_retry: 2
 # stage_max_per_cat (default: 6): Max operator descriptions per category in prompts.
+max_pipeline_len: null
 stage_max_per_cat: 6
 # small_n (default: 0): Sandbox row subsample size; 0 disables.
 small_n: 0

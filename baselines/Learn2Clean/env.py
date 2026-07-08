@@ -34,7 +34,7 @@ from .operator_catalog import operators_for_task
 
 if TYPE_CHECKING:
     from baselines.common.data_ctx import DataContext
-    from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+    from baselines.common.search_evaluator import SearchPipelineEvaluator
 
 
 StateKey = Tuple[FrozenSet[int], int]
@@ -45,7 +45,7 @@ class Learn2CleanEnv:
 
     def __init__(
         self,
-        evaluator: "CtxPipeEvaluator",
+        evaluator: "SearchPipelineEvaluator",
         ctx: "DataContext",
         max_steps: int = 8,
         reward_max: float = 1.0,

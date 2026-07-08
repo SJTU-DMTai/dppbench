@@ -51,6 +51,7 @@ class OpSpec:
     prev_op_num: int = 1    # 前序算子数量；多表集成算子至少需要 2 个输入
     default_params: dict[str, Any] = field(default_factory=dict)    # 算子默认参数
     param_space: dict[str, Any] = field(default_factory=dict)    # 算子参数取值空间
+    required_params: tuple[str, ...] = ()    # 算子实例化必须提供的参数
     nl_description: str = ""    # 算子的功能说明与用例，供 LLM-driven baseline 使用
 
 
@@ -80,6 +81,7 @@ def _nl_description(name: str) -> str:
 def _add(name: str, category: OpCategory, task_type: str = "both",
          default_params: dict[str, Any] | None = None,
          param_space: dict[str, Any] | None = None,
+         required_params: tuple[str, ...] = (),
          prev_op_num: int = 1,
          valid_targets: tuple[str, ...] = ("both",),
          needs_context: bool = False,
@@ -91,6 +93,7 @@ def _add(name: str, category: OpCategory, task_type: str = "both",
         prev_op_num=prev_op_num,
         default_params=default_params or {},
         param_space=param_space or {},
+        required_params=tuple(required_params),
         nl_description=_nl_description(name),
     )
     if valid_targets != ("both",):
@@ -109,15 +112,19 @@ def _add(name: str, category: OpCategory, task_type: str = "both",
 
 # S1. Data Integration
 _add("JoinTable", OpCategory.JOIN, default_params={"method": "key"}, prev_op_num=2, needs_context=True)
-_add("ConcatTable", OpCategory.RESHAPE_LONGWIDE, default_params={"axis": "vertical"}, prev_op_num=2, needs_context=True)
+_add("ConcatTable", OpCategory.RESHAPE_LONGWIDE, task_type="tabular", default_params={"axis": "vertical"}, prev_op_num=2, needs_context=True)
 _add("AlignSchema", OpCategory.SCHEMA, needs_context=True)
 _add("RenameColumn", OpCategory.SCHEMA, needs_context=True)
-_add("DropColumns", OpCategory.FILTER_COL, needs_context=True)
+_add("DropColumns", OpCategory.FILTER_COL,
+     required_params=("cols",), needs_context=True)
 _add("CastType", OpCategory.SCHEMA, needs_context=True)
-_add("ParseDate", OpCategory.DATETIME_PARSE, default_params={"mode": "string"}, needs_context=True)
-_add("ParseNumber", OpCategory.SCHEMA, needs_context=True)
+_add("ParseDate", OpCategory.DATETIME_PARSE, default_params={"mode": "string"},
+     required_params=("cols",), needs_context=True)
+_add("ParseNumber", OpCategory.SCHEMA,
+     required_params=("cols",), needs_context=True)
 _add("SortRows", OpCategory.SORT_ORDER, needs_context=True)
-_add("SplitColumn", OpCategory.RESHAPE_STRING, needs_context=True)
+_add("SplitColumn", OpCategory.RESHAPE_STRING,
+     required_params=("col",), needs_context=True)
 _add("CustomTransform", OpCategory.SCHEMA, needs_context=True)
 
 # S2. Data Cleaning
@@ -161,11 +168,15 @@ _add("CorrectTypo", OpCategory.CLEAN_VALUE, needs_context=True)
 _add("CustomClean", OpCategory.CLEAN_VALUE, needs_context=True)
 
 # S3. Data Preprocessing
-_add("OneHotEncode", OpCategory.ENCODING, needs_context=True)
-_add("OrdinalEncode", OpCategory.ENCODING, needs_context=True)
+_add("OneHotEncode", OpCategory.ENCODING,
+     required_params=("cols",), needs_context=True)
+_add("OrdinalEncode", OpCategory.ENCODING,
+     required_params=("cols",), needs_context=True)
 _add("LabelEncode", OpCategory.ENCODING, needs_context=True)
-_add("HashEncode", OpCategory.ENCODING, needs_context=True)
-_add("TargetEncode", OpCategory.ENCODING, needs_context=True)
+_add("HashEncode", OpCategory.ENCODING,
+     required_params=("cols",), needs_context=True)
+_add("TargetEncode", OpCategory.ENCODING,
+     required_params=("cols", "target_col"), needs_context=True)
 _add("ScaleFeature", OpCategory.SCALING,
      default_params={"method": "standard"},
      param_space={"method": ["standard", "minmax", "maxabs", "robust", "l2"]},
@@ -196,21 +207,31 @@ _add("Oversample", OpCategory.IMBALANCE,
      param_space={"method": ["random", "smote", "adasyn", "smote_nc"]},
      valid_targets=("train",), needs_context=True)
 _add("AugmentMixup", OpCategory.AUGMENT, valid_targets=("train",), needs_context=True)
-_add("AugmentNoise", OpCategory.AUGMENT, valid_targets=("train",), needs_context=True)
+_add("AugmentNoise", OpCategory.AUGMENT,
+     required_params=("cols",), valid_targets=("train",), needs_context=True)
 _add("CustomProcess", OpCategory.CLEAN_VALUE, needs_context=True)
 
 # S4. Feature Engineering
-_add("FrequencyEncode", OpCategory.FEATURE_GEN, needs_context=True)
-_add("CreateFeature", OpCategory.FEATURE_GEN, needs_context=True)
-_add("CreatePolynomialFeature", OpCategory.FEATURE_GEN, needs_context=True)
-_add("CrossFeature", OpCategory.FEATURE_GEN, needs_context=True)
-_add("AggregateGroupFeature", OpCategory.GROUP_AGG, needs_context=True)
-_add("ExtractDateTimeFeature", OpCategory.FEATURE_TIME, needs_context=True)
-_add("CreateLagFeature", OpCategory.FEATURE_TIME, needs_context=True)
-_add("CreateRollingFeature", OpCategory.FEATURE_TIME, needs_context=True)
+_add("FrequencyEncode", OpCategory.FEATURE_GEN,
+     required_params=("cols",), needs_context=True)
+_add("CreateFeature", OpCategory.FEATURE_GEN,
+     required_params=("source_cols", "output_col"), needs_context=True)
+_add("CreatePolynomialFeature", OpCategory.FEATURE_GEN,
+     required_params=("cols",), needs_context=True)
+_add("CrossFeature", OpCategory.FEATURE_GEN,
+     required_params=("cols",), needs_context=True)
+_add("AggregateGroupFeature", OpCategory.GROUP_AGG,
+     required_params=("group_cols",), needs_context=True)
+_add("ExtractDateTimeFeature", OpCategory.FEATURE_TIME,
+     required_params=("cols",), needs_context=True)
+_add("CreateLagFeature", OpCategory.FEATURE_TIME,
+     required_params=("target_col", "lags"), needs_context=True)
+_add("CreateRollingFeature", OpCategory.FEATURE_TIME,
+     required_params=("target_col", "windows"), needs_context=True)
 _add("CreateSequence", OpCategory.SEQUENCE, task_type="rec",
      valid_targets=("interaction",), needs_context=True)
 _add("TruncateSequence", OpCategory.SEQUENCE, task_type="rec",
+     required_params=("cols",),
      valid_targets=("interaction",), needs_context=True)
 _add("SelectFeature", OpCategory.FEATURE_SELECTION,
      default_params={"method": "variance"},
@@ -220,8 +241,10 @@ _add("ReduceDimension", OpCategory.FEATURE_REDUCTION,
      default_params={"method": "pca"},
      param_space={"method": ["pca", "svd", "kernel_pca", "lda", "umap"]},
      needs_context=True)
-_add("ExtractTextFeature", OpCategory.FEATURE_GEN, needs_context=True)
-_add("ExtractTextEmbedding", OpCategory.FEATURE_GEN, needs_context=True)
+_add("ExtractTextFeature", OpCategory.FEATURE_GEN,
+     required_params=("cols",), needs_context=True)
+_add("ExtractTextEmbedding", OpCategory.FEATURE_GEN,
+     required_params=("cols",), needs_context=True)
 _add("ExtractGraphFeature", OpCategory.FEATURE_GEN, needs_context=True)
 _add("CustomFE", OpCategory.FEATURE_GEN, needs_context=True)
 
@@ -249,13 +272,24 @@ def is_mandatory(op_name: str, task_type: str | None = None) -> bool:
     return op_name in TABULAR_MANDATORY_OPS or op_name in REC_MANDATORY_OPS
 
 
-def operators_for_task(task_type: str) -> list[str]:
-    """Return operator names applicable to the task type."""
+def is_custom_operator(op_name: str) -> bool:
+    """Return whether an operator is reserved for LLM/custom-code baselines."""
+    return str(op_name).startswith("Custom")
+
+
+def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
+    """Return operator names applicable to the task type.
+
+    By default this is the non-LLM baseline operator space, so operators whose
+    names start with ``Custom`` are excluded. LLM/custom-code baselines may pass
+    ``include_custom=True`` explicitly.
+    """
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
     return [
         name for name, spec in CATALOG.items()
-        if spec.task_type == task_type or spec.task_type == "both"
+        if (spec.task_type == task_type or spec.task_type == "both")
+        and (include_custom or not is_custom_operator(name))
     ]
 
 
@@ -267,22 +301,22 @@ def get_op(op_name: str) -> OpSpec:
         raise KeyError(f"Unknown operator: {op_name}") from exc
 
 
-def get_avilable_ops(task_type: str) -> list[OpSpec]:
+def get_avilable_ops(task_type: str, include_custom: bool = False) -> list[OpSpec]:
     """Return OpSpec objects applicable to the task type.
 
     The misspelling is kept because it is the public name used in the docs.
     """
-    return [CATALOG[name] for name in operators_for_task(task_type)]
+    return [CATALOG[name] for name in operators_for_task(task_type, include_custom=include_custom)]
 
 
-def get_available_ops(task_type: str) -> list[OpSpec]:
+def get_available_ops(task_type: str, include_custom: bool = False) -> list[OpSpec]:
     """Spelled alias for get_avilable_ops()."""
-    return get_avilable_ops(task_type)
+    return get_avilable_ops(task_type, include_custom=include_custom)
 
 
-def operators_by_category(task_type: str) -> dict[OpCategory, list[str]]:
+def operators_by_category(task_type: str, include_custom: bool = False) -> dict[OpCategory, list[str]]:
     by_cat: dict[OpCategory, list[str]] = {}
-    for name in operators_for_task(task_type):
+    for name in operators_for_task(task_type, include_custom=include_custom):
         spec = CATALOG[name]
         by_cat.setdefault(spec.category, []).append(name)
     return by_cat
@@ -300,6 +334,7 @@ __all__ = [
     "get_available_ops",
     "get_avilable_ops",
     "get_op",
+    "is_custom_operator",
     "is_mandatory",
     "needs_context",
     "operators_by_category",

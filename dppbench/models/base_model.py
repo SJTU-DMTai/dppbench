@@ -183,7 +183,7 @@ class BaseModel(nn.Module):
                 self.train()
         return np.concatenate(preds).squeeze()
 
-    def train_and_evaluate(self, train_df, test_df, feature_columns, cfg):
+    def train_and_evaluate(self, train_df, test_df, feature_columns, cfg, evaluate_test=True):
         """Train the model on ``train_df`` and evaluate on ``test_df``.
 
         Validation rows are sliced out of ``train_df`` here (rather than via
@@ -222,13 +222,18 @@ class BaseModel(nn.Module):
 
         train_x, train_y = df_to_input(train_split, feature_columns, cfg)
         val_x, val_y = df_to_input(val_split, feature_columns, cfg)
-        test_x, test_y = df_to_input(test_df, feature_columns, cfg)
+        if evaluate_test:
+            test_x, test_y = df_to_input(test_df, feature_columns, cfg)
+            test_size = len(test_y)
+        else:
+            test_x = test_y = None
+            test_size = 0
 
-        print(
-            "Model fit split: "
-            f"train={len(train_y)}, val={len(val_y)}, test={len(test_y)} "
-            f"(val_ratio={val_ratio})"
-        )
+        split_msg = f"Model fit split: train={len(train_y)}, val={len(val_y)}"
+        if evaluate_test:
+            split_msg += f", test={test_size}"
+        split_msg += f" (val_ratio={val_ratio})"
+        print(split_msg)
 
         history = self.fit(
             train_x, train_y,
@@ -240,9 +245,11 @@ class BaseModel(nn.Module):
             early_stopping_patience=train_cfg.get("early_stopping_patience", 0),
         )
 
-        test_result = self.evaluate(test_x, test_y, batch_size=train_cfg.get("batch_size", 256))
-        for metric_name, metric_val in test_result.items():
-            print(f"Test {metric_name}: {metric_val:.4f}")
+        test_result = {}
+        if evaluate_test:
+            test_result = self.evaluate(test_x, test_y, batch_size=train_cfg.get("batch_size", 256))
+            for metric_name, metric_val in test_result.items():
+                print(f"Test {metric_name}: {metric_val:.4f}")
 
         return history, test_result
 

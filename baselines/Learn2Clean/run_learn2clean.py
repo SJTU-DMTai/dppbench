@@ -64,6 +64,7 @@ def parse_args():
     p.add_argument("--improvement_eps", type=float, default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--output_dir", type=str, default=None)
+    p.add_argument("--model_name", type=str, default=None)
     p.add_argument("--gpu_id", type=int, default=-1,
                    help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.")
     p.add_argument("--quiet", action="store_true")
@@ -100,6 +101,7 @@ def main():
         verbose=not args.quiet,
         device=device,
         fast_train=args.fast_train,
+        model_name=args.model_name,
         config_path=args.config,
     )
     result = runner.run()

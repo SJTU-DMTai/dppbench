@@ -17,6 +17,7 @@ tournament_size: 3
 # elitism_size (default: 2): Number of elite individuals copied forward.
 elitism_size: 2
 # random_pipeline_p_optional (default: 0.5): Probability to add optional ops.
+max_pipeline_len: null
 random_pipeline_p_optional: 0.5
 # small_n (default: 3000): Search-time row subsample size; 0 disables.
 small_n: 3000

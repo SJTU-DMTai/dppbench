@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
     from .agent import DQNAgent
     from .env import PipelineEnv
-    from .evaluator import CtxPipeEvaluator
+    from baselines.common.search_evaluator import SearchPipelineEvaluator
 
 
 class CtxPipeTester:
@@ -22,7 +22,7 @@ class CtxPipeTester:
         self,
         agent: "DQNAgent",
         env: "PipelineEnv",
-        eval_full_with: Optional["CtxPipeEvaluator"] = None,
+        eval_full_with: Optional["SearchPipelineEvaluator"] = None,
     ) -> dict:
         """Roll out one greedy episode.
 

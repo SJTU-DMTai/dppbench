@@ -22,7 +22,7 @@ from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline, PipelineStep
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.pipeline import is_legal, repair, truncate_optional_steps
 from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .agent import SPIOAgent, SPIORunResult
@@ -41,6 +41,7 @@ CONFIG_KEYS = (
     "n_candidates",
     "max_retry",
     "stage_max_per_cat",
+    "max_pipeline_len",
     "small_n",
     "eval_full",
     "downstream_eval_n",
@@ -69,6 +70,7 @@ class SPIO:
         n_candidates: Optional[int] = None,
         max_retry: Optional[int] = None,
         stage_max_per_cat: Optional[int] = None,
+        max_pipeline_len: Optional[int] = None,
         # ---- Eval ----
         small_n: Optional[int] = None,
         eval_full: Optional[bool] = None,
@@ -79,6 +81,7 @@ class SPIO:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -95,6 +98,9 @@ class SPIO:
         max_retry = resolve_config_value(cfg, "max_retry", max_retry)
         stage_max_per_cat = resolve_config_value(
             cfg, "stage_max_per_cat", stage_max_per_cat
+        )
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
         )
         small_n = resolve_config_value(cfg, "small_n", small_n)
         eval_full = resolve_config_value(cfg, "eval_full", eval_full)
@@ -119,6 +125,7 @@ class SPIO:
         self.n_candidates = int(n_candidates)
         self.max_retry = int(max_retry)
         self.stage_max_per_cat = int(stage_max_per_cat)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
@@ -127,6 +134,7 @@ class SPIO:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "SPIO", data_name
@@ -165,11 +173,23 @@ class SPIO:
             seed=self.seed,
             verbose=False,
             device=self.device,
+            model_name=self.model_name,
         )
+        agent_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             agent_evaluator.set_fast_mode(True)
 
         def _agent_eval_fn(pipeline: Pipeline):
+            if (
+                self.max_pipeline_len is not None
+                and len(pipeline.steps) > self.max_pipeline_len
+            ):
+                return (
+                    None,
+                    {"n_steps": len(pipeline.steps)},
+                    f"pipeline length {len(pipeline.steps)} exceeds "
+                    f"max_pipeline_len={self.max_pipeline_len}",
+                )
             return agent_evaluator.evaluate_for_agent(pipeline)
 
         sandbox = Sandbox(
@@ -207,11 +227,17 @@ class SPIO:
                       f"downstream_eval_n={self.downstream_eval_n or 'FULL'}")
                 print("=" * 60)
 
+            def _limit(pipe: Pipeline) -> Pipeline:
+                truncate_optional_steps(pipe, ctx.task_type, self.max_pipeline_len)
+                repair(pipe, ctx.task_type, ctx)
+                truncate_optional_steps(pipe, ctx.task_type, self.max_pipeline_len)
+                return pipe
+
             def _scaffold_fn(steps: list[PipelineStep]) -> Pipeline:
-                return build_scaffolded_pipeline(steps, ctx, rng)
+                return _limit(build_scaffolded_pipeline(steps, ctx, rng))
 
             def _prefix_scaffold_fn(steps: list[PipelineStep]) -> Pipeline:
-                return build_prefix_scaffolded_pipeline(steps, ctx, rng)
+                return _limit(build_prefix_scaffolded_pipeline(steps, ctx, rng))
 
             llm = self._build_llm()
             agent = SPIOAgent(
@@ -261,7 +287,9 @@ class SPIO:
                 small_n=0,
                 seed=self.seed,
                 device=self.device,
+                model_name=self.model_name,
             )
+            evaluator.set_evaluate_std_test(False)
             try:
                 ev = evaluator.evaluate(final_pipeline)
                 eval_metrics = dict(ev.metrics or {})

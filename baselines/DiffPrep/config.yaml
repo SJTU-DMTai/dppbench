@@ -11,6 +11,7 @@ eps_finite_diff: 0.001
 # flex (default: false): Enable DiffPrep-Flex operator order learning.
 flex: false
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
+max_pipeline_len: null
 eval_full: true
 # max_features (default: 32): Maximum numeric feature columns for surrogate.
 max_features: 32

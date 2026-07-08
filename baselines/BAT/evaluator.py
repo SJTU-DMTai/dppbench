@@ -1,6 +1,6 @@
 """BAT downstream evaluator.
 
-Thin alias of :class:`CtxPipeEvaluator` exposing
+Thin alias of :class:`SearchPipelineEvaluator` exposing
 ``evaluate_for_agent(pipeline) -> (fitness, metrics, error)``, used inside
 the MCTS reward model. Identical mechanics to DeepPrep/DataMaster
 evaluators (``small_n`` subsampling + LightGBM/DIN AUC), renamed for
@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator, EvaluationResult
+from baselines.common.evaluator import EvaluationResult
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
 
 
-class BATEvaluator(CtxPipeEvaluator):
+class BATEvaluator(SearchPipelineEvaluator):
     """Downstream evaluator for BAT's reward model."""
 
     def __init__(
@@ -27,6 +28,7 @@ class BATEvaluator(CtxPipeEvaluator):
         small_n: Optional[int] = None,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -37,6 +39,7 @@ class BATEvaluator(CtxPipeEvaluator):
             small_n=small_n,
             seed=seed,
             device=device,
+            model_name=model_name,
         )
 
     # ------------------------------------------------------------------

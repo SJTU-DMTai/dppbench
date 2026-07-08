@@ -49,6 +49,8 @@ def parse_args():
     parser.add_argument("--no_eval_full", dest="eval_full", action="store_false",
                         default=None,
                         help="Skip the final full-data evaluation.")
+    parser.add_argument("--max_pipeline_len", type=int, default=None,
+                        help="Maximum number of operators in the generated pipeline.")
     parser.add_argument("--max_features", type=int, default=None,
                         help="Maximum number of numeric columns fed to the surrogate.")
     parser.add_argument("--batch_size", type=int, default=None)
@@ -62,6 +64,8 @@ def parse_args():
     parser.add_argument("--no_hard_sample", dest="hard_sample",
                         action="store_false", default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--model_name", type=str, default=None,
+                        help="Downstream model name passed to the common evaluator.")
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -84,6 +88,7 @@ def main():
         eps_finite_diff=args.eps_finite_diff,
         flex=args.flex,
         eval_full=args.eval_full,
+        max_pipeline_len=args.max_pipeline_len,
         max_features=args.max_features,
         batch_size=args.batch_size,
         val_ratio=args.val_ratio,
@@ -95,6 +100,7 @@ def main():
         gumbel_tau=args.gumbel_tau,
         hard_sample=args.hard_sample,
         seed=args.seed,
+        model_name=args.model_name,
         output_dir=args.output_dir,
         verbose=not args.quiet,
         config_path=args.config,

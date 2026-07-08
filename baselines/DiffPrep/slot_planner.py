@@ -43,7 +43,11 @@ class Slot:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def make_slots(task_type: str, ctx: DataContext) -> List[Slot]:
+def make_slots(
+    task_type: str,
+    ctx: DataContext,
+    max_pipeline_len: Optional[int] = None,
+) -> List[Slot]:
     """Build the canonical list of pipeline slots for ``task_type``.
 
     For tabular the order matches :data:`_TABULAR_ORDER`. For rec it matches
@@ -53,6 +57,7 @@ def make_slots(task_type: str, ctx: DataContext) -> List[Slot]:
     order = _REC_ORDER if task_type == "rec" else _TABULAR_ORDER
     slots: List[Slot] = []
     idx = 0
+    max_len = int(max_pipeline_len) if max_pipeline_len else None
 
     for cat in order:
         cands = _candidates_in_category(cat, task_type, ctx)
@@ -64,6 +69,9 @@ def make_slots(task_type: str, ctx: DataContext) -> List[Slot]:
         mandatory_ops = [n for n in cands if is_mandatory(n, ctx.task_type)]
         forced_op = mandatory_ops[0] if mandatory_ops else None
         is_mandatory = forced_op is not None
+
+        if max_len is not None and len(slots) >= max_len and not is_mandatory:
+            continue
 
         # Add IDENTITY as a no-op for non-mandatory slots.
         if not is_mandatory:

@@ -38,7 +38,7 @@ graph `G(T)`。MPBP 在 `G(T)` 上的求解由动态规划+最大权重 spanning
 | `M_J` 连接概率 | schema-driven：rec 主表 join 所有侧表（`JoinTable` 强制）；tabular 每个 aux_df 候选 `JoinTable` / `JoinTable`，初始 `p=0.5` |
 | Transformation tree | 每张子表按 table kind（`interaction / user_df / item_df / main_tabular / aux_df`）取专用算子白名单，以 beam search（branching K, depth m=2）展开 |
 | MPBP 求解 | 笛卡尔积合成"主表路径 + 侧表路径 + join 步骤" → 按 `∏p(O)·∏p(join)` 排序取 top-N candidate |
-| 下游反馈 | 每个 candidate 用 `AutoPrepEvaluator`（`CtxPipeEvaluator` + `small_n` 子采样）跑一次下游训练；mean-centred AUC reward 反向更新 `M_T+` 与 `M_J` |
+| 下游反馈 | 每个 candidate 用 `AutoPrepEvaluator`（`SearchPipelineEvaluator` + `small_n` 子采样）跑一次下游训练；mean-centred AUC reward 反向更新 `M_T+` 与 `M_J` |
 
 ## 3. 算子库覆盖
 
@@ -83,7 +83,7 @@ mandatory / prior_features`，其中 `prior_features` 由
 | [`transformation_model.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/transformation_model.py) | `TransformationModel`（M_T+ 启发式 + 在线更新）+ `JoinModel`（M_J） |
 | [`transformation_tree.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/transformation_tree.py) | 多表 transformation tree（depth=2 beam search） |
 | [`solver.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/solver.py) | MPBP 求解：主表树 × 侧表树 × join 边 → top-N candidate；本地 `repair_pipeline` 知道全部 59 算子 |
-| [`evaluator.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/evaluator.py) | `AutoPrepEvaluator(CtxPipeEvaluator)`（小数据下游训练 + `evaluate_for_agent`） |
+| [`evaluator.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/evaluator.py) | `AutoPrepEvaluator(SearchPipelineEvaluator)`（小数据下游训练 + `evaluate_for_agent`） |
 | [`auto_prep.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/auto_prep.py) | 顶层：搜索 + 下游反馈 + 全量复评 + 日志 |
 | [`run_auto_prep.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/run_auto_prep.py) | CLI |
 

@@ -17,6 +17,7 @@ max_turns: 6
 # max_retry_per_turn (default: 2): Parse retry budget per turn.
 max_retry_per_turn: 2
 # max_err_cnt (default: 5): Cumulative agent error budget.
+max_pipeline_len: null
 max_err_cnt: 5
 # small_n (default: 0): Sandbox row subsample size; 0 disables.
 small_n: 0

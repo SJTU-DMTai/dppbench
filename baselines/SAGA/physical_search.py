@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 from baselines.common.op_spec import CATALOG
-from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, get_param_space
 
 
 @dataclass
@@ -23,12 +23,20 @@ class TunedPipeline:
     metrics: dict
 
 
-def _sample_param(space_value, rng: random.Random):
+def _sample_param(space_value, rng: random.Random, current_value=None):
     """Sample one value from a param-space entry.
 
-    The entry is either a list (categorical) or a 2-tuple of floats (range).
+    List-valued current params such as ``cols`` stay lists: the context-aware
+    space is a pool of legal columns, not a request to replace the param with a
+    single string.
     """
     if isinstance(space_value, list):
+        if not space_value:
+            return current_value
+        if isinstance(current_value, list):
+            hi = min(len(space_value), max(1, len(current_value)))
+            n = rng.randint(1, hi)
+            return rng.sample(space_value, k=n)
         return rng.choice(space_value)
     if isinstance(space_value, tuple) and len(space_value) == 2:
         lo, hi = space_value
@@ -61,16 +69,28 @@ class PhysicalSearch:
 
         for trial in range(self.n_trials):
             cand = base.copy()
+            ctx = getattr(self.evaluator, "ctx", None)
             for step in cand.steps:
                 spec = CATALOG.get(step.op)
-                if spec is None or not spec.param_space:
+                if spec is None:
                     continue
-                for k, space in spec.param_space.items():
-                    new_val = _sample_param(space, self.rng)
-                    step.params[k] = new_val
+                if ctx is not None:
+                    context_space = get_param_space(step.op, ctx)
+                    allowed_keys = set(spec.param_space or {}) | set(spec.required_params or ())
+                    space_by_key = {
+                        k: v for k, v in context_space.items()
+                        if k in allowed_keys
+                    }
+                else:
+                    space_by_key = dict(spec.param_space or {})
+                if not space_by_key:
+                    continue
+                for k, space in space_by_key.items():
+                    new_val = _sample_param(space, self.rng, step.params.get(k))
+                    if new_val is not None:
+                        step.params[k] = new_val
             # Parameter tuning may affect table-reference params in future catalogs;
             # keep the explicit DAG prev/source fields in sync before evaluation.
-            ctx = getattr(self.evaluator, "ctx", None)
             if ctx is not None:
                 assign_dag_structure(cand, ctx, self.rng)
             report = check_pipeline(cand, ctx) if ctx is not None else check_pipeline(cand)

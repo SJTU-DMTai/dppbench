@@ -29,7 +29,7 @@ from baselines.common.config import (
     load_baseline_config,
     resolve_config_value,
 )
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
 from baselines.common.pipeline import is_legal
@@ -76,6 +76,7 @@ class AutoPrep:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -109,13 +110,14 @@ class AutoPrep:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
         self.output_dir = output_dir or os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "AutoPrep", data_name,
         ))
         os.makedirs(self.output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    def _build_context(self, evaluator: CtxPipeEvaluator) -> DataContext:
+    def _build_context(self, evaluator: SearchPipelineEvaluator) -> DataContext:
         # Force the executor to load data so we can introspect the schema.
         data = evaluator.load_data()
         if evaluator.task_type == "rec":
@@ -133,7 +135,9 @@ class AutoPrep:
             seed=self.seed,
             verbose=self.verbose,
             device=self.device,
+            model_name=self.model_name,
         )
+        evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             evaluator.set_fast_mode(True)
         ctx = self._build_context(evaluator)

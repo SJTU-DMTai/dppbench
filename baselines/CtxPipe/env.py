@@ -43,7 +43,7 @@ from .operator_catalog import operators_for_task
 if TYPE_CHECKING:
     from baselines.common.data_ctx import DataContext
 
-    from .evaluator import CtxPipeEvaluator
+    from baselines.common.search_evaluator import SearchPipelineEvaluator
 
 
 class PipelineEnv:
@@ -51,7 +51,7 @@ class PipelineEnv:
 
     def __init__(
         self,
-        evaluator: "CtxPipeEvaluator",
+        evaluator: "SearchPipelineEvaluator",
         ctx: "DataContext",
         max_steps: int = 8,
         illegal_penalty: float = -0.05,

@@ -28,7 +28,7 @@ next turn, or emit `<action>Terminate</action>` to stop. The
 baselines/ReAct/
   __init__.py          # exposes the ReAct top-level class
   operator_catalog.py  # thin re-export of the SAGA 77-op catalog
-  evaluator.py         # ReActEvaluator(CtxPipeEvaluator) + evaluate_for_agent
+  evaluator.py         # ReActEvaluator(SearchPipelineEvaluator) + evaluate_for_agent
   prompts.py           # SYSTEM_REACT + render_user_initial / render_observation / render_retry_feedback
   agent.py             # ReActAgent main loop (one full pipeline YAML per turn)
   react.py             # Top-level orchestrator (build sandbox/evaluator/llm, run, persist)

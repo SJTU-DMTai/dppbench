@@ -47,6 +47,7 @@ class AlphaCleanSearcher:
         beam_width: int = 4,
         n_iters: int = 8,
         batch_per_iter: int = 6,
+        max_pipeline_len: int | None = None,
         gamma: int = 8,
         patience: int = 3,
         verbose: bool = True,
@@ -58,6 +59,7 @@ class AlphaCleanSearcher:
         self.beam_width = int(beam_width)
         self.n_iters = int(n_iters)
         self.batch_per_iter = int(batch_per_iter)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         # ``beam_width`` is the actual number of states kept in the beam.
         # ``gamma`` remains as a compatibility/candidate-budget knob.
         self.gamma = max(int(gamma), self.beam_width)
@@ -91,7 +93,8 @@ class AlphaCleanSearcher:
         empty = repairs_to_pipeline([], self.ctx)
         seeds = [empty]
 
-        warm_reps = self.sampler.sample(3)
+        warm_len = min(3, self.max_pipeline_len or 3)
+        warm_reps = self.sampler.sample(warm_len)
         if warm_reps:
             seeds.append(repairs_to_pipeline(warm_reps, self.ctx))
 
@@ -147,8 +150,18 @@ class AlphaCleanSearcher:
             seen = {sp.hash() for sp in self.frontier}
             for sp in base_beam:
                 base_repairs = [Repair.from_pipeline_step(s) for s in sp.pipeline.steps]
+                if (
+                    self.max_pipeline_len is not None
+                    and len(base_repairs) >= self.max_pipeline_len
+                ):
+                    continue
                 for r in kept_reps:
                     new_pipe = repairs_to_pipeline(base_repairs + [r], self.ctx)
+                    if (
+                        self.max_pipeline_len is not None
+                        and len(new_pipe.steps) > self.max_pipeline_len
+                    ):
+                        continue
                     h = new_pipe.hash()
                     if h in seen:
                         continue

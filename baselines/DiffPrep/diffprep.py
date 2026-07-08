@@ -37,7 +37,7 @@ from baselines.common.config import (
 )
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import is_legal
+from baselines.common.pipeline import check_pipeline
 from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 
 from .discretizer import argmax_op_names, discretize, slot_order
@@ -56,6 +56,7 @@ CONFIG_KEYS = (
     "eps_finite_diff",
     "flex",
     "eval_full",
+    "max_pipeline_len",
     "max_features",
     "batch_size",
     "val_ratio",
@@ -194,6 +195,7 @@ class DiffPrep:
         eps_finite_diff: Optional[float] = None,
         flex: Optional[bool] = None,
         eval_full: Optional[bool] = None,
+        max_pipeline_len: Optional[int] = None,
         max_features: Optional[int] = None,
         batch_size: Optional[int] = None,
         val_ratio: Optional[float] = None,
@@ -208,6 +210,7 @@ class DiffPrep:
         verbose: bool = True,
         output_dir: Optional[str] = None,
         device: str = "cpu",
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -222,6 +225,9 @@ class DiffPrep:
         )
         flex = resolve_config_value(cfg, "flex", flex)
         eval_full = resolve_config_value(cfg, "eval_full", eval_full)
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
+        )
         max_features = resolve_config_value(cfg, "max_features", max_features)
         batch_size = resolve_config_value(cfg, "batch_size", batch_size)
         val_ratio = resolve_config_value(cfg, "val_ratio", val_ratio)
@@ -248,6 +254,7 @@ class DiffPrep:
         self.eps_finite_diff = float(eps_finite_diff)
         self.flex = bool(flex)
         self.eval_full = bool(eval_full)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         self.max_features = int(max_features)
         self.batch_size = int(batch_size)
         self.val_ratio = float(val_ratio)
@@ -260,6 +267,7 @@ class DiffPrep:
         self.hard_sample = bool(hard_sample)
         self.seed = int(seed)
         self.verbose = bool(verbose)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "DiffPrep", data_name
@@ -297,7 +305,9 @@ class DiffPrep:
             small_n=self.small_n,
             seed=self.seed,
             device=self._device_str,
+            model_name=self.model_name,
         )
+        train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
 
@@ -313,7 +323,7 @@ class DiffPrep:
             print("=" * 60)
 
         # 2) Build slots
-        slots = make_slots(task_type, ctx)
+        slots = make_slots(task_type, ctx, max_pipeline_len=self.max_pipeline_len)
         if self.verbose:
             print(f"[DiffPrep] {len(slots)} slots: "
                   + ", ".join(f"{s.category.value}({s.kind},m={s.n_candidates})" for s in slots))
@@ -463,6 +473,12 @@ class DiffPrep:
         rng = _random.Random(self.seed)
         pipe = discretize(cont, slots, ctx, rng=rng)
         discrete_slot_order = slot_order(cont)
+        check_report = check_pipeline(pipe, ctx)
+        if not check_report.valid:
+            raise RuntimeError(
+                "DiffPrep produced an invalid pipeline: "
+                + "; ".join(check_report.errors)
+            )
 
         # 6) Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -504,7 +520,9 @@ class DiffPrep:
                     small_n=0,
                     seed=self.seed,
                     device=self._device_str,
+                    model_name=self.model_name,
                 )
+                full_eval.set_evaluate_std_test(False)
                 ev = full_eval.evaluate(pipe)
                 if ev.success:
                     best_fitness = float(ev.fitness)
@@ -539,7 +557,9 @@ class DiffPrep:
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
             "eval_error": eval_error,
-            "is_legal": is_legal(pipe, ctx.task_type),
+            "is_legal": check_report.valid,
+            "check_errors": list(check_report.errors),
+            "check_warnings": list(check_report.warnings),
             "final_pipeline_ops": [s.op for s in pipe.steps],
             "flex_enabled": bool(cont.flex),
             "alpha": cont.alpha().detach().cpu().tolist(),

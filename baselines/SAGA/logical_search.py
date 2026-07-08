@@ -21,6 +21,7 @@ from baselines.common.pipeline import (
     make_step,
     random_pipeline,
     check_pipeline,
+    truncate_optional_steps,
 )
 from baselines.common.pipeline import repair
 
@@ -45,6 +46,7 @@ class LogicalSearch:
         elitism_size: int = 2,
         early_stop_patience: int = 3,
         random_pipeline_p_optional: float = 0.5,
+        max_pipeline_len: int | None = None,
         seed: int = 42,
         verbose: bool = True,
     ):
@@ -58,6 +60,7 @@ class LogicalSearch:
         self.elitism_size = elitism_size
         self.early_stop_patience = early_stop_patience
         self.random_pipeline_p_optional = float(random_pipeline_p_optional)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         self.rng = random.Random(seed)
         self.verbose = verbose
         self.history: list[dict] = []
@@ -76,6 +79,7 @@ class LogicalSearch:
                 self.ctx,
                 self.rng,
                 p_optional=self.random_pipeline_p_optional,
+                max_len=self.max_pipeline_len,
             )
             ind = self._evaluate(pipe)
             if ind.fitness > -math.inf:
@@ -171,6 +175,9 @@ class LogicalSearch:
                 child_pipe = self._mutate(child_pipe)
 
             repair(child_pipe, self.ctx.task_type, self.ctx)
+            truncate_optional_steps(
+                child_pipe, self.ctx.task_type, self.max_pipeline_len
+            )
             assign_dag_structure(child_pipe, self.ctx, self.rng)
             ind = self._evaluate(child_pipe)
             if ind.fitness > -math.inf:
@@ -196,10 +203,11 @@ class LogicalSearch:
         # filter out mandatory & always-included ops to avoid dropping them
         choice = self.rng.choice(["add", "remove", "replace", "swap", "rewire"])
         if choice == "add" or not p.steps:
-            op_name = self.rng.choice(ops)
-            step = make_step(op_name, self.ctx, self.rng)
-            if step is not None:
-                p.steps.append(step)
+            if self.max_pipeline_len is None or len(p.steps) < self.max_pipeline_len:
+                op_name = self.rng.choice(ops)
+                step = make_step(op_name, self.ctx, self.rng)
+                if step is not None:
+                    p.steps.append(step)
         elif choice == "remove" and len(p.steps) > 1:
             idx = self.rng.randrange(len(p.steps))
             if not is_mandatory(p.steps[idx].op, self.ctx.task_type):

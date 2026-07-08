@@ -1,6 +1,7 @@
 # n_trials (default: 8): Number of random candidate pipelines to evaluate.
 n_trials: 8
 # random_pipeline_p_optional (default: 0.5): Probability to add optional ops per category.
+max_pipeline_len: null
 random_pipeline_p_optional: 0.5
 # small_n (default: 3000): Search-time row subsample size; 0 disables.
 small_n: 3000

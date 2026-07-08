@@ -237,7 +237,7 @@ class Sandbox:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Subsampling helper (mirrors CtxPipeEvaluator's logic but in-place)
+    # Subsampling helper (mirrors SearchPipelineEvaluator's logic but in-place)
     # ------------------------------------------------------------------
     def _subsample(self, data) -> None:
         n = self.small_n

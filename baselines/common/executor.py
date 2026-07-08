@@ -60,6 +60,11 @@ class TrainingExecutor:
         # start of each ``run_training()`` call.
         self._fast_mode = False
         self._fast_overrides = None
+        self._evaluate_std_test = True
+
+    def set_evaluate_std_test(self, enabled: bool):
+        """Enable/disable frozen std-test evaluation for this executor."""
+        self._evaluate_std_test = bool(enabled)
 
     def set_fast_mode(self, enabled: bool, overrides: dict = None):
         """Enable/disable search-time fast training overrides.
@@ -178,6 +183,301 @@ class TrainingExecutor:
             return self._run_graph_training()
         else:
             return self._run_rec_training()
+
+    def run_static_quality(self):
+        """Score a pipeline with cheap post-preprocess data-quality proxies.
+
+        This is a search-time objective: it never uses std-test labels for the
+        returned fitness. If std-test rows are present because the shared
+        preprocessing loader appends them, they are dropped before profiling.
+        """
+        return self._run_quality_score(method="static_quality")
+
+    def run_error_detection_quality(self):
+        """Score whether a pipeline targets actual detected data issues.
+
+        Instead of injecting synthetic noise, compare raw-vs-processed issue
+        profiles and reward operators that cover problems actually present in
+        the raw task data. This keeps the proxy deterministic and avoids
+        rewarding arbitrary destructive transforms.
+        """
+        return self._run_quality_score(method="error_detection")
+
+    def _run_quality_score(self, method):
+        start_time = time.time()
+        result = {
+            "success": False,
+            "metrics": {},
+            "error": None,
+            "train_shape": None,
+            "n_features": None,
+            "duration_seconds": None,
+        }
+        try:
+            data = self._make_configured_data_instance()
+            data.load_data()
+            raw_df = self._drop_std_test_rows(self._primary_frame(data))
+            raw_profile = self._quality_profile(raw_df, self._target_col_for_quality(data))
+            raw_rows = int(len(raw_df)) if raw_df is not None else 0
+
+            data.run_pre_process(os.path.abspath(self._working_yaml))
+            processed_df = self._drop_std_test_rows(self._primary_frame(data))
+            target_col = self._target_col_for_quality(data)
+            post_profile = self._quality_profile(processed_df, target_col)
+
+            if processed_df is None or len(processed_df) == 0:
+                raise ValueError("pipeline produced no rows for quality scoring")
+
+            if method == "static_quality":
+                metrics = self._static_quality_metrics(
+                    raw_profile=raw_profile,
+                    post_profile=post_profile,
+                    processed_df=processed_df,
+                    raw_rows=raw_rows,
+                )
+            elif method == "error_detection":
+                op_names = self._current_pipeline_ops()
+                metrics = self._error_detection_metrics(
+                    raw_profile=raw_profile,
+                    post_profile=post_profile,
+                    op_names=op_names,
+                )
+            else:
+                raise ValueError(f"unknown quality scoring method: {method}")
+
+            result["success"] = True
+            result["metrics"] = metrics
+            result["train_shape"] = processed_df.shape
+            result["n_features"] = int(max(0, processed_df.shape[1] - (1 if target_col in processed_df.columns else 0)))
+        except Exception as e:
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+        result["duration_seconds"] = round(time.time() - start_time, 1)
+        return result
+
+    def _primary_frame(self, data):
+        if self._task_type == "rec":
+            return getattr(data, "interaction_df", None)
+        return getattr(data, "train_df", None)
+
+    @staticmethod
+    def _drop_std_test_rows(df):
+        if df is None:
+            return None
+        if "__split__" in df.columns:
+            return df[df["__split__"] != "std_test"].drop(columns="__split__").reset_index(drop=True)
+        return df.reset_index(drop=True)
+
+    def _target_col_for_quality(self, data):
+        if self._task_type == "rec":
+            cfg = getattr(data, "model_cfg", {}) or self.get_model_config()
+            return (cfg.get("feature", {}) or {}).get("target_col", "rating")
+        return getattr(data, "target_col", None)
+
+    def _current_pipeline_ops(self):
+        with open(self._working_yaml, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        dag = cfg.get("dag") if isinstance(cfg, dict) else None
+        if not isinstance(dag, dict):
+            return []
+        return [node.get("op") for node in (dag.get("ops") or []) if isinstance(node, dict)]
+
+    @staticmethod
+    def _safe_ratio(num, den):
+        return float(num) / float(den) if den else 0.0
+
+    def _quality_profile(self, df, target_col=None):
+        import numpy as np
+
+        if df is None or len(df) == 0:
+            return {
+                "n_rows": 0,
+                "n_cols": 0,
+                "missing_cell_ratio": 1.0,
+                "duplicate_row_ratio": 1.0,
+                "constant_col_ratio": 1.0,
+                "numeric_outlier_ratio": 0.0,
+                "categorical_rare_ratio": 0.0,
+                "label_imbalance_penalty": 0.0,
+            }
+        work = df.drop(columns=["__split__"], errors="ignore")
+        map_values = getattr(work, "map", None)
+        hashable_work = (
+            map_values(self._hashable_quality_value)
+            if callable(map_values)
+            else work.applymap(self._hashable_quality_value)
+        )
+        n_rows, n_cols = work.shape
+        missing_cell_ratio = float(work.isna().mean().mean()) if n_cols else 0.0
+        duplicate_row_ratio = self._safe_ratio(int(hashable_work.duplicated().sum()), n_rows)
+
+        feature_cols = [c for c in work.columns if c != target_col]
+        if feature_cols:
+            nunique = hashable_work[feature_cols].nunique(dropna=True)
+            constant_col_ratio = self._safe_ratio(int((nunique <= 1).sum()), len(feature_cols))
+        else:
+            constant_col_ratio = 1.0
+
+        numeric = work[feature_cols].select_dtypes(include="number") if feature_cols else work.iloc[:, 0:0]
+        outlier_cells = 0
+        numeric_cells = 0
+        for col in numeric.columns:
+            s = numeric[col].dropna()
+            if len(s) < 8:
+                continue
+            q1, q3 = s.quantile(0.25), s.quantile(0.75)
+            iqr = q3 - q1
+            if iqr == 0 or pd.isna(iqr):
+                continue
+            lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            outlier_cells += int(((s < lo) | (s > hi)).sum())
+            numeric_cells += int(len(s))
+        numeric_outlier_ratio = self._safe_ratio(outlier_cells, numeric_cells)
+
+        cat = work[feature_cols].select_dtypes(exclude="number") if feature_cols else work.iloc[:, 0:0]
+        rare_cells = 0
+        cat_cells = 0
+        for col in cat.columns:
+            s = hashable_work[col].dropna()
+            if len(s) < 10:
+                continue
+            counts = s.value_counts(normalize=True)
+            rare_values = set(counts[counts < 0.01].index)
+            rare_cells += int(s.isin(rare_values).sum())
+            cat_cells += int(len(s))
+        categorical_rare_ratio = self._safe_ratio(rare_cells, cat_cells)
+
+        label_imbalance_penalty = 0.0
+        if target_col and target_col in work.columns:
+            y = work[target_col].dropna()
+            if len(y) > 0:
+                freq = y.value_counts(normalize=True)
+                if len(freq) > 1:
+                    label_imbalance_penalty = float(max(0.0, freq.max() - (1.0 / len(freq))))
+
+        return {
+            "n_rows": int(n_rows),
+            "n_cols": int(n_cols),
+            "missing_cell_ratio": float(np.clip(missing_cell_ratio, 0.0, 1.0)),
+            "duplicate_row_ratio": float(np.clip(duplicate_row_ratio, 0.0, 1.0)),
+            "constant_col_ratio": float(np.clip(constant_col_ratio, 0.0, 1.0)),
+            "numeric_outlier_ratio": float(np.clip(numeric_outlier_ratio, 0.0, 1.0)),
+            "categorical_rare_ratio": float(np.clip(categorical_rare_ratio, 0.0, 1.0)),
+            "label_imbalance_penalty": float(np.clip(label_imbalance_penalty, 0.0, 1.0)),
+        }
+
+    @staticmethod
+    def _hashable_quality_value(value):
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return tuple(TrainingExecutor._hashable_quality_value(v) for v in value.tolist())
+        if isinstance(value, (list, tuple)):
+            return tuple(TrainingExecutor._hashable_quality_value(v) for v in value)
+        if isinstance(value, set):
+            return tuple(sorted(TrainingExecutor._hashable_quality_value(v) for v in value))
+        if isinstance(value, dict):
+            return tuple(sorted(
+                (TrainingExecutor._hashable_quality_value(k), TrainingExecutor._hashable_quality_value(v))
+                for k, v in value.items()
+            ))
+        return value
+
+    @staticmethod
+    def _clip01(value):
+        return max(0.0, min(1.0, float(value)))
+
+    def _static_quality_metrics(self, raw_profile, post_profile, processed_df, raw_rows):
+        retention = self._safe_ratio(post_profile["n_rows"], raw_rows) if raw_rows else 1.0
+        retention = self._clip01(retention)
+        width_penalty = 0.0
+        if post_profile["n_rows"] > 0:
+            width_penalty = self._clip01(max(0, post_profile["n_cols"] - 500) / 500.0)
+
+        feature_penalty = (
+            0.35 * post_profile["missing_cell_ratio"]
+            + 0.20 * post_profile["constant_col_ratio"]
+            + 0.20 * post_profile["numeric_outlier_ratio"]
+            + 0.15 * post_profile["categorical_rare_ratio"]
+            + 0.10 * width_penalty
+        )
+        sample_penalty = (
+            0.50 * post_profile["duplicate_row_ratio"]
+            + 0.30 * (1.0 - retention)
+            + 0.20 * post_profile["label_imbalance_penalty"]
+        )
+        feature_quality = self._clip01(1.0 - feature_penalty)
+        sample_quality = self._clip01(1.0 - sample_penalty)
+        static_quality = self._clip01(0.6 * feature_quality + 0.4 * sample_quality)
+        return {
+            "static_quality": static_quality,
+            "feature_quality": feature_quality,
+            "sample_quality": sample_quality,
+            "sample_retention": retention,
+            "raw_rows": raw_profile["n_rows"],
+            **{f"post_{k}": v for k, v in post_profile.items()},
+        }
+
+    def _error_detection_metrics(self, raw_profile, post_profile, op_names):
+        issue_map = {
+            "missing": {
+                "severity": raw_profile["missing_cell_ratio"],
+                "post": post_profile["missing_cell_ratio"],
+                "ops": {"HandleMV", "CustomClean"},
+            },
+            "duplicate": {
+                "severity": raw_profile["duplicate_row_ratio"],
+                "post": post_profile["duplicate_row_ratio"],
+                "ops": {"Deduplicate"},
+            },
+            "outlier": {
+                "severity": raw_profile["numeric_outlier_ratio"],
+                "post": post_profile["numeric_outlier_ratio"],
+                "ops": {"HandleOutlier", "ClipOutlier", "HandleError"},
+            },
+            "rare_category": {
+                "severity": raw_profile["categorical_rare_ratio"],
+                "post": post_profile["categorical_rare_ratio"],
+                "ops": {"FrequencyEncode", "HashEncode", "OneHotEncode", "TargetEncode"},
+            },
+            "imbalance": {
+                "severity": raw_profile["label_imbalance_penalty"],
+                "post": post_profile["label_imbalance_penalty"],
+                "ops": {"Oversample", "Undersample", "SampleNegative"},
+            },
+        }
+        op_set = set(op_names)
+        total_severity = sum(v["severity"] for v in issue_map.values())
+        weighted_coverage = 0.0
+        weighted_repair = 0.0
+        unnecessary = 0
+        relevant = 0
+        for spec in issue_map.values():
+            severity = spec["severity"]
+            handles = bool(op_set & spec["ops"])
+            if severity > 0.01:
+                relevant += 1
+                if handles:
+                    weighted_coverage += severity
+                gain = max(0.0, severity - spec["post"])
+                weighted_repair += gain
+            elif handles:
+                unnecessary += 1
+        denom = total_severity if total_severity > 1e-12 else 1.0
+        coverage_score = self._clip01(weighted_coverage / denom)
+        repair_score = self._clip01(weighted_repair / denom)
+        risk_penalty = min(0.3, 0.06 * unnecessary)
+        error_detection = self._clip01(0.55 * repair_score + 0.35 * coverage_score + 0.10 - risk_penalty)
+        return {
+            "error_detection": error_detection,
+            "repair_score": repair_score,
+            "coverage_score": coverage_score,
+            "risk_penalty": risk_penalty,
+            "relevant_issue_count": relevant,
+            "unnecessary_operator_count": unnecessary,
+            "ops": list(op_names),
+            **{f"raw_{k}": v for k, v in raw_profile.items()},
+            **{f"post_{k}": v for k, v in post_profile.items()},
+        }
 
     def _run_tabular_training(self):
         from dppbench.models import (
@@ -315,7 +615,7 @@ class TrainingExecutor:
             result["metrics"] = dict(val_result)
 
             std_test_df = splits.get("std_test")
-            if std_test_df is not None and len(std_test_df) > 0 and target_col in std_test_df.columns:
+            if self._evaluate_std_test and std_test_df is not None and len(std_test_df) > 0 and target_col in std_test_df.columns:
                 X_std = std_test_df.drop(columns=drop_cols, errors="ignore")
                 missing = [c for c in eval_X_train_for_std.columns if c not in X_std.columns]
                 for c in missing:
@@ -439,7 +739,10 @@ class TrainingExecutor:
             cfg.setdefault("model_params", {})["device"] = self.device
             self._apply_fast_overrides(cfg, cfg.get("model", "DIN"))
 
-            all_df = pd.concat(list(splits.values()), ignore_index=True)
+            frames_for_features = [splits["train"]]
+            if self._evaluate_std_test and "test" in splits:
+                frames_for_features.append(splits["test"])
+            all_df = pd.concat(frames_for_features, ignore_index=True)
             feature_columns = build_feature_columns(all_df, cfg, col_types=data.col_types)
 
             model = get_model(feature_columns, cfg)
@@ -447,14 +750,20 @@ class TrainingExecutor:
             train_cfg = cfg.get("train", {})
             history, test_results = model.train_and_evaluate(
                 splits["train"], splits["test"],
-                feature_columns, cfg
+                feature_columns, cfg,
+                evaluate_test=self._evaluate_std_test,
             )
 
             result["success"] = True
-            result["metrics"] = dict(test_results)
+            result["metrics"] = self._rec_validation_metrics(history, train_cfg)
+            if not result["metrics"]:
+                result["metrics"] = dict(test_results)
 
             std_test_df = splits.get("test")
-            if std_test_df is not None and len(std_test_df) > 0:
+            if self._evaluate_std_test and std_test_df is not None and len(std_test_df) > 0:
+                result["metrics"]["std_test_n_rows"] = int(len(std_test_df))
+                for k, v in (test_results or {}).items():
+                    result["metrics"][f"std_test_{k}"] = v
                 try:
                     std_x, std_y = df_to_input(std_test_df, feature_columns, cfg)
                     _t_inf = time.time()
@@ -465,7 +774,6 @@ class TrainingExecutor:
                     result["metrics"]["std_test_inference_seconds"] = round(
                         time.time() - _t_inf, 4
                     )
-                    result["metrics"]["std_test_n_rows"] = int(len(std_test_df))
                     for k, v in std_result.items():
                         result["metrics"][f"std_test_{k}"] = v
                 except Exception as eval_err:
@@ -479,3 +787,28 @@ class TrainingExecutor:
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
+
+    @staticmethod
+    def _rec_validation_metrics(history, train_cfg):
+        if not history:
+            return {}
+        metrics = {}
+        higher_is_better = {
+            "auc": True,
+            "accuracy": True,
+            "precision": True,
+            "recall": True,
+            "f1": True,
+            "ndcg": True,
+            "logloss": False,
+            "mse": False,
+            "rmse": False,
+            "mae": False,
+        }
+        for name in train_cfg.get("metrics", ["auc"]):
+            values = history.get(f"val_{name}", [])
+            clean = [float(v) for v in values if pd.notna(v)]
+            if not clean:
+                continue
+            metrics[name] = max(clean) if higher_is_better.get(name, True) else min(clean)
+        return metrics

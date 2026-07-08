@@ -21,7 +21,7 @@ iteration:
 3. **Expand** -- the current top-``beam_width`` pipelines are composed with
    each surviving repair to form new candidates.
 4. **Evaluate** -- every new pipeline is scored by the real downstream model
-   (LightGBM for tabular, DIN for rec) via :class:`CtxPipeEvaluator`.
+   (LightGBM for tabular, DIN for rec) via :class:`SearchPipelineEvaluator`.
 5. **Frontier update** -- merge with the existing frontier and keep
    top-``beam_width`` distinct pipelines. ``gamma`` is retained as a
    compatibility/candidate-budget knob and is no longer the beam size.

@@ -247,6 +247,37 @@ def build_feature_columns(df, cfg, col_types=None):
     return feature_columns
 
 
+def _target_to_array(df, cfg):
+    feat_cfg = cfg["feature"]
+    target_col = feat_cfg["target_col"]
+    y = pd.to_numeric(df[target_col], errors="coerce")
+
+    task = (cfg.get("model_params") or {}).get("task")
+    rule = feat_cfg.get("label_rule") or {}
+    if task == "binary":
+        pos = float(rule.get("positive_label", 1))
+        neg = float(rule.get("negative_label", 0))
+        mode = rule.get("mode")
+        threshold = float(rule.get("threshold", 0))
+        values = y.fillna(neg).to_numpy()
+        explicit_neg = values == neg
+        if mode == "ge":
+            y = np.where((values >= threshold) & ~explicit_neg, pos, neg)
+        elif mode == "gt":
+            y = np.where((values > threshold) & ~explicit_neg, pos, neg)
+        elif mode == "le":
+            y = np.where((values <= threshold) & ~explicit_neg, pos, neg)
+        elif mode == "lt":
+            y = np.where((values < threshold) & ~explicit_neg, pos, neg)
+        else:
+            valid = np.isin(values, [neg, pos])
+            y = values if np.all(valid) else np.where(values > 0, pos, neg)
+        y = np.where(y == pos, 1.0, 0.0)
+        return y.astype(np.float32)
+
+    return y.fillna(0).to_numpy(dtype=np.float32)
+
+
 def df_to_input(df, feature_columns, cfg):
     feat_cfg = cfg["feature"]
     seq_max_len = feat_cfg["seq_max_len"]
@@ -274,5 +305,5 @@ def df_to_input(df, feature_columns, cfg):
             if fc.length_name:
                 x[fc.length_name] = lengths
 
-    y = df[target_col].values.astype(np.float32)
+    y = _target_to_array(df, cfg)
     return x, y

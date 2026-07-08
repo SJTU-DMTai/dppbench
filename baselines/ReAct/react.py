@@ -19,7 +19,7 @@ from baselines.common.config import (
 )
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.pipeline import is_legal, repair, truncate_optional_steps
 from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
@@ -77,6 +77,7 @@ CONFIG_KEYS = (
     "max_turns",
     "max_retry_per_turn",
     "max_err_cnt",
+    "max_pipeline_len",
     "small_n",
     "eval_full",
     "downstream_eval_n",
@@ -105,6 +106,7 @@ class ReAct:
         max_turns: Optional[int] = None,
         max_retry_per_turn: Optional[int] = None,
         max_err_cnt: Optional[int] = None,
+        max_pipeline_len: Optional[int] = None,
         # ---- Eval ----
         small_n: Optional[int] = None,
         eval_full: Optional[bool] = None,
@@ -115,6 +117,7 @@ class ReAct:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -132,6 +135,9 @@ class ReAct:
             cfg, "max_retry_per_turn", max_retry_per_turn
         )
         max_err_cnt = resolve_config_value(cfg, "max_err_cnt", max_err_cnt)
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
+        )
         small_n = resolve_config_value(cfg, "small_n", small_n)
         eval_full = resolve_config_value(cfg, "eval_full", eval_full)
         downstream_eval_n = resolve_config_value(
@@ -155,6 +161,7 @@ class ReAct:
         self.max_turns = int(max_turns)
         self.max_retry_per_turn = int(max_retry_per_turn)
         self.max_err_cnt = int(max_err_cnt)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
@@ -163,6 +170,7 @@ class ReAct:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "ReAct", data_name
@@ -201,11 +209,23 @@ class ReAct:
             seed=self.seed,
             verbose=False,
             device=self.device,
+            model_name=self.model_name,
         )
+        agent_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             agent_evaluator.set_fast_mode(True)
 
         def _agent_eval_fn(pipeline: Pipeline):
+            if (
+                self.max_pipeline_len is not None
+                and len(pipeline.steps) > self.max_pipeline_len
+            ):
+                return (
+                    None,
+                    {"n_steps": len(pipeline.steps)},
+                    f"pipeline length {len(pipeline.steps)} exceeds "
+                    f"max_pipeline_len={self.max_pipeline_len}",
+                )
             return agent_evaluator.evaluate_for_agent(pipeline)
 
         sandbox = Sandbox(
@@ -256,6 +276,9 @@ class ReAct:
             # Final structural repair (safety net; the agent itself does not
             # repair so the LLM's mistakes stay visible in the trajectory).
             repair(pipeline, ctx.task_type, ctx)
+            truncate_optional_steps(pipeline, ctx.task_type, self.max_pipeline_len)
+            repair(pipeline, ctx.task_type, ctx)
+            truncate_optional_steps(pipeline, ctx.task_type, self.max_pipeline_len)
             legal = is_legal(pipeline, ctx.task_type)
 
             if self.verbose:
@@ -284,7 +307,9 @@ class ReAct:
                 small_n=0,
                 seed=self.seed,
                 device=self.device,
+                model_name=self.model_name,
             )
+            evaluator.set_evaluate_std_test(False)
             try:
                 ev = evaluator.evaluate(pipeline)
                 eval_metrics = dict(ev.metrics or {})

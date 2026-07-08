@@ -1,6 +1,6 @@
 """Final-pipeline evaluator for DataMaster.
 
-Re-uses :class:`CtxPipeEvaluator` so all baselines share identical downstream
+Re-uses :class:`SearchPipelineEvaluator` so all baselines share identical downstream
 training (LightGBM/binary AUC for tabular, DIN/AUC for rec). The
 ``evaluate_for_agent`` wrapper is the contract the agent loop uses to score
 black-node pipelines; it never raises so a bad node only costs ``visits=1``
@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator, EvaluationResult
+from baselines.common.evaluator import EvaluationResult
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
 
 
-class DataMasterEvaluator(CtxPipeEvaluator):
-    """Thin alias of :class:`CtxPipeEvaluator` for the DataMaster baseline."""
+class DataMasterEvaluator(SearchPipelineEvaluator):
+    """Thin alias of :class:`SearchPipelineEvaluator` for the DataMaster baseline."""
 
     def __init__(
         self,
@@ -27,6 +28,7 @@ class DataMasterEvaluator(CtxPipeEvaluator):
         small_n: Optional[int] = None,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -37,6 +39,7 @@ class DataMasterEvaluator(CtxPipeEvaluator):
             small_n=small_n,
             seed=seed,
             device=device,
+            model_name=model_name,
         )
 
     # ------------------------------------------------------------------

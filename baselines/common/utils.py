@@ -16,17 +16,17 @@ def get_op(op_name: str) -> OpSpec:
     return _get_op(op_name)
 
 
-def get_avilable_ops(task_type: str) -> list[OpSpec]:
+def get_avilable_ops(task_type: str, include_custom: bool = False) -> list[OpSpec]:
     """Return all OpSpec objects available for a task type.
 
     The function name keeps the spelling used by the public docs.
     """
-    return _get_avilable_ops(task_type)
+    return _get_avilable_ops(task_type, include_custom=include_custom)
 
 
-def get_available_ops(task_type: str) -> list[OpSpec]:
+def get_available_ops(task_type: str, include_custom: bool = False) -> list[OpSpec]:
     """Spelled alias for get_avilable_ops()."""
-    return _get_available_ops(task_type)
+    return _get_available_ops(task_type, include_custom=include_custom)
 
 
 def get_data(

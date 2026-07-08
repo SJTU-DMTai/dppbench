@@ -13,7 +13,7 @@ import random
 import time
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.config import (
     default_config_path,
     load_baseline_config,
@@ -30,6 +30,7 @@ from baselines.common.pipeline import check_pipeline, random_pipeline
 CONFIG_KEYS = (
     "n_trials",
     "random_pipeline_p_optional",
+    "max_pipeline_len",
     "small_n",
     "eval_full",
     "seed",
@@ -45,6 +46,7 @@ class RandomBaseline:
         data_dir: Optional[str] = None,
         n_trials: Optional[int] = None,
         random_pipeline_p_optional: Optional[float] = None,
+        max_pipeline_len: Optional[int] = None,
         small_n: Optional[int] = None,
         eval_full: Optional[bool] = None,
         seed: Optional[int] = None,
@@ -62,6 +64,9 @@ class RandomBaseline:
         random_pipeline_p_optional = resolve_config_value(
             cfg, "random_pipeline_p_optional", random_pipeline_p_optional
         )
+        max_pipeline_len = resolve_config_value(
+            cfg, "max_pipeline_len", max_pipeline_len
+        )
         small_n = resolve_config_value(cfg, "small_n", small_n)
         eval_full = resolve_config_value(cfg, "eval_full", eval_full)
         seed = resolve_config_value(cfg, "seed", seed)
@@ -72,6 +77,7 @@ class RandomBaseline:
         self.data_dir = data_dir
         self.n_trials = int(n_trials)
         self.random_pipeline_p_optional = float(random_pipeline_p_optional)
+        self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
         self.seed = int(seed)
@@ -85,7 +91,7 @@ class RandomBaseline:
         self.model_name = model_name
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def _build_context(self, evaluator: CtxPipeEvaluator):
+    def _build_context(self, evaluator: SearchPipelineEvaluator):
         data = evaluator.load_data()
         if evaluator.task_type == "rec":
             return _infer_rec_context(self.data_name, data)
@@ -97,7 +103,7 @@ class RandomBaseline:
         rng = random.Random(self.seed)
         t0 = time.time()
 
-        evaluator = CtxPipeEvaluator(
+        evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -107,6 +113,7 @@ class RandomBaseline:
             device=self.device,
             model_name=self.model_name,
         )
+        evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             evaluator.set_fast_mode(True)
         ctx = self._build_context(evaluator)
@@ -144,6 +151,7 @@ class RandomBaseline:
                 ctx,
                 rng,
                 p_optional=self.random_pipeline_p_optional,
+                max_len=self.max_pipeline_len,
             )
             report = check_pipeline(pipe, ctx)
             if not report.valid:
@@ -184,7 +192,7 @@ class RandomBaseline:
 
         if self.eval_full:
             try:
-                full_eval = CtxPipeEvaluator(
+                full_eval = SearchPipelineEvaluator(
                     task_dir=self.task_dir,
                     data_name=self.data_name,
                     data_dir=self.data_dir,
@@ -194,6 +202,7 @@ class RandomBaseline:
                     device=self.device,
                     model_name=self.model_name,
                 )
+                full_eval.set_evaluate_std_test(False)
                 ev = full_eval.evaluate(best_pipe)
                 if ev.success:
                     best_fitness = float(ev.fitness)

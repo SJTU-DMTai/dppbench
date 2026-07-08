@@ -3,6 +3,7 @@ beam_width: 4
 # n_iters (default: 8): Number of AlphaClean search iterations.
 n_iters: 8
 # batch_per_iter (default: 6): Number of sampled repairs per iteration.
+max_pipeline_len: null
 batch_per_iter: 6
 # gamma (default: 8): Candidate budget knob kept for compatibility.
 gamma: 8

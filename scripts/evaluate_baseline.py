@@ -15,8 +15,8 @@ For each (task, baseline) pair this script does the following sequentially:
    :mod:`baselines.common.executor`) automatically applies the baseline pipeline,
    trains the downstream model, and reports the model's metrics on the
    pre-frozen std-test set together with the inference wall-time.
-4. **Aggregate**: prints a table and writes a CSV with one row per
-   (task, baseline) including the std-test metric and inference time.
+4. **Aggregate**: prints JSON summaries and writes a CSV with one row per
+   (task, baseline) including the std-test metric and timing breakdown.
 
 Examples::
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import inspect
+import json
 import os
 import re
 import sys
@@ -82,61 +83,85 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
     "SAGA": {
         "cls_path": "baselines.SAGA.saga.SAGA",
         "supports_eval_full": False,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "SPIO": {
         "cls_path": "baselines.SPIO.spio.SPIO",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "ReAct": {
         "cls_path": "baselines.ReAct.react.ReAct",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_chain_len",
         "kwargs": {},
     },
     "DataMaster": {
         "cls_path": "baselines.DataMaster.data_master.DataMaster",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_chain_len",
         "kwargs": {},
     },
     "AutoPrep": {
         "cls_path": "baselines.AutoPrep.auto_prep.AutoPrep",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_depth",
         "kwargs": {},
     },
     "DeepPrep": {
         "cls_path": "baselines.DeepPrep.deepprep.DeepPrep",
         "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_chain_len",
         "kwargs": {},
     },
     "Learn2Clean": {
         "cls_path": "baselines.Learn2Clean.learn2clean.Learn2Clean",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_steps",
         "kwargs": {},
     },
     "AlphaClean": {
         "cls_path": "baselines.AlphaClean.alphaclean.AlphaClean",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "Random": {
         "cls_path": "baselines.Random.random_baseline.RandomBaseline",
         "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "DiffPrep": {
         "cls_path": "baselines.DiffPrep.diffprep.DiffPrep",
         "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
     "CtxPipe": {
         "cls_path": "baselines.CtxPipe.ctxpipe.CtxPipe",
         "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_steps",
         "kwargs": {},
     },
 }
@@ -245,6 +270,14 @@ def parse_args():
         help="Override CSV path (default: <output_dir>/<baseline>/results.csv).",
     )
     parser.add_argument(
+        "--max_pipeline_len", type=int, default=None,
+        help=(
+            "Maximum number of operators allowed in the generated pipeline. "
+            "The harness maps this to each baseline's native length knob "
+            "and rejects final pipelines that still exceed it."
+        ),
+    )
+    parser.add_argument(
         "--skip_build", action="store_true",
         help=(
             "Don't auto-build std-test if missing — fail loudly instead. "
@@ -304,6 +337,27 @@ def _ensure_std_test(
     return {"built": True, "ok": _std_test_present(task_name, data_dir=data_dir)}
 
 
+def _apply_max_pipeline_len(
+    conf: dict[str, Any],
+    cls,
+    kwargs: dict[str, Any],
+    max_pipeline_len: int | None,
+) -> None:
+    if max_pipeline_len is None:
+        return
+    if max_pipeline_len <= 0:
+        raise ValueError("--max_pipeline_len must be a positive integer")
+    arg_name = conf.get("max_len_arg")
+    if not arg_name:
+        raise ValueError("baseline config is missing max_len_arg")
+    if arg_name not in inspect.signature(cls).parameters:
+        raise TypeError(
+            f"{cls.__name__} does not accept configured max length "
+            f"argument '{arg_name}'"
+        )
+    kwargs[arg_name] = int(max_pipeline_len)
+
+
 def _run_baseline_and_eval(
     task_name: str,
     baseline_name: str,
@@ -324,6 +378,7 @@ def _run_baseline_and_eval(
     kwargs = dict(conf["kwargs"])
     if conf["supports_eval_full"]:
         kwargs["eval_full"] = False
+    _apply_max_pipeline_len(conf, cls, kwargs, args.max_pipeline_len)
 
     task_dir = os.path.join(_ROOT, "dppbench", "tasks", task_name)
     task_data_dir = _task_data_dir(task_name, args.data_dir)
@@ -364,22 +419,27 @@ def _run_baseline_and_eval(
         )
 
     # ---- Phase 2: end-to-end downstream training + std-test scoring ----
-    # Use SAGA's evaluator which delegates to baselines.common.executor.TrainingExecutor.
-    # The executor already applies the pipeline, trains the downstream
-    # model, and reports both val and std_test_* metrics (including
-    # std_test_inference_seconds).
+    # Search-time baseline fitness may use fast/proxy objectives. The final
+    # benchmark number is computed here: full training/replay on frozen
+    # std-test rows, with validation fitness kept only as diagnostic context.
     from baselines.SAGA.evaluator import PipelineEvaluator
     from baselines.SAGA.pipeline import Pipeline
 
     pipeline = Pipeline.from_yaml(pipeline_yaml)
+    if args.max_pipeline_len is not None and len(pipeline) > args.max_pipeline_len:
+        raise RuntimeError(
+            f"{baseline_name} produced pipeline length {len(pipeline)} "
+            f"> max_pipeline_len={args.max_pipeline_len}"
+        )
     evaluator = PipelineEvaluator(
         task_dir=task_dir, data_name=task_name,
         data_dir=task_data_dir, verbose=not args.quiet,
         device=args.device,
         model_name=model_name,
+        scoring_method="full_train",
     )
     eval_t0 = time.time()
-    ev = evaluator.evaluate(pipeline)
+    ev = evaluator.evaluate(pipeline, scoring_method="full_train")
     eval_time = time.time() - eval_t0
 
     metrics = ev.metrics or {}
@@ -411,27 +471,53 @@ def _run_baseline_and_eval(
     if std_test_error is not None:
         std_test_primary_name = "unsupported_graph_std_test"
 
+    baseline_time_kind = conf.get("time_cost_kind", "search_inference")
+    construct_seconds = round(construct_time, 1)
+    final_eval_seconds = round(eval_time, 1)
+    final_inference_seconds = (
+        float(std_test_metrics["inference_seconds"])
+        if "inference_seconds" in std_test_metrics else None
+    )
+    final_training_seconds = (
+        round(max(eval_time - final_inference_seconds, 0.0), 1)
+        if final_inference_seconds is not None else None
+    )
+
     return {
         "task": task_name,
         "baseline": baseline_name,
         "model": model_name,
         "output_dir": runner_output_dir,
+        "max_pipeline_len": args.max_pipeline_len,
+        "search_fitness": (
+            float(result["best_fitness"])
+            if isinstance(result.get("best_fitness"), (int, float)) else None
+        ),
+        "final_val_fitness": float(ev.fitness) if ev.success else None,
         "val_fitness": float(ev.fitness) if ev.success else None,
         "std_test_auc": float(std_test_auc) if std_test_auc is not None else None,
         "std_test_metric_name": std_test_primary_name,
         "std_test_metric": (
             float(std_test_primary) if std_test_primary is not None else None
         ),
-        "std_test_inference_seconds": (
-            float(std_test_metrics["inference_seconds"])
-            if "inference_seconds" in std_test_metrics else None
+        "std_test_inference_seconds": final_inference_seconds,
+        "baseline_time_kind": baseline_time_kind,
+        "baseline_search_inference_seconds": (
+            construct_seconds
+            if baseline_time_kind == "search_inference" else None
         ),
+        "baseline_training_seconds": (
+            construct_seconds if baseline_time_kind == "training" else None
+        ),
+        "final_model_training_seconds": final_training_seconds,
+        "final_model_inference_seconds": final_inference_seconds,
+        "final_eval_seconds": final_eval_seconds,
         "std_test_n_rows": (
             int(std_test_metrics["n_rows"])
             if "n_rows" in std_test_metrics else None
         ),
-        "construct_time_s": round(construct_time, 1),
-        "eval_time_s": round(eval_time, 1),
+        "construct_time_s": construct_seconds,
+        "eval_time_s": final_eval_seconds,
         "n_steps": len(pipeline),
         "ops": pipeline.op_names(),
         "n_unique_evals": result.get("n_unique_evaluations"),
@@ -446,47 +532,54 @@ def _run_baseline_and_eval(
     }
 
 
-def _print_table(rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        print("(no rows)")
-        return
-    headers = [
-        "task", "baseline", "model", "val_fitness",
-        "std_test_metric_name", "std_test_metric",
-        "std_test_auc", "std_test_inference_seconds", "std_test_n_rows",
-        "construct_time_s", "eval_time_s", "n_steps", "error",
-    ]
+def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task": row.get("task"),
+        "baseline": row.get("baseline"),
+        "model": row.get("model"),
+        "max_pipeline_len": row.get("max_pipeline_len"),
+        "std_test": {
+            "metric_name": row.get("std_test_metric_name"),
+            "metric": row.get("std_test_metric"),
+            "auc": row.get("std_test_auc"),
+            "n_rows": row.get("std_test_n_rows"),
+        },
+        "time_cost_seconds": {
+            "baseline_time_kind": row.get("baseline_time_kind"),
+            "baseline_search_inference": row.get(
+                "baseline_search_inference_seconds"
+            ),
+            "baseline_training": row.get("baseline_training_seconds"),
+            "final_model_training": row.get("final_model_training_seconds"),
+            "final_model_inference": row.get("final_model_inference_seconds"),
+            "final_eval_total": row.get("final_eval_seconds"),
+        },
+        "pipeline": {
+            "n_steps": row.get("n_steps"),
+            "ops": row.get("ops"),
+            "n_unique_evals": row.get("n_unique_evals"),
+        },
+        "error": row.get("error"),
+    }
 
-    def fmt(row, key):
-        v = row.get(key)
-        if v is None:
-            return "n/a"
-        if isinstance(v, float):
-            if key in ("val_fitness", "std_test_auc", "std_test_metric"):
-                return f"{v:.4f}"
-            return f"{v:.3f}"
-        if isinstance(v, list):
-            return "[" + ",".join(str(x) for x in v) + "]"
-        return str(v)
 
-    cells = [[fmt(r, h) for h in headers] for r in rows]
-    widths = [max(len(h), *(len(c[i]) for c in cells)) for i, h in enumerate(headers)]
-    sep = "| " + " | ".join("-" * w for w in widths) + " |"
-    head = "| " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)) + " |"
-    print(head)
-    print(sep)
-    for c in cells:
-        print("| " + " | ".join(c[i].ljust(widths[i]) for i in range(len(headers))) + " |")
+def _print_json(obj: Any) -> None:
+    print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
 def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
-        "task", "baseline", "model", "output_dir", "val_fitness",
-        "std_test_metric_name", "std_test_metric",
-        "std_test_auc", "std_test_inference_seconds", "std_test_n_rows",
-        "construct_time_s", "eval_time_s", "n_steps", "ops",
-        "n_unique_evals", "error",
+        "task", "baseline", "model", "output_dir", "max_pipeline_len",
+        "search_fitness",
+        "final_val_fitness", "val_fitness", "std_test_metric_name",
+        "std_test_metric", "std_test_auc", "std_test_inference_seconds",
+        "std_test_n_rows", "baseline_time_kind",
+        "baseline_search_inference_seconds", "baseline_training_seconds",
+        "final_model_training_seconds", "final_model_inference_seconds",
+        "final_eval_seconds", "construct_time_s", "eval_time_s",
+        "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
+        "baseline_eval_error", "std_test_error", "error",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -544,6 +637,7 @@ def main():
             "baseline": args.baseline,
             "model": model_name,
             "output_dir": run_output_dir,
+            "max_pipeline_len": args.max_pipeline_len,
         }
         try:
             _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
@@ -556,11 +650,20 @@ def main():
                 print(tb)
             row.update({
                 "val_fitness": None,
+                "max_pipeline_len": args.max_pipeline_len,
                 "std_test_metric_name": None,
                 "std_test_metric": None,
                 "std_test_auc": None,
                 "std_test_inference_seconds": None,
                 "std_test_n_rows": None,
+                "baseline_time_kind": BASELINE_CONFIGS.get(
+                    args.baseline, {}
+                ).get("time_cost_kind"),
+                "baseline_search_inference_seconds": None,
+                "baseline_training_seconds": None,
+                "final_model_training_seconds": None,
+                "final_model_inference_seconds": None,
+                "final_eval_seconds": None,
                 "construct_time_s": None,
                 "eval_time_s": None,
                 "n_steps": None,
@@ -569,21 +672,15 @@ def main():
                 "error": f"{type(e).__name__}: {e}",
             })
         rows.append(row)
-        print(
-            f"[{task_name}] {args.baseline}: "
-            f"std_test_metric={row.get('std_test_metric')} "
-            f"({row.get('std_test_metric_name')})  "
-            f"std_test_inference_s={row.get('std_test_inference_seconds')}  "
-            f"construct={row.get('construct_time_s')}s  "
-            f"eval={row.get('eval_time_s')}s  "
-            f"err={row.get('error')}"
-        )
+        _print_json({"run_result": _row_console_summary(row)})
 
     _write_csv(rows, csv_path)
     print("\n" + "=" * 60)
-    print(f"Results CSV: {csv_path}")
+    _print_json({
+        "results_csv": csv_path,
+        "results": [_row_console_summary(row) for row in rows],
+    })
     print("=" * 60)
-    _print_table(rows)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from baselines.CtxPipe.evaluator import CtxPipeEvaluator, EvaluationResult
+from baselines.common.evaluator import EvaluationResult
+from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
 
 
-class DeepPrepEvaluator(CtxPipeEvaluator):
-    """Thin alias of :class:`CtxPipeEvaluator` exposed under a DeepPrep-named
+class DeepPrepEvaluator(SearchPipelineEvaluator):
+    """Thin alias of :class:`SearchPipelineEvaluator` exposed under a DeepPrep-named
     class so users (and external benchmark harnesses) can identify the
     baseline easily. Functionally identical: it runs the downstream
     LightGBM (tabular) or DIN (rec) training and returns the AUC.
@@ -30,6 +31,7 @@ class DeepPrepEvaluator(CtxPipeEvaluator):
         small_n: Optional[int] = None,
         seed: int = 42,
         device: str = "cpu",
+        model_name: Optional[str] = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -40,6 +42,7 @@ class DeepPrepEvaluator(CtxPipeEvaluator):
             small_n=small_n,
             seed=seed,
             device=device,
+            model_name=model_name,
         )
 
     # ------------------------------------------------------------------

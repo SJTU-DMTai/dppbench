@@ -108,6 +108,7 @@ class DataMaster:
         verbose: bool = True,
         device: str = "cpu",
         fast_train: Optional[bool] = None,
+        model_name: Optional[str] = None,
         config_path: Optional[str] = None,
     ) -> None:
         cfg = load_baseline_config(
@@ -188,6 +189,7 @@ class DataMaster:
         self.verbose = bool(verbose)
         self.device = device
         self.fast_train = bool(fast_train)
+        self.model_name = model_name
 
         self.output_dir = output_dir or os.path.join(
             os.path.dirname(__file__), "..", "..", "outputs", "DataMaster", data_name
@@ -228,7 +230,9 @@ class DataMaster:
             seed=self.seed,
             verbose=False,
             device=self.device,
+            model_name=self.model_name,
         )
+        agent_evaluator.set_evaluate_std_test(False)
         if self.fast_train:
             agent_evaluator.set_fast_mode(True)
 
@@ -319,7 +323,9 @@ class DataMaster:
                 small_n=0,
                 seed=self.seed,
                 device=self.device,
+                model_name=self.model_name,
             )
+            evaluator.set_evaluate_std_test(False)
             try:
                 ev = evaluator.evaluate(pipeline)
                 eval_metrics = dict(ev.metrics or {})

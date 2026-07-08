@@ -29,6 +29,7 @@ from .pipeline import (
     repair,
 )
 from .evaluator import EvaluationResult, PipelineEvaluator
+from .search_evaluator import SearchPipelineEvaluator
 from .op_registry import (
     get_operator_descriptions,
     get_operator_summary,

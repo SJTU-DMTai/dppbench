@@ -74,7 +74,7 @@ Outputs land in `outputs/Learn2Clean/<data_name>/`:
 
 | File | Role |
 |---|---|
-| `operator_catalog.py` | Re-exports DiffPrep's catalog (33 ops); syncs DiffPrep-only ops into SAGA CATALOG. |
+| `operator_catalog.py` | Re-exports the shared common operator catalog from `baselines.common.op_spec`. |
 | `env.py` | `Learn2CleanEnv` -- MDP wrapper; legal/duplicate/illegal-order checks, eval-and-rollback, AUC-delta reward. |
 | `agent.py` | `TabularQAgent` -- dict-based Q-table, Boltzmann softmax (overflow-safe), JSON save/load. |
 | `trainer.py` | `Learn2CleanTrainer` -- temperature schedule, episode loop, best/top-K bookkeeping. |

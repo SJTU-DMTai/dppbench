@@ -120,6 +120,7 @@ class RLTrainer:
                 seed=task.seed,
                 verbose=False,
             )
+            agent_evaluator.set_evaluate_std_test(False)
 
             def _agent_eval_fn(pipeline: Pipeline):
                 return agent_evaluator.evaluate_for_agent(pipeline)

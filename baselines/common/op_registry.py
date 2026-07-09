@@ -37,6 +37,10 @@ def _load_all_operators():
             sub_mod.__path__ = [os.path.join(OPERATOR_DIR, sub)]
             sys.modules[sub_full] = sub_mod
 
+    module_files = []
+    for fname in sorted(os.listdir(OPERATOR_DIR)):
+        if fname.endswith(".py") and not fname.startswith("_") and fname != "base_op.py":
+            module_files.append(("", fname, os.path.join(OPERATOR_DIR, fname)))
     for sub in SUBDIRS:
         sub_dir = os.path.join(OPERATOR_DIR, sub)
         if not os.path.isdir(sub_dir):
@@ -44,26 +48,28 @@ def _load_all_operators():
         for fname in sorted(os.listdir(sub_dir)):
             if not fname.endswith(".py") or fname.startswith("_"):
                 continue
-            module_name = fname[:-3]
-            filepath = os.path.join(sub_dir, fname)
-            full_name = f"{pkg_name}.{sub}.{module_name}"
-            if full_name in sys.modules:
-                module = sys.modules[full_name]
-            else:
-                spec = importlib.util.spec_from_file_location(full_name, filepath, submodule_search_locations=None)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[full_name] = module
-                try:
-                    spec.loader.exec_module(module)
-                except Exception:
-                    del sys.modules[full_name]
-                    continue
-            for attr_name in dir(module):
-                attr = getattr(module, attr_name)
-                if (inspect.isclass(attr) and
-                        hasattr(attr, 'transform') and
-                        attr_name not in ("BaseOp", "TabularOp", "RecOp", "TextOp", "ImageOp")):
-                    ops[attr_name] = attr
+            module_files.append((sub, fname, os.path.join(sub_dir, fname)))
+
+    for sub, fname, filepath in module_files:
+        module_name = fname[:-3]
+        full_name = f"{pkg_name}.{module_name}" if not sub else f"{pkg_name}.{sub}.{module_name}"
+        if full_name in sys.modules:
+            module = sys.modules[full_name]
+        else:
+            spec = importlib.util.spec_from_file_location(full_name, filepath, submodule_search_locations=None)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[full_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                del sys.modules[full_name]
+                continue
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (inspect.isclass(attr) and
+                    hasattr(attr, 'transform') and
+                    attr_name not in ("BaseOp", "TabularOp", "RecOp", "TextOp", "ImageOp")):
+                ops[attr_name] = attr
     return ops
 
 

@@ -164,6 +164,13 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_steps",
         "kwargs": {},
     },
+    "HAIPipe": {
+        "cls_path": "baselines.HAIPipe.haipipe.HAIPipe",
+        "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
 }
 
 
@@ -422,8 +429,8 @@ def _run_baseline_and_eval(
     # Search-time baseline fitness may use fast/proxy objectives. The final
     # benchmark number is computed here: full training/replay on frozen
     # std-test rows, with validation fitness kept only as diagnostic context.
-    from baselines.SAGA.evaluator import PipelineEvaluator
-    from baselines.SAGA.pipeline import Pipeline
+    from baselines.common.evaluator import PipelineEvaluator
+    from baselines.common.pipeline import Pipeline
 
     pipeline = Pipeline.from_yaml(pipeline_yaml)
     if args.max_pipeline_len is not None and len(pipeline) > args.max_pipeline_len:

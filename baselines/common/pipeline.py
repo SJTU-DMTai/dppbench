@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import math
 import os
 import random as _random
@@ -309,16 +310,123 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+_OPERATOR_PARAM_CACHE: dict[str, tuple[set[str] | None, set[str]]] | None = None
+
+
+def _operator_param_cache() -> dict[str, tuple[set[str] | None, set[str]]]:
+    """Return ``op_name -> (accepted params, required params)``.
+
+    ``accepted params`` is ``None`` when the implementation has ``**kwargs`` and
+    therefore cannot be checked for unknown keyword names by signature alone.
+    """
+    global _OPERATOR_PARAM_CACHE
+    if _OPERATOR_PARAM_CACHE is not None:
+        return _OPERATOR_PARAM_CACHE
+    out: dict[str, tuple[set[str] | None, set[str]]] = {}
+    try:
+        from baselines.common.op_registry import _load_all_operators
+        operators = _load_all_operators()
+    except Exception:
+        operators = {}
+    for name, cls in operators.items():
+        try:
+            sig = inspect.signature(cls.__init__)
+        except (TypeError, ValueError):
+            continue
+        accepted: set[str] = set()
+        required: set[str] = set()
+        has_kwargs = False
+        for pname, param in sig.parameters.items():
+            if pname == "self":
+                continue
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                has_kwargs = True
+                continue
+            if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                continue
+            accepted.add(pname)
+            if param.default is inspect.Parameter.empty:
+                required.add(pname)
+        out[name] = (None if has_kwargs else accepted, required)
+    _OPERATOR_PARAM_CACHE = out
+    return out
+
+
+def get_operator_param_names(op_name: str) -> set[str] | None:
+    """Return constructor keyword names for an operator, if introspectable."""
+    item = _operator_param_cache().get(op_name)
+    return None if item is None else item[0]
+
+
+def _signature_required_params(op_name: str) -> set[str]:
+    item = _operator_param_cache().get(op_name)
+    return set() if item is None else set(item[1])
+
+
 def _missing_required_params(op_name: str, params: dict) -> list[str]:
     spec = CATALOG.get(op_name)
-    if spec is None:
-        return []
+    required = set(spec.required_params if spec is not None else ())
     missing = []
-    for name in spec.required_params:
+    for name in sorted(required):
         value = (params or {}).get(name)
         if value is None or value == [] or value == "":
             missing.append(name)
     return missing
+
+
+def _unknown_params(op_name: str, params: dict) -> list[str]:
+    accepted = get_operator_param_names(op_name)
+    if accepted is None:
+        return []
+    return sorted(k for k in (params or {}) if k not in accepted)
+
+
+def _param_space_value_errors(op_name: str, params: dict) -> list[str]:
+    spec = CATALOG.get(op_name)
+    if spec is None:
+        return []
+    errors: list[str] = []
+    for key, choices in (spec.param_space or {}).items():
+        if key not in (params or {}) or not isinstance(choices, list) or not choices:
+            continue
+        value = params[key]
+        if isinstance(value, list) and not any(isinstance(c, list) for c in choices):
+            bad = [v for v in value if v not in choices]
+            if bad:
+                errors.append(f"{op_name} param {key} has values {bad}, allowed {choices}")
+        elif not isinstance(value, (list, dict)) and value not in choices:
+            errors.append(f"{op_name} param {key}={value!r}, allowed {choices}")
+    return errors
+
+
+def validate_step_params(
+    op_name: str,
+    params: dict | None,
+    ctx: DataContext | None = None,
+    *,
+    strict: bool = True,
+) -> list[str]:
+    """Validate one operator's concrete parameter dict.
+
+    This is the common guard used by all baselines before execution.  It checks
+    the shared ``OpSpec`` metadata, the actual operator ``__init__`` signature,
+    declared parameter spaces when available, and recommendation ID-column
+    protection rules.
+    """
+    params = params or {}
+    if op_name not in CATALOG:
+        return [f"unknown operator {op_name}"]
+    errors: list[str] = []
+    missing = _missing_required_params(op_name, params)
+    if missing:
+        errors.append(f"{op_name} missing required params: {missing}")
+    unknown = _unknown_params(op_name, params)
+    if strict and unknown:
+        errors.append(f"{op_name} has unknown params: {unknown}")
+    errors.extend(_param_space_value_errors(op_name, params))
+    if ctx is not None:
+        errors.extend(_rec_id_protection_errors(op_name, params, ctx))
+    return errors
 
 
 def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
@@ -588,7 +696,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["method"] = rng.choice(["standard", "minmax", "maxabs", "robust", "l2"])
         if p["method"] == "standard" and rng.random() < 0.3:
             p["cols"] = list(numeric_cols)
-            p["auto_numeric"] = False
         else:
             p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
         return p
@@ -762,9 +869,7 @@ def make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> PipelineSt
     params = build_default_params(op_name, ctx, rng)
     if params is None:
         return None
-    if _missing_required_params(op_name, params):
-        return None
-    if _rec_id_protection_errors(op_name, params, ctx):
+    if validate_step_params(op_name, params, ctx, strict=True):
         return None
     return PipelineStep(
         op=op_name,
@@ -931,8 +1036,19 @@ def truncate_optional_steps(
     return pipeline
 
 
-def repair(pipeline: "Pipeline", task_type: str, ctx: DataContext) -> "Pipeline":
-    """In-place structural repair. Returns the same pipeline."""
+def repair(
+    pipeline: "Pipeline",
+    task_type: str,
+    ctx: DataContext,
+    *,
+    sort_steps: bool = True,
+) -> "Pipeline":
+    """In-place structural repair. Returns the same pipeline.
+
+    By default repaired pipelines are sorted into the benchmark's canonical
+    category order. Baselines that explicitly search operator order may set
+    ``sort_steps=False`` and then run ``check_pipeline`` to verify legality.
+    """
     seen = set()
     deduped: list[PipelineStep] = []
     for step in pipeline.steps:
@@ -958,7 +1074,8 @@ def repair(pipeline: "Pipeline", task_type: str, ctx: DataContext) -> "Pipeline"
     else:
         ensure_tabular_tail(pipeline, ctx)
 
-    pipeline.steps.sort(key=lambda step: _rank(step.op, task_type))
+    if sort_steps:
+        pipeline.steps.sort(key=lambda step: _rank(step.op, task_type))
     return pipeline
 
 
@@ -1032,6 +1149,28 @@ def random_pipeline(
     truncate_optional_steps(pipe, task_type, max_len)
     assign_dag_structure(pipe, ctx, rng)
     return pipe
+
+
+def finalize_pipeline(
+    pipeline: Pipeline,
+    ctx: DataContext,
+    rng: _random.Random | None = None,
+    *,
+    max_len: int | None = None,
+    sort_steps: bool = True,
+) -> tuple[Pipeline, PipelineCheckReport]:
+    """Apply the common execution contract to a candidate pipeline.
+
+    The function performs structural repair, optional budget truncation, DAG
+    assignment, and full legality/parameter validation. Baselines should call
+    this before evaluating or persisting a searched pipeline.
+    """
+    rng = rng or _random.Random()
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    truncate_optional_steps(pipeline, ctx.task_type, max_len)
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    assign_dag_structure(pipeline, ctx, rng)
+    return pipeline, check_pipeline(pipeline, ctx)
 
 
 # -----------------------------------------------------------------------------
@@ -1147,6 +1286,11 @@ def get_order_constraints(task_type: str) -> list[OpCategory]:
     return []
 
 
+def get_category_order(task_type: str) -> list[OpCategory]:
+    """Public alias for the canonical operator-category order."""
+    return get_order_constraints(task_type)
+
+
 def _pipeline_data(pipeline: Pipeline | str | dict) -> dict:
     if isinstance(pipeline, Pipeline):
         return yaml.safe_load(pipeline.to_yaml()) or {}
@@ -1225,11 +1369,8 @@ def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = No
                         f"{op_name} {oid} is not applicable to "
                         f"task_type={ctx.task_type}"
                     )
-            missing_params = _missing_required_params(op_name, params)
-            if missing_params:
-                errors.append(f"{op_name} {oid} missing required params: {missing_params}")
-            if ctx is not None:
-                errors.extend(_rec_id_protection_errors(op_name, params, ctx))
+            for param_error in validate_step_params(op_name, params, ctx, strict=True):
+                errors.append(f"{op_name} {oid}: {param_error}")
             expected = CATALOG[op_name].prev_op_num
             if expected <= 1 and len(prev) != expected:
                 errors.append(f"{op_name} {oid} expects {expected} prev nodes, got {len(prev)}")

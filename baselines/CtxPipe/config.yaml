@@ -1,6 +1,6 @@
-# n_episodes (default: 20): Number of DQN training episodes.
+# n_episodes (default: 20): Number of component-level DQN training episodes.
 n_episodes: 20
-# max_steps (default: 8): Maximum operators per generated pipeline.
+# max_steps (default: 8): Maximum selected executable operators per pipeline.
 max_steps: 8
 # small_n (default: 5000): RL training row subsample size; 0 disables.
 small_n: 5000

@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from baselines.common.op_spec import CATALOG, operators_for_task
+from baselines.common.utils import get_available_ops, get_op
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
@@ -196,7 +196,7 @@ def chain_to_steps(
     auto-filled via ``build_default_params``.
     """
     raw_calls = [c.strip() for c in chain_str.split("-->") if c.strip()]
-    valid_ops = set(operators_for_task(ctx.task_type))
+    valid_ops = {spec.op_name for spec in get_available_ops(ctx.task_type)}
     steps: list[PipelineStep] = []
     for raw in raw_calls:
         op_name, llm_params = _parse_op_call(raw)
@@ -205,7 +205,9 @@ def chain_to_steps(
                 continue
             steps.append(PipelineStep(op="Terminate", target="both", params={}))
             continue
-        if op_name not in CATALOG:
+        try:
+            get_op(op_name)
+        except KeyError:
             raise ChainParseError(
                 f"Unknown operator {op_name!r}. "
                 f"Use only operators from the whitelist."

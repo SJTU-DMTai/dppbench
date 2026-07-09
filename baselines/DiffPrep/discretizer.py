@@ -19,7 +19,7 @@ import torch
 
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import repair
+from baselines.common.pipeline import assign_dag_structure, check_pipeline, repair
 
 from .search_space import ContinuousPipeline
 from .slot_planner import IDENTITY, Slot, diffprep_make_step
@@ -31,6 +31,8 @@ def slot_order(continuous: ContinuousPipeline) -> List[int]:
         return list(range(len(continuous.slots)))
     with torch.no_grad():
         alpha = continuous.alpha().detach().cpu()
+        if alpha.dim() == 3:
+            alpha = alpha.mean(dim=0)
     remaining = set(range(alpha.shape[1]))
     order: List[int] = []
     for row in range(alpha.shape[0]):
@@ -45,6 +47,8 @@ def argmax_op_names(continuous: ContinuousPipeline) -> List[str]:
     """Return one operator name per slot via argmax of the beta row."""
     with torch.no_grad():
         beta = continuous.beta()
+        if beta.dim() == 3:
+            beta = beta.mean(dim=1)
     out: List[str] = []
     for i in slot_order(continuous):
         slot = continuous.slots[i]
@@ -72,9 +76,24 @@ def discretize(
         if step is not None:
             pipe.steps.append(step)
 
-    repair(pipe, ctx.task_type, ctx)
+    repair(pipe, ctx.task_type, ctx, sort_steps=not continuous.flex)
+    assign_dag_structure(pipe, ctx, rng)
+
+    flex_order_repaired = False
+    if continuous.flex:
+        report = check_pipeline(pipe, ctx)
+        if not report.valid:
+            # DPPBench legality constraints are part of the benchmark contract.
+            # If the learned flex order violates them, keep the learned order in
+            # metadata but fall back to the canonical repaired order for the
+            # executable pipeline.
+            repair(pipe, ctx.task_type, ctx, sort_steps=True)
+            assign_dag_structure(pipe, ctx, rng)
+            flex_order_repaired = True
+
     pipe.metadata = dict(getattr(pipe, "metadata", {}) or {})
     pipe.metadata["diffprep_slot_order"] = order
+    pipe.metadata["diffprep_flex_order_repaired"] = flex_order_repaired
     return pipe
 
 

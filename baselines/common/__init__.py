@@ -19,6 +19,8 @@ from .pipeline import (
     build_default_params,
     check_pipeline,
     ensure_tabular_tail,
+    finalize_pipeline,
+    get_category_order,
     get_order_constraints,
     get_param_space,
     get_source_tables,
@@ -27,6 +29,8 @@ from .pipeline import (
     is_legal,
     make_step,
     repair,
+    validate_step_params,
+    get_operator_param_names,
 )
 from .evaluator import EvaluationResult, PipelineEvaluator
 from .search_evaluator import SearchPipelineEvaluator

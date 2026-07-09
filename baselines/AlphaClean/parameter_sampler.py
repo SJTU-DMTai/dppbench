@@ -15,8 +15,9 @@ from typing import List, Optional
 
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import get_param_space, make_step
+from baselines.common.utils import get_available_ops, get_op
 
-from .operator_catalog import CATALOG, operators_for_task
+from .operator_catalog import CATALOG
 from .repair import Repair
 
 
@@ -24,7 +25,7 @@ class ParameterSampler:
     def __init__(self, ctx: DataContext, seed: int = 42) -> None:
         self.ctx = ctx
         self.rng = _random.Random(seed)
-        self._ops = operators_for_task(ctx.task_type)
+        self._ops = [spec.op_name for spec in get_available_ops(ctx.task_type)]
         # Cheap reproducibility: stable order for one-hot indexing.
         self._ops.sort()
 
@@ -71,7 +72,7 @@ class ParameterSampler:
         elif op_name == "ConcatTable" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["other_dfs"] = [f"${aux}"]
-        param_space = get_param_space(CATALOG[op_name], self.ctx)
+        param_space = get_param_space(get_op(op_name), self.ctx)
 
         # Optionally perturb one key in the shared context-aware parameter space.
         keys = [k for k, v in param_space.items() if k != "source_tables" and v]

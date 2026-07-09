@@ -38,20 +38,10 @@ evaluating on the validation/test split.
 
 ```bash
 # Tabular task
-python -m baselines.SAGA.run_saga \
-    --data_name fraud_detection \
-    --population_size 8 \
-    --n_generations 3 \
-    --top_k 3 \
-    --n_physical_trials 3
+python scripts/evaluate_baseline.py --baseline SAGA --data_names fraud_detection
 
 # Recommendation task
-python -m baselines.SAGA.run_saga \
-    --data_name movielens \
-    --population_size 8 \
-    --n_generations 3 \
-    --top_k 3 \
-    --n_physical_trials 3
+python scripts/evaluate_baseline.py --baseline SAGA --data_names movielens
 ```
 
 Supported datasets: `home_credit`, `fraud_detection`, `amazon_beauty`,

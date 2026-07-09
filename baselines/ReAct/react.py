@@ -20,7 +20,7 @@ from baselines.common.config import (
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
 from baselines.common.pipeline import is_legal, repair, truncate_optional_steps
-from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
+from baselines.common.utils import get_data_ctx
 from baselines.DeepPrep.llm_client import LLMClient
 from baselines.DeepPrep.sandbox import Sandbox
 
@@ -193,9 +193,7 @@ class ReAct:
     def _infer_context(self, sandbox: Sandbox) -> DataContext:
         if sandbox.data is None:
             sandbox.reset()
-        if sandbox.task_type == "rec":
-            return _infer_rec_context(self.data_name, sandbox.data)
-        return _infer_tabular_context(self.data_name, sandbox.data)
+        return get_data_ctx(self.data_name, sandbox.data, sandbox.task_type)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:

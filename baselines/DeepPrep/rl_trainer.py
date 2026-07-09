@@ -203,15 +203,11 @@ class RLTrainer:
     # ------------------------------------------------------------------
     @staticmethod
     def _infer_ctx(sandbox: Sandbox, data_name: str) -> DataContext:
-        """Lazy import to avoid a hard dep on ``baselines.SAGA.saga`` at
-        module import time."""
-        from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
-        # Force an initial reset so ``sandbox.data`` is populated.
+        from baselines.common.utils import get_data_ctx
+
         if sandbox.data is None:
             sandbox.reset()
-        if sandbox.task_type == "rec":
-            return _infer_rec_context(data_name, sandbox.data)
-        return _infer_tabular_context(data_name, sandbox.data)
+        return get_data_ctx(data_name, sandbox.data, sandbox.task_type)
 
 
 # ---------------------------------------------------------------------------

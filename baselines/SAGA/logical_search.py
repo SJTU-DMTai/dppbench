@@ -12,7 +12,8 @@ import random
 from dataclasses import dataclass, field
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
-from baselines.common.op_spec import CATALOG, is_mandatory, operators_for_task
+from baselines.common.op_spec import is_mandatory
+from baselines.common.utils import get_available_ops
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
@@ -199,7 +200,7 @@ class LogicalSearch:
         return Pipeline(steps=new_steps)
 
     def _mutate(self, p: Pipeline) -> Pipeline:
-        ops = operators_for_task(self.ctx.task_type)
+        ops = [spec.op_name for spec in get_available_ops(self.ctx.task_type)]
         # filter out mandatory & always-included ops to avoid dropping them
         choice = self.rng.choice(["add", "remove", "replace", "swap", "rewire"])
         if choice == "add" or not p.steps:

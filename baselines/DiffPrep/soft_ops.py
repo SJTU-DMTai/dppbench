@@ -133,8 +133,11 @@ SOFT_OP_FNS = {
     "Normalize":       soft_minmax_normalize,
     "ScaleFeature":   soft_standard_scale,
     "TransformPower":           soft_log,
-    "Clip":            soft_clip,
+    "ClipOutlier":     soft_clip,
     "DiscretizeFeature":       soft_bucketize,
+    "OneHotEncode":    soft_label_encode,
+    "OrdinalEncode":   soft_label_encode,
+    "HashEncode":      soft_label_encode,
     "LabelEncode":     soft_label_encode,
     "CustomProcess": soft_identity,
     "FrequencyEncode": soft_frequency_encode,
@@ -161,10 +164,16 @@ def apply_soft_op(op_name: str, x: torch.Tensor, mask: torch.Tensor) -> torch.Te
 # Mixture: x_i = sum_j beta_ij * f_ij(x_{i-1})
 # ---------------------------------------------------------------------------
 def softmix(beta_row: torch.Tensor, outputs: Sequence[torch.Tensor]) -> torch.Tensor:
-    """Mix a list of candidate outputs with the slot's softmax weights."""
-    # outputs: list of [N, D]; beta_row: [m]
-    stacked = torch.stack(list(outputs), dim=0)            # [m, N, D]
-    weights = beta_row.view(-1, 1, 1)                       # [m, 1, 1]
+    """Mix candidate outputs with slot probabilities.
+
+    ``beta_row`` may be either ``[m]`` (one distribution for the whole slot) or
+    ``[D, m]`` (one distribution per feature, as in the original DiffPrep).
+    """
+    stacked = torch.stack(list(outputs), dim=0)  # [m, N, D]
+    if beta_row.dim() == 1:
+        weights = beta_row.view(-1, 1, 1)
+    else:
+        weights = beta_row.transpose(0, 1).unsqueeze(1)  # [m, 1, D]
     return (stacked * weights).sum(dim=0)
 
 

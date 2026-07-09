@@ -79,35 +79,16 @@ baselines/BAT/
 ├── evaluator.py                 # BATEvaluator (LightGBM / DIN AUC)
 ├── sandbox.py                   # re-export of DeepPrep Sandbox
 ├── bat.py                       # top-level orchestrator
-└── run_bat.py                   # CLI
-```
+└── README.md                    # this file
 
 ## Quick start
 
-Tabular smoke test (downstream feedback ON, the dppbench default):
-
 ```bash
-# API credentials are loaded from project apikeys.json.
-python -m baselines.BAT.run_bat \
-    --data_name fraud_detection --llm_model gpt-4o-mini \
-    --max_rollout_steps 4 --max_depth 4 --small_n 3000
-```
+# Tabular (downstream feedback ON, the dppbench default)
+python scripts/evaluate_baseline.py --baseline BAT --data_names fraud_detection
 
-Tabular smoke test (downstream OFF, recovers BAT-original behaviour):
-
-```bash
-python -m baselines.BAT.run_bat \
-    --data_name fraud_detection --llm_model gpt-4o-mini \
-    --max_rollout_steps 4 --max_depth 4 --small_n 3000 \
-    --no_use_downstream
-```
-
-Recommendation smoke test (mandatory ops are added by `repair`):
-
-```bash
-python -m baselines.BAT.run_bat \
-    --data_name movielens --llm_model gpt-4o-mini \
-    --max_rollout_steps 4 --max_depth 4 --small_n 3000
+# Recommendation
+python scripts/evaluate_baseline.py --baseline BAT --data_names movielens
 ```
 
 ## Outputs

@@ -38,7 +38,7 @@ from baselines.common.config import (
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
 from baselines.common.pipeline import check_pipeline
-from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
+from baselines.common.utils import get_data_ctx
 
 from .discretizer import argmax_op_names, discretize, slot_order
 from .evaluator import DiffPrepEvaluator
@@ -281,11 +281,7 @@ class DiffPrep:
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: DiffPrepEvaluator) -> Tuple[DataContext, object]:
         data = evaluator.load_data()
-        if evaluator.task_type == "rec":
-            ctx = _infer_rec_context(self.data_name, data)
-        else:
-            ctx = _infer_tabular_context(self.data_name, data)
-        return ctx, data
+        return get_data_ctx(self.data_name, data, evaluator.task_type), data
 
     # ------------------------------------------------------------------
     def run(self) -> dict:
@@ -310,6 +306,32 @@ class DiffPrep:
         train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
+        if task_type not in {"tabular", "rec"}:
+            duration = time.time() - t0
+            error = f"unsupported_task_type={task_type}: DiffPrep supports tabular and rec tasks only"
+            if self.verbose:
+                print(f"[DiffPrep] {error}")
+            return {
+                "best_pipeline_yaml": None,
+                "best_pipeline_path": None,
+                "best_fitness": None,
+                "best_metrics": {},
+                "eval_error": error,
+                "is_legal": False,
+                "check_errors": [error],
+                "check_warnings": [],
+                "final_pipeline_ops": [],
+                "flex_enabled": False,
+                "alpha": [],
+                "discrete_slot_order": [],
+                "search_history": [],
+                "n_unique_evaluations": train_evaluator.n_unique_evaluations,
+                "duration_seconds": duration,
+                "output_dir": self.output_dir,
+                "weights_path": None,
+                "unsupported_task_type": task_type,
+                "error": error,
+            }
 
         if self.verbose:
             print("=" * 60)
@@ -328,11 +350,9 @@ class DiffPrep:
             print(f"[DiffPrep] {len(slots)} slots: "
                   + ", ".join(f"{s.category.value}({s.kind},m={s.n_candidates})" for s in slots))
 
-        # 3) Build continuous pipeline + surrogate
-        cont = ContinuousPipeline(
-            slots, flex=self.flex, init_scale=self.continuous_init_scale
-        ).to(self.device)
-
+        # 3) Build surrogate tensors/model.  The continuous pipeline is created
+        # after feature extraction so its architecture logits can be feature-wise,
+        # matching the original DiffPrep relaxation.
         if task_type == "rec":
             (feat, mask, u_ids, i_ids, y, n_users, n_items) = _rec_feature_tensors(
                 data, ctx, self.max_features, self.device,
@@ -451,6 +471,13 @@ class DiffPrep:
                     pred = (torch.sigmoid(logits) > 0.5).float()
                     acc = (pred == yy).float().mean().item()
                 return loss, acc
+
+        cont = ContinuousPipeline(
+            slots,
+            flex=self.flex,
+            init_scale=self.continuous_init_scale,
+            n_features=int(feat.shape[1]),
+        ).to(self.device)
 
         # 4) Bilevel training
         trainer = DiffPrepTrainer(

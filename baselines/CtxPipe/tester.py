@@ -1,17 +1,14 @@
-"""Greedy inference for CtxPipe.
-
-Uses the trained Q-network with ε=0 to construct a final pipeline.
-"""
+"""Greedy inference for component-level CtxPipe."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from baselines.common.pipeline import Pipeline
+    from baselines.common.search_evaluator import SearchPipelineEvaluator
 
     from .agent import DQNAgent
     from .env import PipelineEnv
-    from baselines.common.search_evaluator import SearchPipelineEvaluator
 
 
 class CtxPipeTester:
@@ -24,20 +21,27 @@ class CtxPipeTester:
         env: "PipelineEnv",
         eval_full_with: Optional["SearchPipelineEvaluator"] = None,
     ) -> dict:
-        """Roll out one greedy episode.
-
-        If ``eval_full_with`` is provided, the final pipeline is re-evaluated
-        with that evaluator (typically the full-data one) to obtain the final
-        metric.
-        """
         state = env.reset()
         done = False
         rl_reward = 0.0
         rl_info: dict = {}
+        trace: list[dict] = []
 
         while not done:
-            action = agent.select_action(state, eps=0.0)
+            component = env.current_component_id()
+            if component is None:
+                break
+            mask = env.action_mask()
+            action = agent.select_action(component, state, eps=0.0, action_mask=mask)
             next_state, reward, done, info = env.step(action)
+            trace.append({
+                "component": component,
+                "category": info.get("category"),
+                "action": int(action),
+                "selected": info.get("op_added") or info.get("action_name"),
+                "reason": info.get("reason"),
+                "reward": float(reward),
+            })
             state = next_state
             rl_reward += float(reward)
             if done:
@@ -52,6 +56,8 @@ class CtxPipeTester:
             "rl_success": bool(rl_info.get("success", False)),
             "rl_fitness": rl_info.get("fitness"),
             "rl_metrics": rl_info.get("metrics") or {},
+            "rl_error": rl_info.get("error"),
+            "trace": trace,
         }
 
         if eval_full_with is not None:
@@ -65,9 +71,11 @@ class CtxPipeTester:
             out["full_error"] = full_ev.error
             out["fitness"] = out["full_fitness"]
             out["metrics"] = out["full_metrics"]
+            out["error"] = full_ev.error
         else:
             out["fitness"] = out["rl_fitness"]
             out["metrics"] = out["rl_metrics"]
+            out["error"] = out["rl_error"]
 
         if self.verbose:
             fit = out.get("fitness")

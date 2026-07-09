@@ -30,11 +30,7 @@ from baselines.common.pipeline import Pipeline, check_pipeline
 # ``baselines.SAGA.saga`` while it is still partially initialized.
 
 
-from baselines.common.data_ctx import (
-    _infer_graph_context,
-    _infer_rec_context,
-    _infer_tabular_context,
-)
+from baselines.common.utils import get_data_ctx
 
 
 # -----------------------------------------------------------------------------
@@ -142,13 +138,8 @@ class SAGA:
 
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: PipelineEvaluator) -> DataContext:
-        # Force the executor to load data so we can inspect the schema.
         data = evaluator.load_data()
-        if evaluator.task_type == "rec":
-            return _infer_rec_context(self.data_name, data)
-        if evaluator.task_type == "graph":
-            return _infer_graph_context(self.data_name, data)
-        return _infer_tabular_context(self.data_name, data)
+        return get_data_ctx(self.data_name, data, evaluator.task_type)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:

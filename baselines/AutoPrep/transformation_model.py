@@ -26,7 +26,7 @@ from typing import Optional
 
 from baselines.common.data_ctx import DataContext
 
-from .operator_catalog import CATALOG, OpCategory
+from .operator_catalog import CATALOG
 
 
 def _sigmoid(x: float) -> float:
@@ -52,11 +52,25 @@ class TransformationModel:
     # ------------------------------------------------------------------
     def _ctx_signals(self) -> dict[str, float]:
         ctx = self.ctx
-        n_num = max(1, len(ctx.numeric_cols))
         n_cat = len(ctx.categorical_cols)
+        all_table_cols = [set(t.columns) for t in ctx.tables.values()]
+        if len(all_table_cols) > 1:
+            overlaps = []
+            for i, left in enumerate(all_table_cols):
+                for right in all_table_cols[i + 1:]:
+                    denom = max(1, min(len(left), len(right)))
+                    overlaps.append(len(left & right) / denom)
+            column_header_overlap = max(overlaps or [0.0])
+        else:
+            column_header_overlap = 0.0
+        join_key_overlap = 1.0 if any(
+            t.join_keys_to_primary for t in ctx.tables.values()
+        ) else 0.0
         return {
             "missing": 0.5,            # prior expectation; no per-col stat at ctx level
             "missing_max": 0.5,
+            "column_header_overlap": column_header_overlap,
+            "join_key_overlap": join_key_overlap,
             "numeric": 1.0 if ctx.numeric_cols else 0.0,
             "categorical": min(1.0, n_cat / 5.0) if n_cat else 0.0,
             "high_card": 1.0 if n_cat >= 5 else 0.0,
@@ -133,9 +147,8 @@ class JoinModel:
     and is treated as mandatory (probability 1.0).
 
     For tabular tasks, every aux dataframe contributes one ``JoinTable``
-    candidate (probabilistic, initial 0.5 floor per the paper).  Whether the
-    join adds a column prefix is decided stochastically in
-    ``pipeline_factory.build_default_params``, not by creating duplicate edges.
+    candidate (probabilistic, initial 0.5 floor per the paper).  Concrete join
+    parameters are produced through the shared common pipeline factory.
     """
 
     def __init__(self, ctx: DataContext, eta: float = 0.5):

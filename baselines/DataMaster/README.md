@@ -50,23 +50,17 @@ baselines/DataMaster/
 ├── agent.py                # DataMasterAgent main loop
 ├── data_master.py          # top-level DataMaster class
 ├── evaluator.py            # DataMasterEvaluator (SearchPipelineEvaluator subclass)
-└── run_data_master.py      # CLI entry point
+└── README.md
 ```
 
 ## Quick start
 
 ```bash
-# Tabular smoke test (API credentials are loaded from project apikeys.json)
-python -m baselines.DataMaster.run_data_master \
-    --data_name fraud_detection --llm_model gpt-4o-mini \
-    --max_iterations 3 --k_black 2 --max_chain_len 4 \
-    --small_n 1000 --downstream_eval_n 500 --no_eval_full
+# Tabular
+python scripts/evaluate_baseline.py --baseline DataMaster --data_names fraud_detection
 
-# Recommendation smoke test
-python -m baselines.DataMaster.run_data_master \
-    --data_name movielens --llm_model gpt-4o-mini \
-    --max_iterations 3 --k_black 2 --max_chain_len 4 \
-    --small_n 1000 --downstream_eval_n 500 --no_eval_full
+# Recommendation
+python scripts/evaluate_baseline.py --baseline DataMaster --data_names movielens
 ```
 
 The runner emits four artefacts under `outputs/DataMaster/<data_name>/`:
@@ -76,16 +70,16 @@ The runner emits four artefacts under `outputs/DataMaster/<data_name>/`:
 * `tree.json` — every node in the DataTree (UCB stats, fitness, error, findings).
 * `memory.json` — GlobalMemory log.
 
-## Key hyper-parameters
+## Key hyper-parameters (`config.yaml`)
 
-| flag | meaning | default |
+| key | meaning | default |
 |---|---|---|
-| `--max_iterations` | outer UCB select-and-expand loop | 5 |
-| `--k_black` | black children spawned per parent per iter | 3 |
-| `--max_chain_len` | max ops in one delta chain | 6 |
-| `--max_depth` | max depth of any branch | 6 |
-| `--max_solution_attempts` | per-child LLM retries on rejection | 2 |
-| `--c_initial`, `--decay` | UCB exploration coefficient and its schedule | 1.414, linear |
-| `--reward_kind` | `fitness` (paper Eq.2) or `improvement` (±1 vs parent) | fitness |
-| `--memory_top_k` | global top-K best nodes injected into prompt | 3 |
-| `--small_n` / `--downstream_eval_n` | sandbox / agent-eval subsample sizes | 0 / 3000 |
+| `max_iterations` | outer UCB select-and-expand loop | 5 |
+| `k_black` | black children spawned per parent per iter | 3 |
+| `max_chain_len` | max ops in one delta chain | 6 |
+| `max_depth` | max depth of any branch | 6 |
+| `max_solution_attempts` | per-child LLM retries on rejection | 2 |
+| `c_initial`, `decay` | UCB exploration coefficient and its schedule | 1.414, linear |
+| `reward_kind` | `fitness` (paper Eq.2) or `improvement` (±1 vs parent) | fitness |
+| `memory_top_k` | global top-K best nodes injected into prompt | 3 |
+| `small_n` / `downstream_eval_n` | sandbox / agent-eval subsample sizes | 0 / 3000 |

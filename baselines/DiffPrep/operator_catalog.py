@@ -26,11 +26,9 @@ from baselines.common.op_spec import (
     OpSpec,
     is_mandatory,
     needs_context,
-    operators_for_task as _base_operators_for_task,
-    operators_by_category as _base_operators_by_category,
-    is_custom_operator,
     valid_targets_for,
 )
+from baselines.common.utils import get_available_ops
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +111,9 @@ def slot_kind_of(op_name: str) -> str:
 # 3. Helpers (re-implemented over the *DiffPrep* CATALOG, not the SAGA one).
 # ---------------------------------------------------------------------------
 def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
-    if task_type not in ("tabular", "rec"):
-        raise ValueError(f"Unknown task_type {task_type}")
     return [
-        n for n, spec in CATALOG.items()
-        if (spec.task_type == task_type or spec.task_type == "both")
-        and (include_custom or not is_custom_operator(n))
+        spec.op_name
+        for spec in get_available_ops(task_type, include_custom=include_custom)
     ]
 
 

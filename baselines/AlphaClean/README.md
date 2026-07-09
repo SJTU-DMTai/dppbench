@@ -43,17 +43,12 @@ iteration:
 
 ## Usage
 
-```
+```bash
 # Tabular
-python -m baselines.AlphaClean.run_alphaclean --data_name fraud_detection \
-    --n_iters 3 --beam_width 3 --batch_per_iter 4 --small_n 1500
+python scripts/evaluate_baseline.py --baseline AlphaClean --data_names fraud_detection
 
 # Recommendation
-python -m baselines.AlphaClean.run_alphaclean --data_name movielens \
-    --n_iters 3 --beam_width 3 --batch_per_iter 4 --small_n 1500
-
-# Disable learned pruner / final full-data eval
-python -m baselines.AlphaClean.run_alphaclean --data_name fraud_detection --no_pruner --no_eval_full
+python scripts/evaluate_baseline.py --baseline AlphaClean --data_names movielens
 ```
 
 Outputs land in `outputs/AlphaClean/<data_name>/`:
@@ -74,4 +69,3 @@ Outputs land in `outputs/AlphaClean/<data_name>/`:
 | `pruner.py` | Learned LR pruner with paper-style threshold sweep. |
 | `searcher.py` | Best-first beam search loop. |
 | `alphaclean.py` | Top-level orchestrator (`AlphaClean.run()`). |
-| `run_alphaclean.py` | CLI entry. |

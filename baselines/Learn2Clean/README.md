@@ -49,18 +49,12 @@ pipelines are repaired and persisted.
 
 ## Usage
 
-```
+```bash
 # Tabular
-python -m baselines.Learn2Clean.run_learn2clean --data_name fraud_detection \
-    --n_episodes 3 --max_steps 5 --small_n 1500
+python scripts/evaluate_baseline.py --baseline Learn2Clean --data_names fraud_detection
 
-# Recommendation (skip full-data eval to keep it quick)
-python -m baselines.Learn2Clean.run_learn2clean --data_name movielens \
-    --n_episodes 3 --max_steps 5 --small_n 1500 --no_eval_full
-
-# Quiet, custom output dir
-python -m baselines.Learn2Clean.run_learn2clean --data_name fraud_detection \
-    --quiet --output_dir /tmp/l2c_out
+# Recommendation
+python scripts/evaluate_baseline.py --baseline Learn2Clean --data_names movielens
 ```
 
 Outputs land in `outputs/Learn2Clean/<data_name>/`:
@@ -79,6 +73,5 @@ Outputs land in `outputs/Learn2Clean/<data_name>/`:
 | `agent.py` | `TabularQAgent` -- dict-based Q-table, Boltzmann softmax (overflow-safe), JSON save/load. |
 | `trainer.py` | `Learn2CleanTrainer` -- temperature schedule, episode loop, best/top-K bookkeeping. |
 | `learn2clean.py` | Top-level orchestrator (`Learn2Clean.run()`); wires evaluator/ctx/env/agent/trainer and writes artefacts. |
-| `run_learn2clean.py` | CLI entry. |
 | `__init__.py` | Re-exports `Learn2Clean`. |
 | `README.md` | This document. |

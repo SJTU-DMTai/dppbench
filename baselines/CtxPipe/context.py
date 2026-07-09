@@ -22,7 +22,7 @@ CONTEXT_DIM = 32
 
 
 class ContextEncoder:
-    """Encode a (DataContext, executor) pair into a fixed-length numpy vector."""
+    """Encode a (DataContext, data provider) pair into a fixed vector."""
 
     dim: int = CONTEXT_DIM
 

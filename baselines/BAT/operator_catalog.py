@@ -21,8 +21,15 @@ from baselines.common.op_spec import (
     OpSpec,
     is_mandatory,
     operators_by_category,
-    operators_for_task,
 )
+from baselines.common.utils import get_available_ops
+
+
+def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
+    return [
+        spec.op_name
+        for spec in get_available_ops(task_type, include_custom=include_custom)
+    ]
 
 
 def format_op_descriptions(task_type: str) -> str:
@@ -32,17 +39,18 @@ def format_op_descriptions(task_type: str) -> str:
     """
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
-    by_cat = operators_by_category(task_type)
+    by_cat: dict[OpCategory, list[OpSpec]] = {}
+    for spec in get_available_ops(task_type):
+        by_cat.setdefault(spec.category, []).append(spec)
     lines: list[str] = []
-    for cat, ops in by_cat.items():
+    for cat, specs in by_cat.items():
         lines.append(f"### {cat.value}")
-        for op_name in ops:
-            spec = CATALOG[op_name]
-            tag = "[mandatory]" if is_mandatory(op_name, task_type) else "[optional]"
+        for spec in specs:
+            tag = "[mandatory]" if is_mandatory(spec.op_name, task_type) else "[optional]"
             params = list(spec.default_params.keys())
             params_str = ", ".join(params) if params else "(no params)"
             lines.append(
-                f"- **{op_name}** {tag} task={spec.task_type} "
+                f"- **{spec.op_name}** {tag} task={spec.task_type} "
                 f"params=[{params_str}]"
             )
         lines.append("")
@@ -82,7 +90,7 @@ def function_family_descriptions(task_type: str) -> str:
     """
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
-    valid_ops = set(operators_for_task(task_type))
+    valid_ops = {spec.op_name for spec in get_available_ops(task_type)}
     lines: list[str] = []
     for family, cats in FUNCTION_FAMILY_MAP.items():
         ops_in_family: list[str] = []

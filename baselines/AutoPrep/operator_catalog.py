@@ -6,9 +6,9 @@ specific to its probabilistic transformation prior: ``prior_features`` and
 human-readable ``description`` strings used for cold-start scoring and display.
 
 Each operator appears exactly once; when an operator supports multiple internal
-methods (e.g. HandleMV with median/MICE/KNN), the method is chosen stochastically
-by ``pipeline_factory.build_default_params`` rather than by duplicating the
-operator entry.
+methods (e.g. HandleMV with median/MICE/KNN), the method is chosen by the
+shared ``baselines.common.pipeline.build_default_params`` rather than by
+duplicating the operator entry.
 """
 from __future__ import annotations
 
@@ -19,10 +19,9 @@ from baselines.common.op_spec import (
     OpCategory,
     is_mandatory as _base_is_mandatory,
     needs_context as _base_needs_context,
-    operators_by_category as _base_operators_by_category,
-    operators_for_task as _base_operators_for_task,
     valid_targets_for as _base_valid_targets_for,
 )
+from baselines.common.utils import get_available_ops
 
 
 @dataclass
@@ -42,7 +41,7 @@ class OpSpec:
 _AUTOPREP_METADATA = {
     "JoinTable": {
         "description": "Join with aux/user/item tables (key-merge or rec join).",
-        "prior_features": {"aux": 5.0, "const": 1.0},
+        "prior_features": {"aux": 3.0, "join_key_overlap": 2.0, "column_header_overlap": 1.0, "const": 1.0},
     },
     "ConcatTable": {
         "description": "Concat tables along axis.",
@@ -279,12 +278,18 @@ assert len(CATALOG) == len(BASE_CATALOG), (
 )
 
 
-def operators_for_task(task_type: str) -> list[str]:
-    return _base_operators_for_task(task_type)
+def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
+    return [
+        spec.op_name
+        for spec in get_available_ops(task_type, include_custom=include_custom)
+    ]
 
 
-def operators_by_category(task_type: str) -> dict[OpCategory, list[str]]:
-    return _base_operators_by_category(task_type)
+def operators_by_category(task_type: str, include_custom: bool = False) -> dict[OpCategory, list[str]]:
+    out: dict[OpCategory, list[str]] = {}
+    for name in operators_for_task(task_type, include_custom=include_custom):
+        out.setdefault(CATALOG[name].category, []).append(name)
+    return out
 
 
 def format_op_descriptions(task_type: str) -> str:

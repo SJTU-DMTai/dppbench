@@ -1,53 +1,51 @@
-"""MDP environment for CtxPipe.
+"""Component-level MDP environment for CtxPipe.
 
-Wraps the operator catalog, the pipeline factory, and the evaluator into a
-gym-style ``PipelineEnv`` that exposes ``reset()`` / ``step()``.
-
-State layout (concatenated, fixed length):
-    [ context_vector(32) | current_pipeline_one_hot(n_ops) |
-      selected_source_flags(n_sources) | primary_parent_slots(max_steps) |
-      step_count(1) ]
-
-Action layout:
-    actions 0..n_ops-1 -> append the corresponding operator
-    next source actions -> toggle optional source tables
-    next parent actions -> set the latest operator's primary predecessor
-    next param action   -> resample the latest operator's params
-    final action        -> STOP (terminate the episode)
-
-Reward layout:
-    + intermediate steps : 0
-    + illegal action     : ``illegal_penalty`` (default -0.05); pipeline is
-      NOT mutated, but the step counter advances
-    + terminal           : downstream model AUC (failure -> -1.0)
+The original CtxPipe formulates pipeline construction as a sequence of
+component-level decisions rather than a flat action over every possible
+operator.  This adapter keeps that semantics while using DPPBench's shared
+operator space and evaluator: each component corresponds to one canonical
+operator category, a component-specific policy chooses one operator (or SKIP),
+and the executable DAG is produced by common pipeline APIs.
 """
 from __future__ import annotations
 
 import random as _random
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from baselines.common.op_spec import OpCategory, is_mandatory
 from baselines.common.pipeline import (
     Pipeline,
-    _source_entries_for_context,
-    _strip_df_params,
-    _table_to_source_id,
+    assign_dag_structure,
+    check_pipeline,
+    get_category_order,
     make_step,
+    repair,
+    truncate_optional_steps,
 )
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.utils import get_available_ops
 
 from .context import ContextEncoder
-from .operator_catalog import operators_for_task
 
 if TYPE_CHECKING:
     from baselines.common.data_ctx import DataContext
-
     from baselines.common.search_evaluator import SearchPipelineEvaluator
 
 
+@dataclass(frozen=True)
+class ComponentSlot:
+    """One CtxPipe component/stage."""
+
+    key: str
+    category: OpCategory
+    candidates: list[str]
+    mandatory: bool = False
+
+
 class PipelineEnv:
-    """An RL environment for incremental DAG pipeline construction."""
+    """RL environment for component-level pipeline construction."""
 
     def __init__(
         self,
@@ -66,222 +64,185 @@ class PipelineEnv:
         self._rng = _random.Random(seed)
 
         self.task_type = ctx.task_type
-        self.op_names: list[str] = list(operators_for_task(self.task_type))
-        self.n_ops: int = len(self.op_names)
+        self.op_names: list[str] = [
+            spec.op_name for spec in get_available_ops(self.task_type)
+        ]
+        self._op_index = {name: idx for idx, name in enumerate(self.op_names)}
+        self.n_ops = len(self.op_names)
 
-        if self.task_type == "rec":
-            self._mandatory_sources = [ctx.primary_table] + list(ctx.secondary_tables)
-            self._optional_sources: list[str] = []
-        else:
-            self._mandatory_sources = [ctx.primary_table]
-            self._optional_sources = list(ctx.aux_dfs)
-        self._source_names = self._mandatory_sources + self._optional_sources
-        self._selected_optional_sources: set[str] = set()
-        self.n_sources = len(self._source_names)
+        self.slots = self._build_slots()
+        self.component_ids = [slot.key for slot in self.slots]
+        self.n_components = len(self.slots)
+        self.skip_action = max((len(slot.candidates) for slot in self.slots), default=0)
+        self.n_actions = self.skip_action + 1
 
-        self.source_action_start = self.n_ops
-        self.parent_action_start = self.source_action_start + len(self._optional_sources)
-        self.n_parent_actions = self.max_steps + self.n_sources
-        self.param_action: int = self.parent_action_start + self.n_parent_actions
-        self.stop_action: int = self.param_action + 1
-        self.n_actions: int = self.stop_action + 1
-
-        # Encode dataset context once. The context is dataset-level so it does
-        # not change across episodes.
         self._context_encoder = ContextEncoder()
-        self._ctx_vec: np.ndarray = self._context_encoder.encode(ctx, evaluator._executor)
-        self.context_dim: int = self._ctx_vec.shape[0]
+        self._ctx_vec = self._context_encoder.encode(ctx, evaluator)
+        self.context_dim = int(self._ctx_vec.shape[0])
 
-        self.state_dim: int = (
-            self.context_dim + self.n_ops + self.n_sources + self.max_steps + 1
+        # Ordered sequence state: max_steps positions, each with n_ops + 1
+        # choices (0 = empty, op index + 1 = selected op). This preserves the
+        # pipeline order that the previous unordered one-hot state lost.
+        self.state_dim = (
+            self.context_dim
+            + self.n_components
+            + self.max_steps * (self.n_ops + 1)
+            + self.n_ops
+            + 2
         )
 
-        # episode state
         self.pipeline = Pipeline()
-        self.step_count: int = 0
-        self._done: bool = False
+        self.current_slot_idx = 0
+        self.step_count = 0
+        self._done = False
+        self._last_report_errors: list[str] = []
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Slot/action construction
+    # ------------------------------------------------------------------
+    def _build_slots(self) -> list[ComponentSlot]:
+        specs = list(get_available_ops(self.task_type))
+        order = list(get_category_order(self.task_type))
+        known = set(order)
+        for spec in specs:
+            if spec.category not in known:
+                order.append(spec.category)
+                known.add(spec.category)
+
+        slots: list[ComponentSlot] = []
+        for cat in order:
+            raw = [spec.op_name for spec in specs if spec.category == cat]
+            if not raw:
+                continue
+            applicable = [name for name in raw if self._can_make_step(name)]
+            if not applicable:
+                continue
+            mandatory = [
+                name for name in applicable
+                if is_mandatory(name, self.task_type)
+            ]
+            candidates = mandatory if mandatory else applicable
+            slots.append(
+                ComponentSlot(
+                    key=f"c{len(slots):02d}_{cat.value}",
+                    category=cat,
+                    candidates=candidates,
+                    mandatory=bool(mandatory),
+                )
+            )
+        return slots
+
+    def _can_make_step(self, op_name: str) -> bool:
+        # ``make_step`` is the common context-aware constructor. Try a few
+        # deterministic draws because some defaults depend on random column
+        # sampling, but never duplicate its parameter logic here.
+        for i in range(3):
+            if make_step(op_name, self.ctx, _random.Random(10_000 + i)) is not None:
+                return True
+        return False
+
+    def _current_slot(self) -> ComponentSlot | None:
+        if self.current_slot_idx >= len(self.slots):
+            return None
+        return self.slots[self.current_slot_idx]
+
+    def current_component_id(self) -> Optional[str]:
+        slot = self._current_slot()
+        return slot.key if slot is not None else None
+
+    def current_component_name(self) -> Optional[str]:
+        slot = self._current_slot()
+        return slot.category.value if slot is not None else None
+
+    def action_mask(self) -> np.ndarray:
+        mask = np.zeros(self.n_actions, dtype=bool)
+        slot = self._current_slot()
+        if slot is None or self._done:
+            return mask
+
+        used = {step.op for step in self.pipeline.steps}
+        allow_optional_op = len(self.pipeline.steps) < self.max_steps
+        for idx, op_name in enumerate(slot.candidates):
+            if op_name in used:
+                continue
+            if slot.mandatory or allow_optional_op:
+                mask[idx] = True
+
+        if not slot.mandatory:
+            mask[self.skip_action] = True
+
+        # Robust fallback: if a mandatory slot has no valid candidate because
+        # it was already selected earlier, allow SKIP so the episode can move on;
+        # terminal repair will preserve mandatory post-conditions.
+        if not mask.any():
+            mask[self.skip_action] = True
+        return mask
+
+    # ------------------------------------------------------------------
+    # State and pipeline helpers
     # ------------------------------------------------------------------
     def _state_vec(self) -> np.ndarray:
-        one_hot = np.zeros(self.n_ops, dtype=np.float32)
-        for s in self.pipeline.steps:
-            if s.op in self.op_names:
-                one_hot[self.op_names.index(s.op)] = 1.0
-        source_flags = np.zeros(self.n_sources, dtype=np.float32)
-        active_sources = set(self._active_source_names())
-        for idx, name in enumerate(self._source_names):
-            if name in active_sources:
-                source_flags[idx] = 1.0
-        parent_slots = np.zeros(self.max_steps, dtype=np.float32)
-        denom = max(1, self.n_sources + self.max_steps - 1)
-        for idx, step in enumerate(self.pipeline.steps[:self.max_steps]):
-            ref = step.prev[0] if step.prev else None
-            parent_slots[idx] = self._parent_ref_to_slot(ref) / denom
-        step_feat = np.array(
-            [self.step_count / max(1, self.max_steps)], dtype=np.float32
+        comp = np.zeros(self.n_components, dtype=np.float32)
+        if self.current_slot_idx < self.n_components:
+            comp[self.current_slot_idx] = 1.0
+
+        seq = np.zeros((self.max_steps, self.n_ops + 1), dtype=np.float32)
+        for pos in range(self.max_steps):
+            seq[pos, 0] = 1.0
+        for pos, step in enumerate(self.pipeline.steps[: self.max_steps]):
+            seq[pos, :] = 0.0
+            seq[pos, self._op_index.get(step.op, -1) + 1] = 1.0
+
+        used = np.zeros(self.n_ops, dtype=np.float32)
+        for step in self.pipeline.steps:
+            idx = self._op_index.get(step.op)
+            if idx is not None:
+                used[idx] = 1.0
+
+        scalars = np.array(
+            [
+                len(self.pipeline.steps) / max(1, self.max_steps),
+                self.current_slot_idx / max(1, self.n_components),
+            ],
+            dtype=np.float32,
         )
         return np.concatenate([
-            self._ctx_vec, one_hot, source_flags, parent_slots, step_feat
+            self._ctx_vec,
+            comp,
+            seq.reshape(-1),
+            used,
+            scalars,
         ]).astype(np.float32)
 
-    def _active_source_names(self) -> list[str]:
-        out = list(self._mandatory_sources)
-        for name in self._optional_sources:
-            if name in self._selected_optional_sources:
-                out.append(name)
-        for step in self.pipeline.steps:
-            _params, refs = _strip_df_params(step.params or {})
-            for name in refs:
-                if name in self._source_names and name not in out:
-                    out.append(name)
-        return out
+    def _remaining_mandatory_slots(self) -> bool:
+        for slot in self.slots[self.current_slot_idx:]:
+            if slot.mandatory:
+                return True
+        return False
 
-    def _context_for_selected_sources(self):
-        if self.task_type != "tabular":
-            return self.ctx
-        from dataclasses import replace
-        return replace(self.ctx, aux_dfs=sorted(self._selected_optional_sources))
+    def _should_finish(self) -> bool:
+        if self.current_slot_idx >= len(self.slots):
+            return True
+        if len(self.pipeline.steps) >= self.max_steps and not self._remaining_mandatory_slots():
+            return True
+        return False
 
-    def _sources(self) -> list[dict]:
-        if self.task_type == "rec":
-            return _source_entries_for_context(self.ctx)
-        return _source_entries_for_context(self.ctx, list(self._active_source_names()[1:]))
-
-    def _parent_ref_to_slot(self, ref: str | None) -> int:
-        if ref is None:
-            return 0
-        if isinstance(ref, str) and ref.startswith("s"):
-            for source in self._sources():
-                if source.get("id") == ref:
-                    table = source.get("table")
-                    if table in self._source_names:
-                        return self._source_names.index(table)
-            return 0
-        if isinstance(ref, str) and ref.startswith("o"):
-            try:
-                return self.n_sources + max(0, int(ref[1:]) - 1)
-            except ValueError:
-                return 0
-        return 0
-
-    def _parent_slot_to_ref(self, slot: int, latest_step_idx: int) -> str | None:
-        if slot < self.n_sources:
-            table = self._source_names[slot]
-            if table not in self._active_source_names():
-                return None
-            source_by_table = _table_to_source_id(self._sources())
-            return source_by_table.get(table)
-        op_idx = slot - self.n_sources + 1
-        if 1 <= op_idx < latest_step_idx:
-            return f"o{op_idx}"
-        return None
-
-    def _assign_dag_structure(self) -> None:
-        sources = self._sources()
-        source_by_table = _table_to_source_id(sources)
-        root_table = self.ctx.primary_table
-        current = source_by_table[root_table]
-        known_refs = set(source_by_table.values())
-
-        for idx, step in enumerate(self.pipeline.steps, start=1):
-            step.id = f"o{idx}"
-            params, refs = _strip_df_params(step.params or {})
-            primary = current
-            if idx == 1 and step.prev and step.prev[0] in set(source_by_table.values()):
-                primary = step.prev[0]
-            prev = [primary]
-            if step.op in {"JoinTable", "ConcatTable"}:
-                for table in refs:
-                    sid = source_by_table.get(table)
-                    if sid and sid not in prev:
-                        prev.append(sid)
-                if step.op == "JoinTable" and self.task_type == "rec" and params.get("method") == "rec":
-                    for table in ("user", "item"):
-                        sid = source_by_table.get(table)
-                        if sid and sid not in prev:
-                            prev.append(sid)
-            step.prev = prev
-            current = step.id
-            known_refs.add(step.id)
-
-        self.pipeline.sources = sources
-        self.pipeline.train_prev = [current] if self.pipeline.steps else [source_by_table[root_table]]
-
-    def _try_toggle_source(self, action: int) -> tuple[bool, str]:
-        idx = action - self.source_action_start
-        if idx < 0 or idx >= len(self._optional_sources):
-            return False, "source_out_of_range"
-        name = self._optional_sources[idx]
-        for step in self.pipeline.steps:
-            _params, refs = _strip_df_params(step.params or {})
-            if name in refs:
-                return False, "source_in_use"
-        if name in self._selected_optional_sources:
-            self._selected_optional_sources.remove(name)
-            reason = f"deselect_source:{name}"
-        else:
-            self._selected_optional_sources.add(name)
-            reason = f"select_source:{name}"
-        self._assign_dag_structure()
-        return True, reason
-
-    def _try_rewire_latest(self, action: int) -> tuple[bool, str]:
-        if not self.pipeline.steps:
-            return False, "no_step_to_rewire"
-        slot = action - self.parent_action_start
-        latest_idx = len(self.pipeline.steps)
-        ref = self._parent_slot_to_ref(slot, latest_idx)
-        if ref is None:
-            return False, "invalid_parent"
-        if latest_idx > 1 and ref != f"o{latest_idx - 1}":
-            return False, "would_disconnect_dag"
-        latest = self.pipeline.steps[-1]
-        latest.prev = [ref]
-        self._assign_dag_structure()
-        return True, f"parent:{ref}"
-
-    def _try_resample_latest_params(self) -> tuple[bool, str]:
-        if not self.pipeline.steps:
-            return False, "no_step_to_resample"
-        latest = self.pipeline.steps[-1]
-        replacement = make_step(latest.op, self._context_for_selected_sources(), self._rng)
-        if replacement is None:
-            return False, "no_default_params"
-        latest.target = replacement.target
-        latest.params = replacement.params
-        self._assign_dag_structure()
-        return True, f"params:{latest.op}"
-
-    def _try_apply(self, action: int) -> tuple[bool, str]:
-        """Try to append the operator chosen by ``action`` to the current
-        pipeline. Returns ``(ok, reason)``.
-        """
-        if action < 0 or action >= self.n_ops:
-            return False, "out_of_range"
-        op_name = self.op_names[action]
-        # repeat operator -> reject (matches SAGA's repair() de-dup behaviour)
-        if op_name in {s.op for s in self.pipeline.steps}:
-            return False, "duplicate"
-        step = make_step(op_name, self._context_for_selected_sources(), self._rng)
-        if step is None:
-            return False, "no_default_params"
-        # tentatively append, then check legality
-        self.pipeline.steps.append(step)
-        if not is_legal(self.pipeline, self.task_type):
-            # rollback
-            self.pipeline.steps.pop()
-            return False, "illegal_order"
-        self._assign_dag_structure()
-        return True, op_name
+    def _finalize_pipeline(self) -> None:
+        repair(self.pipeline, self.task_type, self.ctx)
+        truncate_optional_steps(self.pipeline, self.task_type, self.max_steps)
+        repair(self.pipeline, self.task_type, self.ctx)
+        assign_dag_structure(self.pipeline, self.ctx, self._rng)
 
     def _terminal_reward(self) -> tuple[float, dict]:
-        # Repair the pipeline to make sure mandatory operators are present.
-        repair(self.pipeline, self.task_type, self.ctx)
-        self._assign_dag_structure()
-        if len(self.pipeline) == 0:
-            return self.failure_reward, {"empty": True}
+        self._finalize_pipeline()
+        report = check_pipeline(self.pipeline, self.ctx)
+        self._last_report_errors = list(report.errors)
+        if not report.valid:
+            return self.failure_reward, {
+                "success": False,
+                "error": "; ".join(report.errors),
+                "check_errors": report.errors,
+            }
         ev = self.evaluator.evaluate(self.pipeline)
         if not ev.success:
             return self.failure_reward, {
@@ -300,115 +261,90 @@ class PipelineEnv:
     # ------------------------------------------------------------------
     def reset(self) -> np.ndarray:
         self.pipeline = Pipeline()
-        self._selected_optional_sources = set()
+        self.current_slot_idx = 0
         self.step_count = 0
         self._done = False
-        self._assign_dag_structure()
+        self._last_report_errors = []
         return self._state_vec()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
         if self._done:
             raise RuntimeError("step() called on a terminated env. Call reset().")
 
-        info: dict = {"action": int(action)}
-        # ---- STOP action ----
-        if action == self.stop_action:
+        slot = self._current_slot()
+        if slot is None:
             self._done = True
             reward, terminal_info = self._terminal_reward()
+            info = {"action": int(action), "reason": "no_component"}
             info.update(terminal_info)
-            info["reason"] = "stop"
             return self._state_vec(), reward, True, info
 
-        # ---- Source-table action ----
-        if self.source_action_start <= action < self.parent_action_start:
-            ok, reason = self._try_toggle_source(int(action))
-            self.step_count += 1
-            info["op_added"] = None
-            info["reason"] = reason
-            reward = 0.0 if ok else self.illegal_penalty
-            if self.step_count >= self.max_steps:
-                self._done = True
-                term_reward, terminal_info = self._terminal_reward()
-                reward += term_reward
-                info.update(terminal_info)
-                info["reason"] = f"{reason}+max_steps"
-            return self._state_vec(), reward, self._done, info
+        action = int(action)
+        mask = self.action_mask()
+        if action == self.skip_action:
+            action_name = "SKIP"
+        elif 0 <= action < len(slot.candidates):
+            action_name = slot.candidates[action]
+        else:
+            action_name = None
+        info: dict = {
+            "action": action,
+            "action_name": action_name,
+            "component": slot.key,
+            "category": slot.category.value,
+            "op_added": None,
+        }
 
-        # ---- DAG parent action ----
-        if self.parent_action_start <= action < self.param_action:
-            ok, reason = self._try_rewire_latest(int(action))
-            self.step_count += 1
-            info["op_added"] = None
-            info["reason"] = reason
-            reward = 0.0 if ok else self.illegal_penalty
-            if self.step_count >= self.max_steps:
-                self._done = True
-                term_reward, terminal_info = self._terminal_reward()
-                reward += term_reward
-                info.update(terminal_info)
-                info["reason"] = f"{reason}+max_steps"
-            return self._state_vec(), reward, self._done, info
-
-        # ---- Parameter action ----
-        if action == self.param_action:
-            ok, reason = self._try_resample_latest_params()
-            self.step_count += 1
-            info["op_added"] = None
-            info["reason"] = reason
-            reward = 0.0 if ok else self.illegal_penalty
-            if self.step_count >= self.max_steps:
-                self._done = True
-                term_reward, terminal_info = self._terminal_reward()
-                reward += term_reward
-                info.update(terminal_info)
-                info["reason"] = f"{reason}+max_steps"
-            return self._state_vec(), reward, self._done, info
-
-        # ---- Operator action ----
-        ok, reason = self._try_apply(int(action))
-        self.step_count += 1
-        info["op_added"] = reason if ok else None
-        info["reason"] = reason
-
-        if not ok:
+        reward = 0.0
+        if action < 0 or action >= self.n_actions or not mask[action]:
             reward = self.illegal_penalty
-            # If we run out of budget, terminate the episode.
-            if self.step_count >= self.max_steps:
-                self._done = True
-                term_reward, terminal_info = self._terminal_reward()
-                # Combine penalty for the illegal step with terminal reward.
-                reward = reward + term_reward
-                info.update(terminal_info)
-                info["reason"] = f"{reason}+max_steps"
-            return self._state_vec(), reward, self._done, info
+            info["reason"] = "masked_or_invalid_action"
+        elif action == self.skip_action:
+            if slot.mandatory:
+                reward = self.illegal_penalty
+                info["reason"] = "skip_mandatory"
+            else:
+                info["reason"] = "skip"
+        else:
+            op_name = slot.candidates[action]
+            step = make_step(op_name, self.ctx, self._rng)
+            if step is None:
+                reward = self.illegal_penalty
+                info["reason"] = "no_default_params"
+            elif op_name in {s.op for s in self.pipeline.steps}:
+                reward = self.illegal_penalty
+                info["reason"] = "duplicate"
+            else:
+                self.pipeline.steps.append(step)
+                info["op_added"] = op_name
+                info["reason"] = op_name
 
-        # legal append
-        if self.step_count >= self.max_steps:
+        self.current_slot_idx += 1
+        self.step_count += 1
+
+        if self._should_finish():
             self._done = True
-            term_reward, terminal_info = self._terminal_reward()
+            terminal_reward, terminal_info = self._terminal_reward()
             info.update(terminal_info)
-            info["reason"] = "max_steps"
-            return self._state_vec(), term_reward, True, info
+            if info.get("reason") in {"masked_or_invalid_action", "skip_mandatory", "no_default_params", "duplicate"}:
+                terminal_reward += reward
+            return self._state_vec(), terminal_reward, True, info
 
-        # intermediate transition (no reward signal)
-        return self._state_vec(), 0.0, False, info
+        return self._state_vec(), reward, False, info
 
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------
     def current_pipeline(self) -> Pipeline:
-        self._assign_dag_structure()
+        self._finalize_pipeline()
         return self.pipeline
 
     def action_to_op(self, action: int) -> Optional[str]:
-        if action == self.stop_action:
-            return "STOP"
-        if 0 <= action < self.n_ops:
-            return self.op_names[action]
-        if self.source_action_start <= action < self.parent_action_start:
-            return f"SOURCE:{self._optional_sources[action - self.source_action_start]}"
-        if self.parent_action_start <= action < self.param_action:
-            return f"PARENT:{action - self.parent_action_start}"
-        if action == self.param_action:
-            return "PARAMS"
+        slot = self._current_slot()
+        if slot is None:
+            return None
+        if action == self.skip_action:
+            return "SKIP"
+        if 0 <= action < len(slot.candidates):
+            return slot.candidates[action]
         return None

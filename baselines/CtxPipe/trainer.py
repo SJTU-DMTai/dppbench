@@ -1,9 +1,11 @@
-"""RL training loop for CtxPipe."""
+"""Component-level RL training loop for CtxPipe."""
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
+
+import numpy as np
 
 if TYPE_CHECKING:
     from .agent import DQNAgent
@@ -20,6 +22,7 @@ class EpisodeRecord:
     ops: list[str]
     n_steps: int
     duration_seconds: float
+    trace: list[dict]
 
 
 class CtxPipeTrainer:
@@ -71,20 +74,44 @@ class CtxPipeTrainer:
             episode_reward = 0.0
             terminal_info: dict = {}
             n_transitions = 0
+            trace: list[dict] = []
+            episode_transitions: list[tuple] = []
 
             while not done:
-                action = self.agent.select_action(state, eps)
+                component = self.env.current_component_id()
+                if component is None:
+                    break
+                mask = self.env.action_mask()
+                action = self.agent.select_action(component, state, eps, mask)
                 next_state, reward, done, info = self.env.step(action)
-                self.agent.buffer.push(state, action, reward, next_state, done)
-                if len(self.agent.buffer) >= self.min_buffer:
-                    self.agent.train_step(self.batch_size, self.gamma)
+                next_component = self.env.current_component_id() if not done else None
+                next_mask = self.env.action_mask() if not done else np.zeros(
+                    self.env.n_actions, dtype=bool
+                )
+                episode_transitions.append((
+                    component,
+                    state,
+                    action,
+                    reward,
+                    next_state,
+                    done,
+                    next_component,
+                    next_mask,
+                ))
                 state = next_state
                 episode_reward += float(reward)
                 n_transitions += 1
+                trace.append({
+                    "component": component,
+                    "category": info.get("category"),
+                    "action": int(action),
+                    "selected": info.get("op_added") or info.get("action_name"),
+                    "reason": info.get("reason"),
+                    "reward": float(reward),
+                })
                 if done:
                     terminal_info = info
 
-            # Sync target network periodically.
             if (ep + 1) % self.target_update_every == 0:
                 self.agent.update_target()
 
@@ -93,6 +120,15 @@ class CtxPipeTrainer:
             success = bool(terminal_info.get("success", False))
             fitness = terminal_info.get("fitness")
             metrics = terminal_info.get("metrics") or {}
+
+            touched_components: set[str] = set()
+            for transition in episode_transitions:
+                component = transition[0]
+                self.agent.push(*transition, episode_success=success)
+                touched_components.add(component)
+            for component in touched_components:
+                if self.agent.buffer_size(component) >= self.min_buffer:
+                    self.agent.train_step(component, self.batch_size, self.gamma)
 
             rec = EpisodeRecord(
                 episode=ep + 1,
@@ -103,10 +139,10 @@ class CtxPipeTrainer:
                 ops=list(ops),
                 n_steps=n_transitions,
                 duration_seconds=time.time() - t0,
+                trace=trace,
             )
             self.history.append(rec)
 
-            # Track best successful pipeline by fitness.
             if success and fitness is not None:
                 if best_record is None or fitness > (best_record.fitness or float("-inf")):
                     best_record = rec

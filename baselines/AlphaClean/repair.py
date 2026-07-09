@@ -23,7 +23,9 @@ from baselines.common.pipeline import (
 )
 from baselines.common.pipeline import repair as repair_pipeline
 
-from .operator_catalog import CATALOG, OpCategory
+from baselines.common.utils import get_op
+
+from .operator_catalog import OpCategory
 
 
 _TARGET_VOCAB = ["both", "interaction", "user", "item", "train", "test"]
@@ -65,7 +67,10 @@ class Repair:
             feat[op_index[self.op_name]] = 1.0
 
         # category one-hot
-        spec = CATALOG.get(self.op_name)
+        try:
+            spec = get_op(self.op_name)
+        except KeyError:
+            spec = None
         if spec is not None:
             cat_idx = list(OpCategory).index(spec.category)
             feat[n_ops + cat_idx] = 1.0

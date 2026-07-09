@@ -37,62 +37,39 @@ baselines/DeepPrep/
 ├── evaluator.py              # final-pipeline downstream-model scorer
 ├── rl_trainer.py             # RL training stub (NotImplementedError by default)
 ├── deepprep.py               # top-level orchestrator
-└── run_deepprep.py           # CLI entry point
+└── README.md
 ```
 
 ## Quick start
 
-### 1. Tabular smoke test (LLM API)
-
 ```bash
-DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib \
-python -m baselines.DeepPrep.run_deepprep \
-    --data_name fraud_detection --llm_model gpt-4o-mini \
-    --max_explore_turn 3 --max_chain_len 4 --small_n 3000
+# Tabular
+python scripts/evaluate_baseline.py --baseline DeepPrep --data_names fraud_detection
+
+# Recommendation
+python scripts/evaluate_baseline.py --baseline DeepPrep --data_names movielens
 ```
 
-### 2. Recommendation smoke test (LLM API)
+## Configuration (`config.yaml`)
 
-```bash
-python -m baselines.DeepPrep.run_deepprep \
-    --data_name movielens --llm_model gpt-4o-mini \
-    --max_explore_turn 3 --max_chain_len 4 --small_n 3000
-```
-
-### 3. Local backend (optional)
-
-```bash
-python -m baselines.DeepPrep.run_deepprep \
-    --data_name fraud_detection \
-    --llm_backend local --llm_model Qwen/Qwen3-0.6B
-```
-
-`backend="local"` lazily imports `transformers` only when `.chat()` is
-called, so installing the OpenAI SDK alone is enough for the API path.
-
-## CLI flags
-
-| flag                  | default       | description                                                |
-|-----------------------|---------------|------------------------------------------------------------|
-| `--data_name`         | `movielens`   | one of the six benchmark datasets                          |
-| `--llm_backend`       | `api`         | `api` or `local`                                           |
-| `--llm_model`         | `gpt-4o-mini` | model name (api) or HF repo / local path (local)           |
-| `--api_key`           | disabled      | credentials are loaded from project `apikeys.json`         |
-| `--base_url`          | disabled      | endpoint is loaded from project `apikeys.json`             |
-| `--temperature`       | `0.7`         | sampling temperature                                       |
-| `--max_tokens`        | `2048`        | per-call generation budget                                 |
-| `--max_explore_turn`  | `5`           | maximum exploration turns before forcing `<solution>`      |
-| `--max_chain_len`     | `6`           | max operators per `<operator>` chain                       |
-| `--max_depth`         | `8`           | max search-tree depth                                      |
-| `--max_err_cnt`       | `5`           | abort the agent after this many errors                     |
-| `--small_n`           | `0`           | sandbox subsample size (`0` = full data)                   |
-| `--no_eval_full`      | off           | skip the downstream-model evaluation at the end            |
-| `--no_downstream_feedback` | off      | disable the in-loop downstream training feedback after each `<solution>` (legacy: accept first successful solution) |
-| `--downstream_eval_n` | `3000`        | subsample size used by the agent-loop downstream evaluator (`0` = full data) |
-| `--max_solution_attempts` | `3`       | max number of `<solution>` attempts when downstream feedback is enabled |
-| `--seed`              | `42`          | RNG seed for default-param synthesis                       |
-| `--output_dir`        | auto          | where to dump pipeline / agent log / search tree           |
-| `--quiet`             | off           | silence progress prints                                    |
+| key                    | default       | description                                                |
+|------------------------|---------------|------------------------------------------------------------|
+| `llm_backend`          | `api`         | `api` or `local`                                           |
+| `llm_model`            | `gpt-4o-mini` | model name (api) or HF repo / local path (local)           |
+| `api_key`              | null          | credentials are loaded from project `apikeys.json`         |
+| `base_url`             | null          | endpoint is loaded from project `apikeys.json`             |
+| `temperature`          | `0.7`         | sampling temperature                                       |
+| `max_tokens`           | `2048`        | per-call generation budget                                 |
+| `max_explore_turn`     | `5`           | maximum exploration turns before forcing `<solution>`      |
+| `max_chain_len`        | `6`           | max operators per `<operator>` chain                       |
+| `max_depth`            | `8`           | max search-tree depth                                      |
+| `max_err_cnt`          | `5`           | abort the agent after this many errors                     |
+| `small_n`              | `0`           | sandbox subsample size (`0` = full data)                   |
+| `eval_full`            | `true`        | re-evaluate the best pipeline on full data                 |
+| `downstream_feedback`  | `true`        | enable in-loop downstream training feedback after each `<solution>` |
+| `downstream_eval_n`    | `3000`        | subsample size used by the agent-loop downstream evaluator (`0` = full data) |
+| `max_solution_attempts`| `3`           | max number of `<solution>` attempts when downstream feedback is enabled |
+| `seed`                 | `42`          | RNG seed for default-param synthesis                       |
 
 ## Outputs
 
@@ -107,7 +84,7 @@ called, so installing the OpenAI SDK alone is enough for the API path.
 ## Switching to local inference / RL
 
 * Default verification path is **API only** — no training happens.
-* To run a local model, pass `--llm_backend local --llm_model <path>`.
+* To run a local model, set `llm_backend: local` and `llm_model: <path>` in `config.yaml`.
 * To enable RL, subclass `RLTrainer` (see `rl_trainer.py`):
   * `collect_trajectory(task)` returns trajectories whose reward, by
     default (`use_downstream_reward=True`), is the best small-data

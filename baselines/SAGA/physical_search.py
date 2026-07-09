@@ -12,8 +12,8 @@ import random
 from dataclasses import dataclass
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
-from baselines.common.op_spec import CATALOG
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, get_param_space
+from baselines.common.utils import get_op
 
 
 @dataclass
@@ -71,8 +71,9 @@ class PhysicalSearch:
             cand = base.copy()
             ctx = getattr(self.evaluator, "ctx", None)
             for step in cand.steps:
-                spec = CATALOG.get(step.op)
-                if spec is None:
+                try:
+                    spec = get_op(step.op)
+                except KeyError:
                     continue
                 if ctx is not None:
                     context_space = get_param_space(step.op, ctx)

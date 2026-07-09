@@ -85,40 +85,29 @@ mandatory / prior_features`，其中 `prior_features` 由
 | [`solver.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/solver.py) | MPBP 求解：主表树 × 侧表树 × join 边 → top-N candidate；本地 `repair_pipeline` 知道全部 59 算子 |
 | [`evaluator.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/evaluator.py) | `AutoPrepEvaluator(SearchPipelineEvaluator)`（小数据下游训练 + `evaluate_for_agent`） |
 | [`auto_prep.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/auto_prep.py) | 顶层：搜索 + 下游反馈 + 全量复评 + 日志 |
-| [`run_auto_prep.py`](file:///Users/bytedance/Documents/dppbech/baselines/AutoPrep/run_auto_prep.py) | CLI |
 
 ## 5. CLI 用法
 
 ```bash
-# Tabular smoke test
-python -m baselines.AutoPrep.run_auto_prep \
-    --data_name fraud_detection \
-    --n_iters 2 --beam 2 --n_candidates 3 --small_n 1500
+# Tabular
+python scripts/evaluate_baseline.py --baseline AutoPrep --data_names fraud_detection
 
-# Recommendation smoke test
-python -m baselines.AutoPrep.run_auto_prep \
-    --data_name movielens \
-    --n_iters 2 --beam 2 --n_candidates 3 --small_n 1500
-
-# 完整运行（默认 5 轮，beam=4，n_candidates=8）
-python -m baselines.AutoPrep.run_auto_prep --data_name home_credit
+# Recommendation
+python scripts/evaluate_baseline.py --baseline AutoPrep --data_names movielens
 ```
 
-支持的 `--data_name`：`home_credit / fraud_detection / amazon_beauty /
-movielens / yelp / tenrec`。其它参数：
+配置参数（`config.yaml`）：
 
-| Flag | 默认 | 说明 |
+| Key | 默认 | 说明 |
 |---|---|---|
-| `--n_iters` | 5 | 外层搜索轮数 |
-| `--beam` | 4 | transformation tree 每层 beam 宽度 |
-| `--n_candidates` | 8 | 每轮提交评估的 candidate pipeline 数量 |
-| `--max_depth` | 2 | transformation tree 深度 m（论文 m=2） |
-| `--small_n` | 3000 | 评估子采样量；`0` 表示用全量数据 |
-| `--no_eval_full` | off | 跳过最终全量复评 |
-| `--eta` | 0.5 | multiplicative-weights 学习率 |
-| `--seed` | 42 | 随机种子 |
-| `--output_dir` | 自动 | 日志输出目录 |
-| `--quiet` | off | 关闭 verbose 日志 |
+| `n_iters` | 5 | 外层搜索轮数 |
+| `beam` | 4 | transformation tree 每层 beam 宽度 |
+| `n_candidates` | 8 | 每轮提交评估的 candidate pipeline 数量 |
+| `max_depth` | 2 | transformation tree 深度 m（论文 m=2） |
+| `small_n` | 3000 | 评估子采样量；`0` 表示用全量数据 |
+| `eval_full` | true | 是否进行最终全量复评 |
+| `eta` | 0.5 | multiplicative-weights 学习率 |
+| `seed` | 42 | 随机种子 |
 
 输出文件：
 
@@ -155,5 +144,5 @@ python -c "from baselines.AutoPrep.auto_prep import AutoPrep; \
   print('IMPORT OK')"
 
 # 3. CLI help
-python -m baselines.AutoPrep.run_auto_prep --help
+python scripts/evaluate_baseline.py --baseline AutoPrep --help
 ```

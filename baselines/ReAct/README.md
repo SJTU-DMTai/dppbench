@@ -32,34 +32,29 @@ baselines/ReAct/
   prompts.py           # SYSTEM_REACT + render_user_initial / render_observation / render_retry_feedback
   agent.py             # ReActAgent main loop (one full pipeline YAML per turn)
   react.py             # Top-level orchestrator (build sandbox/evaluator/llm, run, persist)
-  run_react.py         # CLI entry point
   README.md            # this file
 ```
 
 ## CLI examples
 
 ```bash
-# Tabular smoke test (API credentials are loaded from project apikeys.json)
-python -m baselines.ReAct.run_react \
-    --data_name fraud_detection --llm_model deepseek-v4-flash \
-    --max_turns 3 --small_n 1000 --downstream_eval_n 500 --no_eval_full
+# Tabular
+python scripts/evaluate_baseline.py --baseline ReAct --data_names fraud_detection
 
-# Recommendation smoke test
-python -m baselines.ReAct.run_react \
-    --data_name movielens --llm_model deepseek-v4-flash \
-    --max_turns 3 --small_n 2000 --downstream_eval_n 1000 --no_eval_full
+# Recommendation
+python scripts/evaluate_baseline.py --baseline ReAct --data_names movielens
 ```
 
-## Key hyperparameters
+## Key hyperparameters (`config.yaml`)
 
-| Flag | Default | Purpose |
+| Key | Default | Purpose |
 |---|---|---|
-| `--max_turns` | 6 | Maximum full-pipeline turns the LLM may submit. |
-| `--max_retry_per_turn` | 2 | Same-turn retry budget on parse / format errors. |
-| `--max_err_cnt` | 5 | Cumulative cross-turn error budget. |
-| `--downstream_eval_n` | 3000 | Subsample size for the in-loop downstream training. |
-| `--small_n` | 0 | Sandbox subsample (0 = full data). |
-| `--no_eval_full` | off | Skip the post-loop full-data evaluation. |
+| `max_turns` | 6 | Maximum full-pipeline turns the LLM may submit. |
+| `max_retry_per_turn` | 2 | Same-turn retry budget on parse / format errors. |
+| `max_err_cnt` | 5 | Cumulative cross-turn error budget. |
+| `downstream_eval_n` | 3000 | Subsample size for the in-loop downstream training. |
+| `small_n` | 0 | Sandbox subsample (0 = full data). |
+| `eval_full` | true | Re-evaluate the best pipeline on full data. |
 
 ## Outputs (under `outputs/ReAct/<data_name>/`)
 

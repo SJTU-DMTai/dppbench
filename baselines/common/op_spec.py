@@ -126,6 +126,8 @@ _add("SortRows", OpCategory.SORT_ORDER, needs_context=True)
 _add("SplitColumn", OpCategory.RESHAPE_STRING,
      required_params=("col",), needs_context=True)
 _add("CustomTransform", OpCategory.SCHEMA, needs_context=True)
+_add("CustomOp", OpCategory.SCHEMA,
+     required_params=("code",), needs_context=True)
 
 # S2. Data Cleaning
 _add("HandleMV", OpCategory.MISSING_VALUE,

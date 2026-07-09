@@ -216,14 +216,11 @@ class DataMasterAgent:
         from baselines.common.pipeline import (
             _TABULAR_ORDER, _REC_ORDER,
         )
-        from baselines.common.op_spec import CATALOG
+        from baselines.common.utils import get_available_ops
         order = _REC_ORDER if self.ctx.task_type == "rec" else _TABULAR_ORDER
-        # Group operators by category, restricted to the current task type.
         by_cat: dict = {}
-        for name, spec in CATALOG.items():
-            if spec.task_type not in (self.ctx.task_type, "both"):
-                continue
-            by_cat.setdefault(spec.category, []).append(name)
+        for spec in get_available_ops(self.ctx.task_type):
+            by_cat.setdefault(spec.category, []).append(spec.op_name)
         lines = []
         for i, cat in enumerate(order):
             ops = sorted(by_cat.get(cat, []))[:5]

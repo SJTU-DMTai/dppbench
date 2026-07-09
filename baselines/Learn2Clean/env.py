@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, FrozenSet, Optional, Tuple
 from baselines.common.pipeline import Pipeline, assign_dag_structure, make_step
 from baselines.common.pipeline import is_legal, repair
 
-from .operator_catalog import operators_for_task
+from baselines.common.utils import get_available_ops
 
 if TYPE_CHECKING:
     from baselines.common.data_ctx import DataContext
@@ -62,7 +62,9 @@ class Learn2CleanEnv:
         self._rng = _random.Random(seed)
 
         self.task_type = ctx.task_type
-        self.op_names: list[str] = list(operators_for_task(self.task_type))
+        self.op_names: list[str] = [
+            spec.op_name for spec in get_available_ops(self.task_type)
+        ]
         self.op_names.sort()  # stable index for state keys
         self.n_ops: int = len(self.op_names)
         self.stop_action: int = self.n_ops

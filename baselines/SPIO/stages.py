@@ -20,7 +20,8 @@ from __future__ import annotations
 import random as _random
 from typing import Optional
 
-from baselines.common.op_spec import CATALOG, OpCategory
+from baselines.common.op_spec import OpCategory
+from baselines.common.utils import get_available_ops
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
@@ -104,12 +105,10 @@ def stage_op_descriptions(stage: str, task_type: str, max_per_cat: int = 6) -> s
     lines: list[str] = []
     for cat in cats:
         ops: list[str] = []
-        for name, spec in CATALOG.items():
-            if spec.task_type not in (task_type, "both"):
-                continue
+        for spec in get_available_ops(task_type):
             if spec.category != cat:
                 continue
-            ops.append(name)
+            ops.append(spec.op_name)
         if not ops:
             continue
         ops = sorted(ops)[:max_per_cat]

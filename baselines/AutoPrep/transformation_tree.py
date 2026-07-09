@@ -15,63 +15,30 @@ from dataclasses import dataclass, field
 
 from baselines.common.data_ctx import DataContext
 
-from .operator_catalog import CATALOG, OpCategory, operators_for_task
-from .pipeline_factory import build_default_params
+from .operator_catalog import CATALOG
+from baselines.common.utils import get_available_ops
+from baselines.common.pipeline import build_default_params
 from .transformation_model import TransformationModel
 
 
 # ---------------------------------------------------------------------------
 # Whitelists per table kind
 # ---------------------------------------------------------------------------
-# Operators that act at row-level on the rec interaction table.
-# Expanded to a broad whitelist of column-level safe ops so that AutoPrep can
-# explore richer rec pipelines (issue: rec search space was too narrow).
-# Excludes ops that would corrupt the (already-frozen) target column or
-# require multi-table semantics that don't apply to a single interaction df.
-_REC_INTERACTION = {
-    "JoinTable", "CreateSequence", "FilterSample", "FilterKCore",
-    "SampleNegative",
-    "HandleMV",
-    "CustomClean", "HandleError",
-    "HandleOutlier",
-    "ParseDate", "ExtractDateTimeFeature",
-    "CastType", "DropColumns", "CustomProcess",
-    "SelectFeature",
-    "OneHotEncode", "LabelEncode", "HashEncode", "TargetEncode",
-    "FrequencyEncode",
-    "ScaleFeature", "TransformPower",
-    "DiscretizeFeature",
-    "CrossFeature", "CreateFeature",
-}
-
-# Side tables: only column-level cleaning / lightweight encoding.
-_REC_SIDE = {
-    "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
-    "ScaleFeature", "SelectFeature", "FrequencyEncode",
-}
-
-# Tabular auxiliary table: light cleaning + later joined back via JoinTable.
-_TABULAR_AUX = {
-    "HandleMV", "LabelEncode", "DropColumns", "CustomProcess",
-    "FrequencyEncode", "JoinTable",
-}
-
-
-def _whitelist_for_main_tabular() -> set[str]:
-    # All tabular operators (the catalog has already been pruned to remove
-    # full-table-replacing ops such as PivotTable / GroupByAggregate).
-    return set(operators_for_task("tabular"))
+def _ops_for_task(task_type: str) -> set[str]:
+    return {spec.op_name for spec in get_available_ops(task_type)}
 
 
 def whitelist_for(table_kind: str) -> set[str]:
     if table_kind == "interaction":
-        return set(_REC_INTERACTION)
-    if table_kind in ("user_df", "item_df"):
-        return set(_REC_SIDE)
+        return _ops_for_task("rec")
     if table_kind == "main_tabular":
-        return _whitelist_for_main_tabular()
-    if table_kind == "aux_df":
-        return set(_TABULAR_AUX)
+        return _ops_for_task("tabular")
+    if table_kind in ("user_df", "item_df", "aux_df"):
+        # Side-table transformation is part of the original Auto-Prep graph,
+        # but DPPBench's current executable YAML does not expose independent
+        # side-table transformation targets. The solver therefore does not build
+        # these trees.
+        return set()
     raise ValueError(f"Unknown table_kind: {table_kind}")
 
 

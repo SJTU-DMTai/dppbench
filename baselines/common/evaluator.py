@@ -13,7 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from baselines.common.pipeline import Pipeline
+from baselines.common.data_ctx import infer_data_context
+from baselines.common.pipeline import Pipeline, check_pipeline
 
 # Ensure the repo root is importable so ``baselines.common.executor`` resolves
 # regardless of how this module is loaded (script vs. package).
@@ -61,6 +62,17 @@ class PipelineEvaluator:
             model_name=model_name,
         )
         self._cache: dict[str, EvaluationResult] = {}
+        self._data_context = None
+
+    def _get_data_context(self):
+        if self._data_context is None:
+            data = self.load_data()
+            self._data_context = infer_data_context(
+                self.data_name,
+                data,
+                self.task_type,
+            )
+        return self._data_context
 
     @property
     def task_type(self) -> str:
@@ -74,6 +86,21 @@ class PipelineEvaluator:
         key = f"{method}:{pipeline.hash()}"
         if key in self._cache:
             return self._cache[key]
+
+        report = check_pipeline(pipeline, self._get_data_context())
+        if not report.valid:
+            ev = EvaluationResult(
+                fitness=-math.inf,
+                success=False,
+                metrics={},
+                error="; ".join(report.errors),
+                duration_seconds=0.0,
+            )
+            self._cache[key] = ev
+            if self.verbose:
+                err_short = ev.error[:200].replace("\n", " ") if ev.error else ""
+                print(f"  [eval:precheck] FAILED  steps={len(pipeline)}  err={err_short}")
+            return ev
 
         yaml_text = pipeline.to_yaml()
         self._executor.write_yaml(yaml_text)

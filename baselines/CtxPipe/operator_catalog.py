@@ -13,9 +13,16 @@ from baselines.common.op_spec import (
     operators_by_category,
     is_mandatory,
     needs_context,
-    operators_for_task,
     valid_targets_for,
 )
+from baselines.common.utils import get_available_ops
+
+
+def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
+    return [
+        spec.op_name
+        for spec in get_available_ops(task_type, include_custom=include_custom)
+    ]
 
 __all__ = [
     "CATALOG",

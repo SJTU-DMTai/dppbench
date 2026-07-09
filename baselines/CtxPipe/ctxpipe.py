@@ -1,7 +1,7 @@
 """Top-level CtxPipe orchestrator.
 
-Mirrors :class:`baselines.SAGA.saga.SAGA` but uses Reinforcement Learning
-(DQN) to construct a pipeline rather than genetic search.
+This implementation follows CtxPipe's component-level RL formulation while
+using DPPBench's shared operator space and evaluator for fairness.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from baselines.common.config import (
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
 from baselines.common.pipeline import is_legal
-from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
+from baselines.common.utils import get_data_ctx
 
 from .agent import DQNAgent
 from .env import PipelineEnv
@@ -144,9 +144,7 @@ class CtxPipe:
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: SearchPipelineEvaluator) -> DataContext:
         data = evaluator.load_data()
-        if evaluator.task_type == "rec":
-            return _infer_rec_context(self.data_name, data)
-        return _infer_tabular_context(self.data_name, data)
+        return get_data_ctx(self.data_name, data, evaluator.task_type)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:
@@ -199,17 +197,20 @@ class CtxPipe:
         agent = DQNAgent(
             state_dim=env.state_dim,
             n_actions=env.n_actions,
+            component_ids=env.component_ids,
             hidden=self.hidden_dim,
             lr=self.lr,
             buffer_capacity=self.buffer_capacity,
             seed=self.seed,
             device=self.device,
+            context_dim=env.context_dim,
         )
 
         if self.verbose:
             print(f"[CtxPipe] state_dim={env.state_dim}  "
-                  f"n_actions={env.n_actions}  "
-                  f"(ops={env.n_ops}, +1 STOP)")
+                  f"components={env.n_components}  "
+                  f"n_actions_per_component={env.n_actions}  "
+                  f"ops={env.n_ops}")
 
         # 4. Train.
         trainer = CtxPipeTrainer(
@@ -255,7 +256,7 @@ class CtxPipe:
         best_metrics: dict = {}
 
         best_pipeline = final_pipeline
-        eval_error = test_out.get("error")
+        eval_error = test_out.get("error") or test_out.get("full_error") or test_out.get("rl_error")
 
         if test_out.get("fitness") is not None:
             best_yaml = test_out["pipeline_yaml"]
@@ -322,9 +323,11 @@ class CtxPipe:
                     "ops": h.ops,
                     "n_steps": h.n_steps,
                     "duration_seconds": h.duration_seconds,
+                    "trace": h.trace,
                 }
                 for h in train_out["history"]
             ],
+            "component_ids": env.component_ids,
             "n_unique_evaluations": train_evaluator.n_unique_evaluations,
             "duration_seconds": duration,
             "output_dir": self.output_dir,

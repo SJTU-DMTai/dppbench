@@ -59,6 +59,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         # Cache must be invalidated because identical YAMLs may now refer to a
         # different dataset size.
         self._cache.clear()
+        self._data_context = None
         self._executor.clear_data_cache()
 
     # ------------------------------------------------------------------

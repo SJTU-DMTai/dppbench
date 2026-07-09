@@ -32,8 +32,8 @@ from baselines.common.config import (
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import is_legal
-from baselines.common.data_ctx import _infer_rec_context, _infer_tabular_context
+from baselines.common.pipeline import check_pipeline, is_legal
+from baselines.common.utils import get_data_ctx
 
 from .evaluator import AutoPrepEvaluator
 from .operator_catalog import CATALOG
@@ -118,11 +118,8 @@ class AutoPrep:
 
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: SearchPipelineEvaluator) -> DataContext:
-        # Force the executor to load data so we can introspect the schema.
         data = evaluator.load_data()
-        if evaluator.task_type == "rec":
-            return _infer_rec_context(self.data_name, data)
-        return _infer_tabular_context(self.data_name, data)
+        return get_data_ctx(self.data_name, data, evaluator.task_type)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:
@@ -257,6 +254,7 @@ class AutoPrep:
         )
         with open(out_yaml, "w", encoding="utf-8") as f:
             f.write(output_pipe.to_yaml())
+        check_report = check_pipeline(output_pipe, ctx)
 
         log = {
             "data_name": self.data_name,
@@ -271,7 +269,9 @@ class AutoPrep:
                 float(best_fitness) if math.isfinite(best_fitness) else None
             ),
             "eval_error": eval_error,
-            "is_legal": is_legal(output_pipe, ctx.task_type),
+            "is_legal": check_report.valid and is_legal(output_pipe, ctx.task_type),
+            "check_errors": check_report.errors,
+            "check_warnings": check_report.warnings,
             "final_pipeline_ops": output_pipe.op_names(),
             "best_ops": list(best_candidate.op_set) if best_candidate else [],
             "best_join_edges": list(best_candidate.join_set) if best_candidate else [],

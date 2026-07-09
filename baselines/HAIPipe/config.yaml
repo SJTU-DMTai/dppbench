@@ -1,0 +1,23 @@
+# HAIPipe adapter defaults.
+# Standard DPPBench mode uses the mandatory scaffold as HI-pipeline.
+n_episodes: 20
+max_ai_steps: 6
+max_pipeline_len: 8
+n_combinations: 32
+small_n: 3000
+eval_full: true
+
+gamma: 0.95
+eps_start: 1.0
+eps_end: 0.1
+eps_decay_episodes: null
+batch_size: 32
+target_update_every: 10
+min_buffer: 64
+hidden_dim: 128
+lr: 0.001
+buffer_capacity: 10000
+failure_reward: -1.0
+seed: 42
+fast_train: true
+hi_source: mandatory

@@ -24,8 +24,12 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from baselines.DeepPrep.tree_agent import ChainParseError, chain_to_steps
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline, PipelineStep
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.pipeline import (
+    Pipeline,
+    PipelineStep,
+    finalize_pipeline,
+    is_legal,
+)
 
 from . import prompts
 from .node import MCTSNode, MCTSNodeType
@@ -128,6 +132,35 @@ def _column_similarity(actual: list[str], expected: list[str]) -> float:
     return float(len(inter)) / float(len(union)) if union else 0.0
 
 
+def _score_steps_structurally(
+    steps: list[PipelineStep],
+    action_ctx: "ActionContext",
+) -> tuple[list[PipelineStep], Optional[bool], Optional[float], Optional[str]]:
+    """Finalize and execute a candidate to provide BAT EPO feedback."""
+    pipe, report = finalize_pipeline(
+        Pipeline(steps=list(steps)),
+        action_ctx.ctx,
+        action_ctx.rng,
+        max_len=action_ctx.max_chain_len,
+    )
+    if not report.valid:
+        return list(pipe.steps), False, 0.0, "; ".join(report.errors)
+    initial = getattr(action_ctx.sandbox, "_initial_snapshot", None)
+    if initial is not None:
+        action_ctx.sandbox.restore(initial)
+    exec_res = action_ctx.sandbox.execute_chain(pipe.steps)
+    if not exec_res.success:
+        if initial is not None:
+            action_ctx.sandbox.restore(initial)
+        return list(pipe.steps), False, 0.0, exec_res.error
+    actual = _sandbox_columns(action_ctx.sandbox)
+    expected = expected_target_columns(action_ctx.ctx)
+    sim = _column_similarity(actual, expected)
+    if initial is not None:
+        action_ctx.sandbox.restore(initial)
+    return list(pipe.steps), sim >= 0.99, sim, None
+
+
 # ---------------------------------------------------------------------------
 # Action base
 # ---------------------------------------------------------------------------
@@ -139,6 +172,7 @@ class ActionContext:
     sandbox: "Sandbox"
     rng: random.Random
     max_chain_len: int = 6
+    n_action_samples: int = 1
     verbose: bool = False
 
 
@@ -269,26 +303,44 @@ class TransformationAction(BaseAction):
             column_functions_text=col_func_text,
             max_chain_len=action_ctx.max_chain_len,
         )
-        try:
-            response = action_ctx.llm.chat(
-                [
-                    {"role": "system", "content": prompts.SYSTEM_BAT},
-                    {"role": "user", "content": prompt},
-                ]
+        nodes = []
+        seen: set[tuple[str, ...]] = set()
+        for _ in range(max(1, action_ctx.n_action_samples)):
+            try:
+                response = action_ctx.llm.chat(
+                    [
+                        {"role": "system", "content": prompts.SYSTEM_BAT},
+                        {"role": "user", "content": prompt},
+                    ]
+                )
+            except Exception as e:
+                response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
+            chain_str = _extract(_PIPE_RE, response) or ""
+            steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
+            if parse_error is None:
+                steps, columns_match, column_similarity, exec_error = _score_steps_structurally(
+                    steps, action_ctx
+                )
+            else:
+                columns_match = False
+                column_similarity = 0.0
+                exec_error = parse_error
+            key = tuple(s.op for s in steps)
+            if key in seen and nodes:
+                continue
+            seen.add(key)
+            child = MCTSNode(
+                node_type=MCTSNodeType.TRANSFORMATION,
+                parent=parent,
+                parent_action=self,
+                depth=parent.depth + 1,
+                pipeline_steps=steps,
+                columns_match=columns_match,
+                column_similarity=column_similarity,
+                exec_error=exec_error,
             )
-        except Exception as e:
-            response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
-        chain_str = _extract(_PIPE_RE, response) or ""
-        steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
-        child = MCTSNode(
-            node_type=MCTSNodeType.TRANSFORMATION,
-            parent=parent,
-            parent_action=self,
-            depth=parent.depth + 1,
-            pipeline_steps=steps,
-            exec_error=parse_error,
-        )
-        return [child]
+            nodes.append(child)
+        return nodes
 
 
 # ---------------------------------------------------------------------------
@@ -316,26 +368,44 @@ class TransformationRevisionAction(BaseAction):
             exec_error=parent.exec_error,
             max_chain_len=action_ctx.max_chain_len,
         )
-        try:
-            response = action_ctx.llm.chat(
-                [
-                    {"role": "system", "content": prompts.SYSTEM_BAT},
-                    {"role": "user", "content": prompt},
-                ]
+        nodes = []
+        seen: set[tuple[str, ...]] = set()
+        for _ in range(max(1, action_ctx.n_action_samples)):
+            try:
+                response = action_ctx.llm.chat(
+                    [
+                        {"role": "system", "content": prompts.SYSTEM_BAT},
+                        {"role": "user", "content": prompt},
+                    ]
+                )
+            except Exception as e:
+                response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
+            chain_str = _extract(_PIPE_RE, response) or ""
+            steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
+            if parse_error is None:
+                steps, columns_match, column_similarity, exec_error = _score_steps_structurally(
+                    steps, action_ctx
+                )
+            else:
+                columns_match = False
+                column_similarity = 0.0
+                exec_error = parse_error
+            key = tuple(s.op for s in steps)
+            if key in seen and nodes:
+                continue
+            seen.add(key)
+            child = MCTSNode(
+                node_type=MCTSNodeType.REVISED_TRANSFORMATION,
+                parent=parent,
+                parent_action=self,
+                depth=parent.depth + 1,
+                revised_pipeline_steps=steps,
+                columns_match=columns_match,
+                column_similarity=column_similarity,
+                exec_error=exec_error,
             )
-        except Exception as e:
-            response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
-        chain_str = _extract(_PIPE_RE, response) or ""
-        steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
-        child = MCTSNode(
-            node_type=MCTSNodeType.REVISED_TRANSFORMATION,
-            parent=parent,
-            parent_action=self,
-            depth=parent.depth + 1,
-            revised_pipeline_steps=steps,
-            exec_error=parse_error,
-        )
-        return [child]
+            nodes.append(child)
+        return nodes
 
 
 # ---------------------------------------------------------------------------
@@ -347,17 +417,22 @@ class EndAction(BaseAction):
 
     def create_children_nodes(self, parent, action_ctx):
         # Materialise the final pipeline by walking up the path and taking
-        # the most recent operator chain (revision wins).
+        # the most recent operator chain (revision wins), then apply the
+        # shared DPPBench execution contract before reward computation.
         steps = parent.latest_pipeline_steps()
-        # Final structural repair so mandatory ops are always present.
-        pipe = Pipeline(steps=list(steps))
-        repair(pipe, action_ctx.ctx.task_type, action_ctx.ctx)
+        pipe, report = finalize_pipeline(
+            Pipeline(steps=list(steps)),
+            action_ctx.ctx,
+            action_ctx.rng,
+            max_len=action_ctx.max_chain_len,
+        )
         child = MCTSNode(
             node_type=MCTSNodeType.END,
             parent=parent,
             parent_action=self,
             depth=parent.depth + 1,
             final_pipeline_steps=list(pipe.steps),
+            exec_error=None if report.valid else "; ".join(report.errors),
         )
         return [child]
 

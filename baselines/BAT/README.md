@@ -1,119 +1,95 @@
-# BAT (Target-Instance-Free Data Preparation Synthesizer)
+# BAT Baseline
 
-Re-implementation of `ZJU-DAILY/BAT` for dppbench. BAT (Bayesian-explored
-Action Tree) drives an LLM through Monte Carlo Tree Search over a
-constrained "data-preparation action sandbox" (DPAS) and picks the best
-synthesized pipeline. This implementation also wires BAT's reward to a
-**downstream ML model** (LightGBM/DIN), so the same code can be compared
-fairly to the other LLM-driven baselines (DeepPrep, DataMaster) on
-dppbench's tabular and recommendation tasks.
+DPPBench adapter for **BAT: Target-Instance-Free Data Preparation Synthesis via LLM-driven Tree Search**. The implementation preserves BAT's inference-time structure — DPAS action sandbox, LLM-driven MCTS, and execution-aware pipeline optimization — while using DPPBench's shared operator space, common DAG/legality contract, and downstream ML objective.
 
-## Algorithmic Overview
+## Method mapping
 
-BAT is built from three parts:
+| BAT paper concept | DPPBench implementation |
+|---|---|
+| DPAS action sandbox | `SchemaMatch`, `IdentifyColumnFunctions`, `Transformation`, `TransformationRevision`, `End` node/action types |
+| FPG | UCB-style MCTS in `mcts.py`; each legal BAT action expands the tree |
+| EPO | Sandbox execution of transformation candidates plus column-similarity feedback |
+| Target-instance-free reward | Column similarity against `DataContext`-derived expected schema |
+| DPPBench objective | Optional downstream AUC term from `SearchPipelineEvaluator` |
+| Operator/action language | Shared DPPBench operators rendered from `baselines.common.OpSpec` |
+| Final executable format | Common prev-only DAG YAML via `finalize_pipeline(...)` |
 
-1. **DPAS** (Data Preparation Action Sandbox). Search-space restriction
-   based on five node types and their legal successor actions:
+The original BAT paper uses source tables and target schema without target table instances. In DPPBench, the target schema is approximated from `DataContext`, the operator library is the shared DPPBench operator space, and downstream fitness can be fused into the reward for benchmark comparability. Set `use_downstream: false` to recover the schema-only BAT-style reward.
+
+## Algorithmic overview
+
+1. **DPAS** restricts search to five action/node types:
 
    | Node type | Legal next actions |
    |---|---|
    | `ROOT` | `SchemaMatch`, `IdentifyColumnFunctions`, `Transformation` |
    | `SCHEMA_MATCH` | `IdentifyColumnFunctions`, `Transformation` |
    | `IDENTIFY_COLUMN_FUNCTIONS` | `SchemaMatch`, `Transformation` |
-   | `TRANSFORMATION` | `End` (only if `columns_match`) or `End` + `TransformationRevision` |
+   | `TRANSFORMATION` | `End`, and `TransformationRevision` when EPO feedback is not sufficient |
    | `REVISED_TRANSFORMATION` | `End` |
 
-   Action classes already used on the path-to-root are filtered out to
-   avoid loops.
+2. **FPG** performs MCTS with UCB selection, action expansion, random rollout to `END`, and reward backpropagation.
+3. **EPO** executes transformation candidates in the shared sandbox, records `columns_match`, `column_similarity`, and `exec_error`, and feeds these signals to revision prompts.
+4. **Finalization** sends every terminal/final pipeline through common `finalize_pipeline(...)`, which repairs mandatory operators, truncates optional steps to the budget, assigns DAG structure, and runs `check_pipeline(...)`.
 
-2. **FPG** (Fundamental Pipeline Generator). Standard MCTS:
-   `Select` (UCB1, `Q/N + c·sqrt(ln(N_parent)/N_child)`),
-   `Expand` (each legal action calls the LLM and adds children),
-   `Simulate` (random rollout to `END`),
-   `Backpropagate` (single reward at `END` walks up the path).
-   Early stop after two paths reach reward `≥ 1 − ε`.
+## Common API usage
 
-3. **EPO** (Execution-aware Pipeline Optimizer). At an `END` node BAT
-   actually executes the final pipeline and computes the reward:
-   - Schema-only mode (BAT original):
-     `column_similarity = |actual ∩ expected| / |actual ∪ expected|`
-     where `expected` is built from `DataContext` (no target instances
-     needed -- "target-instance-free").
-   - **dppbench mode (this implementation, default)**: weighted fusion
-     of column similarity, downstream-model fitness, and an optional
-     LLM-judge term:
-     `reward = α·column_similarity + β·downstream_fitness + γ·llm_judge`
-     (default `α=0.4, β=0.5, γ=0.1`).
+BAT delegates executable details to common APIs instead of maintaining private implementations:
 
-The downstream channel uses small-N (default 3 000) subsampled training
-to control cost, identical to DeepPrep / DataMaster. Setting
-`--no_use_downstream` recovers the original BAT semantics exactly.
+- `get_data_ctx(...)`
+- `get_available_ops(...)`
+- `make_step(...)` / `validate_step_params(...)` through DeepPrep `chain_to_steps(...)`
+- `finalize_pipeline(...)`
+- `check_pipeline(...)`
+- `SearchPipelineEvaluator(...)`
+- DeepPrep `Sandbox` for common DAG execution and small-N sampling
 
-## Comparison with existing baselines
+## Files
 
-| Dimension | BAT (this impl.) | DeepPrep | DataMaster | SAGA |
-|---|---|---|---|---|
-| Decision agent | LLM + MCTS (DPAS) | LLM tree-search agent | LLM + UCB MCTS (black) | Evolutionary + physical tuning |
-| Output form | Operator chain | Operator chain | Operator chain | YAML pipeline |
-| Operator pool | dppbench 77 ops | dppbench 77 ops | dppbench 77 ops | own catalog (77) |
-| Search constraint | DPAS 5-type DAG | tag protocol + repair | UCB on black nodes | category-order repair |
-| Exploration feedback | schema (+ optional dwn.) | schema/dtype/sample | schema | direct eval |
-| Final/select reward | column_sim + downstream | downstream AUC (small-N) | downstream AUC (small-N) | downstream AUC |
-| Uses downstream during search | **yes** (`β`) | only after `<solution>` | every UCB | every fitness |
-| Tabular | yes | yes | yes | yes |
-| Rec | yes | yes | yes | yes |
-
-## File layout
-
-```
+```text
 baselines/BAT/
 ├── __init__.py
-├── README.md                    # this file
-├── operator_catalog.py          # 77-op whitelist + function-family map
-├── prompts.py                   # SchemaMatch / IdentifyFunctions /
-│                                # Transformation / Revision / Reward
-├── action.py                    # 5 action classes + legality table
-├── node.py                      # MCTSNode + MCTSNodeType
-├── reward.py                    # column_sim + downstream + llm-judge
-├── mcts.py                      # MCTSSolver
-├── evaluator.py                 # BATEvaluator (LightGBM / DIN AUC)
-├── sandbox.py                   # re-export of DeepPrep Sandbox
-├── bat.py                       # top-level orchestrator
-└── README.md                    # this file
+├── action.py             # DPAS actions and legality table
+├── bat.py                # top-level runner
+├── config.yaml           # default hyperparameters
+├── evaluator.py          # SearchPipelineEvaluator alias
+├── mcts.py               # UCB MCTS driver
+├── node.py               # MCTS node data structure
+├── operator_catalog.py   # common OpSpec prompt rendering
+├── prompts.py            # BAT prompt templates
+├── reward.py             # column/downstream/LLM reward fusion
+└── sandbox.py            # DeepPrep Sandbox re-export
+```
 
 ## Quick start
 
 ```bash
-# Tabular (downstream feedback ON, the dppbench default)
-python scripts/evaluate_baseline.py --baseline BAT --data_names fraud_detection
-
-# Recommendation
-python scripts/evaluate_baseline.py --baseline BAT --data_names movielens
+python scripts/evaluate_baseline.py --baseline BAT --data_names amazon_beauty --model DIN
 ```
+
+## Key configuration
+
+| key | default | description |
+|---|---:|---|
+| `max_rollout_steps` | `10` | MCTS rollout budget |
+| `max_depth` | `5` | MCTS tree depth budget |
+| `max_chain_len` | `6` | final pipeline length budget passed to common finalization |
+| `n_action_samples` | `1` | LLM samples per expandable BAT action |
+| `exploration_constant` | `1.0` | UCB exploration coefficient |
+| `reward_alpha` | `0.4` | column-similarity reward weight |
+| `reward_beta` | `0.5` | downstream-fitness reward weight |
+| `reward_gamma` | `0.1` | optional LLM-judge reward weight |
+| `use_downstream` | `true` | include downstream reward during search |
+| `use_llm_judge` | `false` | include LLM reward judge |
+| `small_n` | `0` | sandbox subsample size |
+| `downstream_eval_n` | `3000` | small-N downstream reward budget |
+| `eval_full` | `true` | run final full-data evaluation inside baseline run |
 
 ## Outputs
 
-Every run writes the following under
-`outputs/BAT/<data_name>/`:
+`outputs/BAT/<data_name>/` contains:
 
-| File | Content |
-|---|---|
-| `best_pipeline.yaml` | repaired final pipeline ready for `dppbench.dataset.run_pre_process` |
-| `agent_log.json` | rollout / best-node / reward breakdown summary |
-| `tree.json` | full search tree (for analysis & visualisation) |
-| `best_paths.json` | paths that reached reward `≥ 1 − ε` |
-
-## Trade-off note
-
-BAT was originally proposed in a *target-instance-free* setting where
-only the source data + target schema is available, so it never trains a
-downstream model. dppbench requires a downstream LightGBM (tabular) or
-DIN (rec) at the end of every pipeline. To bridge the two, this
-implementation:
-
-* Keeps BAT's column-similarity term (`α`) so the original signal is
-  preserved.
-* Adds a downstream-fitness term (`β`) to satisfy dppbench's request to
-  feed back the downstream metric.
-* Provides `--no_use_downstream` for users who want to reproduce the
-  paper-faithful behaviour without the downstream channel.
+- `best_pipeline.yaml` — common-finalized DAG pipeline.
+- `agent_log.json` — rollout count, best node, reward breakdown, validation report.
+- `tree.json` — full MCTS tree.
+- `best_paths.json` — terminal paths reaching near-perfect reward.

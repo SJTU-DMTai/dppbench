@@ -1,8 +1,8 @@
 """DeepPrep baseline.
 
-LLM-powered agentic pipeline construction with tree-based reasoning.
-The agent does NOT receive any downstream-model feedback; it only sees
-sandboxed operator-execution outcomes (schema / sample / errors).
+LLM-powered tree-based data-preparation agent. Exploration uses sandboxed
+structural execution feedback; when configured, successful solution attempts
+may also receive DPPBench downstream fitness as search feedback.
 """
 from .deepprep import DeepPrep
 

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import random as _random
 import time
-from dataclasses import asdict
 from typing import Optional
 
 from baselines.common.config import (
@@ -24,7 +24,7 @@ from baselines.common.config import (
 )
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.pipeline import finalize_pipeline, is_legal
 from baselines.common.utils import get_data_ctx
 
 from .evaluator import DeepPrepEvaluator
@@ -249,9 +249,14 @@ class DeepPrep:
             run = agent.run()
             pipeline: Pipeline = run.pipeline
 
-            # 3. Final structural repair (mandatory ops, canonical order)
-            repair(pipeline, ctx.task_type, ctx)
-            legal = is_legal(pipeline, ctx.task_type)
+            # 3. Final common contract: repair, budget, DAG assignment, validation.
+            pipeline, check_report = finalize_pipeline(
+                pipeline,
+                ctx,
+                _random.Random(self.seed),
+                max_len=self.max_chain_len,
+            )
+            legal = check_report.valid and is_legal(pipeline, ctx.task_type)
 
             if self.verbose:
                 print(f"[DeepPrep] agent done. success={run.success}  "
@@ -286,6 +291,17 @@ class DeepPrep:
             except Exception as e:  # pragma: no cover - safety net
                 eval_error = f"{type(e).__name__}: {e}"
 
+        agent_best = None
+        for attempt in run.solution_attempts:
+            if isinstance(attempt.get("fitness"), float):
+                if agent_best is None or attempt["fitness"] > agent_best["fitness"]:
+                    agent_best = attempt
+        reported_fitness = eval_fitness
+        reported_metrics = eval_metrics
+        if reported_fitness is None and agent_best is not None:
+            reported_fitness = float(agent_best["fitness"])
+            reported_metrics = dict(agent_best.get("metrics") or {})
+
         # 5. Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
         yaml_text = pipeline.to_yaml()
@@ -303,6 +319,8 @@ class DeepPrep:
                     "n_errors": run.n_errors,
                     "transcript": run.transcript,
                     "ops": [s.op for s in pipeline.steps],
+                    "check_errors": check_report.errors,
+                    "check_warnings": check_report.warnings,
                     "solution_attempts": run.solution_attempts,
                     "downstream_feedback": self.downstream_feedback,
                     "downstream_eval_n": self.downstream_eval_n,
@@ -321,10 +339,10 @@ class DeepPrep:
             print("=" * 60)
             print(f"[DeepPrep] DONE in {duration:.1f}s")
             fit_str = (
-                f"{eval_fitness:.4f}" if isinstance(eval_fitness, float) else "n/a"
+                f"{reported_fitness:.4f}" if isinstance(reported_fitness, float) else "n/a"
             )
             print(f"[DeepPrep] downstream fitness = {fit_str}")
-            print(f"[DeepPrep] downstream metrics = {eval_metrics}")
+            print(f"[DeepPrep] downstream metrics = {reported_metrics}")
             if eval_error:
                 print(f"[DeepPrep] eval error: {eval_error}")
             print(f"[DeepPrep] best pipeline saved to: {out_yaml_path}")
@@ -335,8 +353,8 @@ class DeepPrep:
         return {
             "best_pipeline_yaml": yaml_text,
             "best_pipeline_path": out_yaml_path,
-            "best_fitness": eval_fitness,
-            "best_metrics": eval_metrics,
+            "best_fitness": reported_fitness,
+            "best_metrics": reported_metrics,
             "eval_error": eval_error,
             "agent_success": run.success,
             "agent_n_turns": run.n_turns,
@@ -344,6 +362,8 @@ class DeepPrep:
             "agent_solution_attempts": run.solution_attempts,
             "final_pipeline_ops": [s.op for s in pipeline.steps],
             "is_legal": legal,
+            "check_errors": check_report.errors,
+            "check_warnings": check_report.warnings,
             "task_type": ctx.task_type,
             "duration_seconds": duration,
             "output_dir": self.output_dir,

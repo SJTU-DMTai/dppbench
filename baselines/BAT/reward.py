@@ -97,10 +97,10 @@ class BATReward:
         # ---- 1. Execute the pipeline in the sandbox to compute column sim
         column_similarity = 0.0
         columns_match = False
-        exec_error: Optional[str] = None
+        exec_error: Optional[str] = end_node.exec_error
         if not steps:
-            exec_error = "empty pipeline"
-        else:
+            exec_error = exec_error or "empty pipeline"
+        elif not exec_error:
             self.sandbox.restore(self.sandbox._initial_snapshot)  # type: ignore[arg-type, attr-defined]
             exec_res = self.sandbox.execute_chain(steps)
             if not exec_res.success:

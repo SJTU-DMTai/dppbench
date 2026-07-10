@@ -56,6 +56,7 @@ class MCTSSolver:
         max_depth: int = 5,
         exploration_constant: float = 1.0,
         max_chain_len: int = 6,
+        n_action_samples: int = 1,
         early_stop_n_paths: int = 2,
         early_stop_eps: float = 1e-3,
         seed: int = 42,
@@ -69,6 +70,7 @@ class MCTSSolver:
         self.max_depth = int(max_depth)
         self.exploration_constant = float(exploration_constant)
         self.max_chain_len = int(max_chain_len)
+        self.n_action_samples = int(n_action_samples)
         self.early_stop_n_paths = int(early_stop_n_paths)
         self.early_stop_eps = float(early_stop_eps)
         self.rng = random.Random(seed)
@@ -87,6 +89,7 @@ class MCTSSolver:
             sandbox=self.sandbox,
             rng=self.rng,
             max_chain_len=self.max_chain_len,
+            n_action_samples=self.n_action_samples,
             verbose=self.verbose,
         )
 
@@ -118,6 +121,14 @@ class MCTSSolver:
                 if not res.success:
                     node.exec_error = res.error or "node replay failed"
                     self._log(f"node replay failed: {node.exec_error}")
+                    if node.node_type in (
+                        MCTSNodeType.TRANSFORMATION,
+                        MCTSNodeType.REVISED_TRANSFORMATION,
+                    ):
+                        # EPO needs failed transformations to remain expandable
+                        # so TransformationRevision can consume the error.
+                        self.sandbox.restore(initial)
+                        return True
                     return False
             return True
         except Exception as e:

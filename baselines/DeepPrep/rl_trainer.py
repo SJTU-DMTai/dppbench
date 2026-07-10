@@ -89,6 +89,9 @@ class RLTrainer:
         use_downstream_reward: bool = True,
         downstream_eval_n: int = 3000,
         max_solution_attempts: int = 3,
+        device: str = "cpu",
+        model_name: Optional[str] = None,
+        fast_train: bool = True,
     ) -> None:
         self.llm = llm
         self.max_explore_turn = int(max_explore_turn)
@@ -99,6 +102,9 @@ class RLTrainer:
         self.use_downstream_reward = bool(use_downstream_reward)
         self.downstream_eval_n = int(downstream_eval_n) if downstream_eval_n else 0
         self.max_solution_attempts = int(max_solution_attempts)
+        self.device = device
+        self.model_name = model_name
+        self.fast_train = bool(fast_train)
 
     # ------------------------------------------------------------------
     def collect_trajectory(self, task: TaskSpec) -> Trajectory:
@@ -119,8 +125,12 @@ class RLTrainer:
                 small_n=self.downstream_eval_n,
                 seed=task.seed,
                 verbose=False,
+                device=self.device,
+                model_name=self.model_name,
             )
             agent_evaluator.set_evaluate_std_test(False)
+            if self.fast_train:
+                agent_evaluator.set_fast_mode(True)
 
             def _agent_eval_fn(pipeline: Pipeline):
                 return agent_evaluator.evaluate_for_agent(pipeline)

@@ -1,41 +1,62 @@
 # DeepPrep Baseline
 
-LLM-powered, tree-based agentic data preparation. The agent constructs a
-pipeline from scratch by repeatedly proposing operator chains. During
-exploration (`<operator>`) it observes only sandbox structural feedback
-(schema, sample rows, errors). When `downstream_feedback` is enabled
-(default), every successful `<solution>` attempt also receives a
-small-data downstream-model metric (LightGBM/DIN AUC) so the LLM can
-iteratively refine the pipeline. The system keeps the attempt with the
-highest small-data fitness and re-evaluates it on the full data at the
-end.
+LLM-powered, tree-based agentic data preparation adapted to DPPBench. The
+implementation keeps DeepPrep's inference-time structure — execution-grounded
+planning, tree expansion, materialized state snapshots, parent-node selection,
+and backtracking — while using DPPBench's shared operator space, DAG format,
+parameter validation, legality checks, and downstream objective.
 
-## Method overview
+## Method mapping
 
-| Aspect          | DeepPrep                                                                 |
-|-----------------|--------------------------------------------------------------------------|
-| Decision policy | LLM agent (API by default; local HF transformers optional)               |
-| One-step output | `<plan>` / `<operator>` chain / `<solution>` / `<backtrack/>`            |
-| Feedback        | `<operator>`: sandbox schema/dtype/sample rows/error trace.               |
-|                 | `<solution>`: above + small-data downstream AUC (best-of-N attempts).     |
-| Search shape    | Tree over sandbox snapshots; non-local backtracking                      |
-| Operator pool   | All 27 operators in `dppbench/ operators/` (tabular + recommendation)    |
-| Final scoring   | LightGBM AUC (tabular) / DIN AUC (rec) — both in-loop (small-N) AND end |
-| Training        | Inference-only by default. RL stub (`rl_trainer.py`) preserved           |
+| Aspect | DPPBench DeepPrep |
+|---|---|
+| Decision policy | LLM agent (API by default; local HF transformers optional) |
+| One-step output | `<plan>` + `<operator>` / `<solution>` / `<backtrack/>` |
+| Parent selection | Optional `<operator parent="OpA --> OpB">...</operator>` prefix selection |
+| Tree state | One node per materialized sandbox state; one edge per operator instance |
+| Exploration feedback | Structural sandbox feedback only: schema, dtype, sample rows, errors |
+| Solution feedback | Optional small-data DPPBench downstream fitness for best-of-N attempts |
+| Operator pool | Shared `baselines.common` operators for the current task type |
+| Final scoring | Shared DPPBench evaluator: LightGBM/tabular or DIN/rec AUC |
+| Training | Inference-only by default; SFT/GRPO/hybrid-reward training remains a stub |
+
+Compared with the original DeepPrep paper, the benchmark adapter intentionally
+changes only the operator space and optimization target: operators come from
+DPPBench common APIs, and reward/selection uses downstream ML fitness rather
+than target-table exact match. The progressive training framework from the
+paper (cold-start SFT, GRPO, hybrid reward, data synthesis) is not implemented
+in the default baseline path.
+
+## Common API usage
+
+Executable details are delegated to common APIs:
+
+- `get_data_ctx(...)`
+- `get_available_ops(...)`
+- `make_step(...)`
+- `validate_step_params(...)`
+- `assign_dag_structure(...)`
+- `finalize_pipeline(...)`
+- `check_pipeline(...)`
+- `SearchPipelineEvaluator(...)`
+- `subsample_data_inplace(...)`
+
+The baseline does not maintain a private operator parameter generator or a
+private YAML/DAG implementation.
 
 ## File map
 
-```
+```text
 baselines/DeepPrep/
-├── __init__.py               # exposes DeepPrep
-├── operator_catalog.py       # re-exports SAGA's 27-operator catalog
-├── llm_client.py             # API + local HF backends (lazy local import)
-├── prompts.py                # system / user / observation / backtrack templates
-├── sandbox.py                # incremental operator execution + snapshots
+├── __init__.py
+├── operator_catalog.py       # renders common operator metadata for prompts
+├── llm_client.py             # API + local HF backends
+├── prompts.py                # system/user/observation templates
+├── sandbox.py                # common-DAG incremental execution + snapshots
 ├── tree_node.py              # SearchNode / SearchTree
-├── tree_agent.py             # tree-based reasoning loop (parse + run)
-├── evaluator.py              # final-pipeline downstream-model scorer
-├── rl_trainer.py             # RL training stub (NotImplementedError by default)
+├── tree_agent.py             # tree reasoning loop and chain parser
+├── evaluator.py              # SearchPipelineEvaluator alias
+├── rl_trainer.py             # optional training scaffold
 ├── deepprep.py               # top-level orchestrator
 └── README.md
 ```
@@ -43,74 +64,33 @@ baselines/DeepPrep/
 ## Quick start
 
 ```bash
-# Tabular
-python scripts/evaluate_baseline.py --baseline DeepPrep --data_names fraud_detection
-
-# Recommendation
-python scripts/evaluate_baseline.py --baseline DeepPrep --data_names movielens
+python scripts/evaluate_baseline.py --baseline DeepPrep --data_names amazon_beauty --model DIN
 ```
 
 ## Configuration (`config.yaml`)
 
-| key                    | default       | description                                                |
-|------------------------|---------------|------------------------------------------------------------|
-| `llm_backend`          | `api`         | `api` or `local`                                           |
-| `llm_model`            | `gpt-4o-mini` | model name (api) or HF repo / local path (local)           |
-| `api_key`              | null          | credentials are loaded from project `apikeys.json`         |
-| `base_url`             | null          | endpoint is loaded from project `apikeys.json`             |
-| `temperature`          | `0.7`         | sampling temperature                                       |
-| `max_tokens`           | `2048`        | per-call generation budget                                 |
-| `max_explore_turn`     | `5`           | maximum exploration turns before forcing `<solution>`      |
-| `max_chain_len`        | `6`           | max operators per `<operator>` chain                       |
-| `max_depth`            | `8`           | max search-tree depth                                      |
-| `max_err_cnt`          | `5`           | abort the agent after this many errors                     |
-| `small_n`              | `0`           | sandbox subsample size (`0` = full data)                   |
-| `eval_full`            | `true`        | re-evaluate the best pipeline on full data                 |
-| `downstream_feedback`  | `true`        | enable in-loop downstream training feedback after each `<solution>` |
-| `downstream_eval_n`    | `3000`        | subsample size used by the agent-loop downstream evaluator (`0` = full data) |
-| `max_solution_attempts`| `3`           | max number of `<solution>` attempts when downstream feedback is enabled |
-| `seed`                 | `42`          | RNG seed for default-param synthesis                       |
+| key | default | description |
+|---|---:|---|
+| `llm_backend` | `api` | `api` or `local` |
+| `llm_model` | `gpt-4o-mini` | model name or local model path |
+| `temperature` | `0.7` | LLM sampling temperature |
+| `max_tokens` | `2048` | per-call generation budget |
+| `max_explore_turn` | `5` | maximum exploration turns before forcing a solution |
+| `max_chain_len` | `6` | max operators per action and final pipeline budget |
+| `max_depth` | `8` | max search-tree depth |
+| `max_err_cnt` | `5` | abort after this many agent errors |
+| `small_n` | `0` | sandbox subsample size; `0` disables |
+| `eval_full` | `true` | re-evaluate the best pipeline on full data in baseline run |
+| `downstream_feedback` | `true` | enable in-loop downstream feedback after successful solutions |
+| `downstream_eval_n` | `3000` | small-N budget for in-loop downstream evaluator |
+| `max_solution_attempts` | `3` | max solution attempts with feedback |
+| `seed` | `42` | RNG seed |
+| `fast_train` | `true` | use fast train overrides in search-time evaluators |
 
 ## Outputs
 
 `outputs/DeepPrep/<data_name>/`
 
-* `best_pipeline.yaml` — final repaired pipeline.
-* `agent_log.json` — every assistant turn + per-`<solution>` attempt
-  metadata (ops, downstream fitness, metrics, error). Also records
-  `downstream_feedback`, `downstream_eval_n`, and `max_solution_attempts`.
-* `tree.json` — the search tree (nodes, parents, ops, errors).
-
-## Switching to local inference / RL
-
-* Default verification path is **API only** — no training happens.
-* To run a local model, set `llm_backend: local` and `llm_model: <path>` in `config.yaml`.
-* To enable RL, subclass `RLTrainer` (see `rl_trainer.py`):
-  * `collect_trajectory(task)` returns trajectories whose reward, by
-    default (`use_downstream_reward=True`), is the best small-data
-    downstream metric across the agent's `<solution>` attempts. Pass
-    `use_downstream_reward=False` to recover the legacy binary reward.
-  * Override `train(trajectories)` to plug in your gradient update;
-    share weights with `LLMClient.attach_local_model(model, tokenizer)`.
-
-## Design notes
-
-* During `<operator>` exploration the agent only sees sandbox structural
-  feedback (schema, dtype, sample rows, error trace). Downstream-model
-  training is NEVER triggered during exploration.
-* When `downstream_feedback=True` (default), every successful `<solution>`
-  attempt triggers a small-data (`--downstream_eval_n`) downstream
-  training; the resulting AUC is fed back to the LLM via an
-  `<observation>SOLUTION ATTEMPT k/N evaluated...</observation>` message.
-  The LLM may submit up to `--max_solution_attempts` `<solution>` chains;
-  the system keeps the highest-scoring one as the final pipeline and
-  re-evaluates it on the full data when `--no_eval_full` is not set.
-* Operator parameters are auto-filled with `build_default_params(...)`,
-  so the LLM only needs to write `OpName(arg=value)` (or just `OpName`).
-* After the agent emits a `<solution>`, the pipeline is passed through
-  `pipeline.repair(...)`. This guarantees mandatory operators
-  are present (rec: `JoinTable`, `CreateSequence`,
-  `DataSplit`; tabular: `LabelEncode`+`HandleMV` tail) so the final
-  evaluator always receives an executable pipeline.
-* Snapshots use `pickle` over the dataset's `BaseData` instance. Use
-  `--small_n` for very large datasets to keep snapshots manageable.
+- `best_pipeline.yaml` — final common-finalized DAG pipeline.
+- `agent_log.json` — assistant turns, solution attempts, validation results.
+- `tree.json` — materialized search tree nodes, parents, ops, and errors.

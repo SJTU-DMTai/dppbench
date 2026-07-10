@@ -33,7 +33,7 @@ from .pipeline import (
     get_operator_param_names,
 )
 from .evaluator import EvaluationResult, PipelineEvaluator
-from .search_evaluator import SearchPipelineEvaluator
+from .search_evaluator import SearchPipelineEvaluator, subsample_data_inplace
 from .op_registry import (
     get_operator_descriptions,
     get_operator_summary,

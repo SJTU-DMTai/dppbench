@@ -98,6 +98,11 @@ class SearchPipelineEvaluator(PipelineEvaluator):
 # ---------------------------------------------------------------------------
 # Subsampling helpers
 # ---------------------------------------------------------------------------
+def subsample_data_inplace(data, small_n: int, seed: int) -> None:
+    """Public small-N helper shared by search evaluators and sandboxes."""
+    _subsample_data_inplace(data, small_n=small_n, seed=seed)
+
+
 def _subsample_data_inplace(data, small_n: int, seed: int) -> None:
     """Truncate the in-memory DataFrames on ``data`` to ``small_n`` rows.
 
@@ -259,4 +264,4 @@ def _sync_std_test_negatives(data, sampled):
         data.std_test_negatives_df = negatives.reset_index(drop=True)
 
 
-__all__ = ["SearchPipelineEvaluator", "EvaluationResult"]
+__all__ = ["SearchPipelineEvaluator", "EvaluationResult", "subsample_data_inplace"]

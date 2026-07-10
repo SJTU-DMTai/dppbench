@@ -30,20 +30,26 @@ Reasoning tags (optional, may appear in any order before the action tag):
 
 Action tags (MUST contain exactly one of):
   <operator>Op1(arg=value) --> Op2(arg=value) --> ...</operator>
-      Append this chain to the current pipeline (executes in the sandbox).
+      Expand from the current tree node and execute the chain in the sandbox.
       The chain length is bounded by max_chain_len. Use this to *explore*.
+  <operator parent="OpA --> OpB">OpC(...) --> ...</operator>
+      Expand from a previous materialized tree node. The parent value must be
+      the exact root-to-node operator prefix; use parent="root" for the root.
   <solution>Op1(...) --> Op2(...) --> ... --> Terminate</solution>
       Finalize. The chain you write is the FULL pipeline (replacing whatever
       was accumulated). It MUST end with `Terminate` and be self-contained.
   <backtrack/>
-      Discard the most recent successful expansion and return to the parent
-      search node. Use this when the current branch is clearly stuck.
+      Discard the most recent successful single-operator expansion and return
+      to its parent search node. Use this when the current branch is stuck.
 
 # Constraints
 - You may ONLY use operators from the whitelist injected in the user message.
-- You may NOT invent operator names or new arguments.
-- Parameters that depend on the dataset (column lists, target columns, etc.)
-  may be omitted; the system will fill them with safe defaults.
+- Follow the canonical category order shown in the whitelist.
+- You may NOT invent operator names or new argument names.
+- Do NOT write placeholders such as `...`; every operator in an action must be concrete.
+- Use keyword arguments only. Parameters that depend on the dataset (column
+  lists, target columns, etc.) may be omitted; the system will fill them with
+  safe defaults and validate all supplied parameters.
 - The ``<operator>`` feedback channel is purely structural (schema, sample
   rows, error traces). Downstream-model training is NEVER triggered during
   exploration.
@@ -73,9 +79,10 @@ def render_user_initial(
     )
     return f"""# Task
 Construct a data preparation pipeline for the **{task_type}** dataset
-`{data_name}`. The dataset will eventually be consumed by a {target_text},
-but the training itself is performed AFTER you submit your <solution>; it
-is NOT part of your feedback loop.
+`{data_name}`. The dataset will eventually be consumed by a {target_text}.
+During `<operator>` exploration you only receive structural sandbox feedback;
+after successful `<solution>` attempts the system may provide small-data
+DPPBench downstream fitness if that feedback mode is enabled.
 
 # Dataset Summary
 {summary_text}

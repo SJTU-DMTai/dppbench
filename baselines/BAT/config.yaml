@@ -18,6 +18,8 @@ max_rollout_steps: 10
 max_depth: 5
 # max_chain_len (default: 6): Maximum operator chain length proposed by LLM.
 max_chain_len: 6
+# n_action_samples (default: 1): LLM samples per expandable BAT action.
+n_action_samples: 1
 # exploration_constant (default: 1.0): UCB exploration constant.
 exploration_constant: 1.0
 # early_stop_n_paths (default: 2): Number of best terminal paths before early stop.

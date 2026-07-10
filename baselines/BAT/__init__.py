@@ -1,8 +1,8 @@
 """BAT baseline package.
 
-Implements the *Target-Instance-Free* LLM-driven Monte Carlo Tree Search
-data-preparation synthesizer (BAT, ZJU-DAILY/BAT) on top of dppbench's 58
-operators, with an additional downstream-model feedback channel.
+Target-instance-free LLM-driven Monte Carlo Tree Search for DPPBench data
+preparation pipelines, using the shared common operator space and execution
+contract.
 """
 from .bat import BAT
 

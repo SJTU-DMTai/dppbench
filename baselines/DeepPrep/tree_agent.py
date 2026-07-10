@@ -27,11 +27,11 @@ from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
-    build_default_params,
-    default_target_for,
+    finalize_pipeline,
+    is_legal,
     make_step,
+    validate_step_params,
 )
-from baselines.common.pipeline import is_legal, repair
 
 from .llm_client import LLMClient
 from .operator_catalog import format_op_descriptions
@@ -55,9 +55,12 @@ logger = logging.getLogger(__name__)
 _TAG_RE = {
     "think": re.compile(r"<think>(.*?)</think>", re.DOTALL),
     "plan": re.compile(r"<plan>(.*?)</plan>", re.DOTALL),
-    "operator": re.compile(r"<operator>(.*?)</operator>", re.DOTALL),
-    "solution": re.compile(r"<solution>(.*?)</solution>", re.DOTALL),
 }
+_ACTION_RE = {
+    "operator": re.compile(r"<operator(?P<attrs>[^>]*)>(?P<body>.*?)</operator>", re.DOTALL),
+    "solution": re.compile(r"<solution(?P<attrs>[^>]*)>(?P<body>.*?)</solution>", re.DOTALL),
+}
+_PARENT_ATTR_RE = re.compile(r"parent\s*=\s*(['\"])(.*?)\1", re.DOTALL)
 _BACKTRACK_RE = re.compile(r"<backtrack\s*/?>")
 
 
@@ -74,17 +77,28 @@ class ParsedAction:
     chain_str: Optional[str] = None
     think: Optional[str] = None
     plan: Optional[str] = None
+    parent_chain: Optional[str] = None
+
+
+def _extract_action(text: str, tag: str) -> tuple[Optional[str], Optional[str]]:
+    match = _ACTION_RE[tag].search(text)
+    if not match:
+        return None, None
+    attrs = match.group("attrs") or ""
+    parent_match = _PARENT_ATTR_RE.search(attrs)
+    parent = parent_match.group(2).strip() if parent_match else None
+    return match.group("body").strip(), parent
 
 
 def parse_response(text: str) -> ParsedAction:
     think = _extract_tag(text, "think")
     plan = _extract_tag(text, "plan")
-    op = _extract_tag(text, "operator")
-    sol = _extract_tag(text, "solution")
+    op, parent = _extract_action(text, "operator")
+    sol, _ = _extract_action(text, "solution")
     if sol is not None:
         return ParsedAction("solution", chain_str=sol, think=think, plan=plan)
     if op is not None:
-        return ParsedAction("operator", chain_str=op, think=think, plan=plan)
+        return ParsedAction("operator", chain_str=op, think=think, plan=plan, parent_chain=parent)
     if _BACKTRACK_RE.search(text):
         return ParsedAction("backtrack", think=think, plan=plan)
     return ParsedAction("noop", think=think, plan=plan)
@@ -191,15 +205,18 @@ def chain_to_steps(
 ) -> list[PipelineStep]:
     """Convert ``Op1(...) --> Op2(...) --> Terminate`` into PipelineStep list.
 
-    Unknown operator names / operators that do not apply to the task type
-    raise ChainParseError. Missing context-dependent parameters are
-    auto-filled via ``build_default_params``.
+    Operator defaults are constructed through common ``make_step``. Any LLM
+    parameter overlay is then validated through common ``validate_step_params``
+    before the step can enter the sandbox.
     """
     raw_calls = [c.strip() for c in chain_str.split("-->") if c.strip()]
     valid_ops = {spec.op_name for spec in get_available_ops(ctx.task_type)}
     steps: list[PipelineStep] = []
     for raw in raw_calls:
-        op_name, llm_params = _parse_op_call(raw)
+        try:
+            op_name, llm_params = _parse_op_call(raw)
+        except ValueError as exc:
+            raise ChainParseError(str(exc)) from exc
         if op_name == "Terminate":
             if drop_terminate:
                 continue
@@ -217,22 +234,23 @@ def chain_to_steps(
                 f"Operator {op_name!r} is not applicable to task_type "
                 f"{ctx.task_type!r}."
             )
-        # Build default params, then overlay LLM-supplied params (so the
-        # LLM can override sensibly while still benefiting from the
-        # context-aware defaults for column lists etc.).
-        defaults = build_default_params(op_name, ctx, rng)
-        if defaults is None:
+        if "__positional__" in llm_params:
+            raise ChainParseError(
+                f"Operator {op_name!r} must use keyword arguments only; "
+                "positional arguments are not supported."
+            )
+        base = make_step(op_name, ctx, rng)
+        if base is None:
             raise ChainParseError(
                 f"Operator {op_name!r} cannot be applied in the current "
                 f"context (e.g. missing required column)."
             )
-        params = dict(defaults)
-        for k, v in llm_params.items():
-            if k == "__positional__":
-                continue
-            params[k] = v
-        target = default_target_for(op_name, ctx.task_type)
-        steps.append(PipelineStep(op=op_name, target=target, params=params))
+        params = dict(base.params or {})
+        params.update(llm_params)
+        errors = validate_step_params(op_name, params, ctx, strict=True)
+        if errors:
+            raise ChainParseError("; ".join(errors))
+        steps.append(PipelineStep(op=op_name, target=base.target, params=params))
     return steps
 
 
@@ -335,6 +353,32 @@ class TreeAgent:
             f"has_user_df={ctx.has_user_df} has_item_df={ctx.has_item_df} aux_dfs={ctx.aux_dfs}"
         )
 
+    def _parse_parent_ops(self, parent_chain: Optional[str]) -> list[str]:
+        if parent_chain is None:
+            return [s.op for s in self.tree.cursor.accumulated_steps]
+        if parent_chain.strip().lower() in ("", "root", "<root>"):
+            return []
+        ops: list[str] = []
+        for raw in [c.strip() for c in parent_chain.split("-->") if c.strip()]:
+            op_name, _ = _parse_op_call(raw)
+            if op_name != "Terminate":
+                ops.append(op_name)
+        return ops
+
+    def _restore_parent_for_action(self, action: ParsedAction) -> Optional[str]:
+        if action.parent_chain is None:
+            return None
+        parent_ops = self._parse_parent_ops(action.parent_chain)
+        parent_node = self.tree.find_by_prefix(parent_ops)
+        if parent_node is None:
+            return (
+                f"Parent prefix {parent_ops!r} does not match any materialized "
+                "tree node. Use an exact root-to-node operator prefix."
+            )
+        self.tree.set_cursor(parent_node.node_id)
+        self.sandbox.restore(parent_node.snapshot)  # type: ignore[arg-type]
+        return None
+
     # ------------------------------------------------------------------
     def run(self) -> AgentRunResult:
         # 1. Reset sandbox -> root obs
@@ -342,8 +386,7 @@ class TreeAgent:
         if not reset.success or reset.obs is None:
             # Extremely unlikely; fall back to a repair-only pipeline.
             self._log("Sandbox reset failed; returning repair-only pipeline.")
-            pipe = Pipeline()
-            repair(pipe, self.ctx.task_type, self.ctx)
+            pipe, _ = finalize_pipeline(Pipeline(), self.ctx, self._rng, max_len=self.max_chain_len)
             return AgentRunResult(
                 pipeline=pipe, success=False, n_turns=0,
                 n_errors=1, transcript=self.transcript,
@@ -356,9 +399,10 @@ class TreeAgent:
 
         final_pipeline: Optional[Pipeline] = None
         turn = 0
-        for turn_idx in range(1, self.max_explore_turn + 2):
+        max_total_turns = self.max_explore_turn + max(1, self.max_solution_attempts) + 1
+        for turn_idx in range(1, max_total_turns + 1):
             turn = turn_idx
-            self._log(f"--- turn {turn_idx}/{self.max_explore_turn + 1} ---")
+            self._log(f"--- turn {turn_idx}/{max_total_turns} ---")
             try:
                 response = self.llm.chat(messages)
             except Exception as e:
@@ -389,6 +433,7 @@ class TreeAgent:
                 continue
 
             if action.kind == "backtrack":
+                cur_before = self.tree.cursor
                 back = self.tree.backtrack()
                 if back is None:
                     messages.append({
@@ -400,8 +445,9 @@ class TreeAgent:
                     })
                 else:
                     parent_obs = back.obs_text
-                    removed_ops: list[str] = []
-                    # Restore sandbox state
+                    removed_ops = [
+                        s.op for s in cur_before.accumulated_steps[len(back.accumulated_steps):]
+                    ]
                     self.sandbox.restore(back.snapshot)  # type: ignore[arg-type]
                     msg = render_backtrack_hint(parent_obs, removed_ops)
                     messages.append({"role": "user", "content": msg})
@@ -426,6 +472,19 @@ class TreeAgent:
                 continue
 
             if action.kind == "operator":
+                parent_error = self._restore_parent_for_action(action)
+                if parent_error:
+                    self.n_errors += 1
+                    messages.append({
+                        "role": "user",
+                        "content": render_observation(
+                            obs_text="",
+                            error=parent_error,
+                            turn_left=self.max_explore_turn - turn_idx + 1,
+                            max_explore_turn=self.max_explore_turn,
+                        ),
+                    })
+                    continue
                 if len(steps) > self.max_chain_len:
                     self.n_errors += 1
                     messages.append({
@@ -441,7 +500,6 @@ class TreeAgent:
                         ),
                     })
                     continue
-                # Tentative legality check on cumulative pipeline
                 cur_node = self.tree.cursor
                 tentative = Pipeline(steps=cur_node.accumulated_steps + steps)
                 if not is_legal(tentative, self.ctx.task_type):
@@ -452,23 +510,35 @@ class TreeAgent:
                             obs_text="",
                             error=(
                                 "Pipeline order violates DeepPrep constraints "
-                                "(category ordering / required ops / duplicates). "
-                                "Reorder operators or backtrack."
+                                "(canonical category ordering / required ops). "
+                                "Reorder operators, use parent=\"...\", or backtrack."
                             ),
                             turn_left=self.max_explore_turn - turn_idx + 1,
                             max_explore_turn=self.max_explore_turn,
                         ),
                     })
                     continue
-                # Execute
-                exec_res = self.sandbox.execute_chain(steps)
-                if not exec_res.success:
+
+                exec_res = None
+                failed = False
+                for step in steps:
+                    exec_res = self.sandbox.execute_chain([step])
+                    if not exec_res.success:
+                        failed = True
+                        self.tree.mark_cursor_error(exec_res.error)
+                        break
+                    self.tree.add_child(
+                        new_steps=[step],
+                        snapshot=exec_res.snapshot,        # type: ignore[arg-type]
+                        obs_text=exec_res.obs.text,        # type: ignore[union-attr]
+                    )
+                if failed or exec_res is None:
                     self.n_errors += 1
                     messages.append({
                         "role": "user",
                         "content": render_observation(
                             obs_text="",
-                            error=exec_res.error,
+                            error=exec_res.error if exec_res is not None else "empty execution",
                             turn_left=self.max_explore_turn - turn_idx + 1,
                             max_explore_turn=self.max_explore_turn,
                         ),
@@ -476,33 +546,19 @@ class TreeAgent:
                     if self.n_errors >= self.max_err_cnt:
                         break
                     continue
-                # Add child node and advance cursor
-                self.tree.add_child(
-                    new_steps=steps,
-                    snapshot=exec_res.snapshot,           # type: ignore[arg-type]
-                    obs_text=exec_res.obs.text,           # type: ignore[union-attr]
+
+                turn_left = 1 if self.tree.cursor.depth >= self.max_depth else (
+                    self.max_explore_turn - turn_idx + 1
                 )
-                if self.tree.cursor.depth >= self.max_depth:
-                    # Force a solution emission at the next turn.
-                    messages.append({
-                        "role": "user",
-                        "content": render_observation(
-                            obs_text=exec_res.obs.text,   # type: ignore[union-attr]
-                            error=None,
-                            turn_left=1,
-                            max_explore_turn=self.max_explore_turn,
-                        ),
-                    })
-                else:
-                    messages.append({
-                        "role": "user",
-                        "content": render_observation(
-                            obs_text=exec_res.obs.text,   # type: ignore[union-attr]
-                            error=None,
-                            turn_left=self.max_explore_turn - turn_idx + 1,
-                            max_explore_turn=self.max_explore_turn,
-                        ),
-                    })
+                messages.append({
+                    "role": "user",
+                    "content": render_observation(
+                        obs_text=exec_res.obs.text,        # type: ignore[union-attr]
+                        error=None,
+                        turn_left=turn_left,
+                        max_explore_turn=self.max_explore_turn,
+                    ),
+                })
                 continue
 
             if action.kind == "solution":
@@ -510,11 +566,26 @@ class TreeAgent:
                 # sandbox snapshot (root) so we don't double-apply earlier ops.
                 root_snap = self.tree.nodes[self.tree.root_id].snapshot  # type: ignore[index]
                 self.sandbox.restore(root_snap)                          # type: ignore[arg-type]
-                pipe = Pipeline(steps=steps)
-                # Repair to satisfy mandatory constraints (rec mandatory ops,
-                # tabular tail). This guarantees an executable pipeline even
-                # if the LLM forgot a required operator.
-                repair(pipe, self.ctx.task_type, self.ctx)
+                pipe, report = finalize_pipeline(
+                    Pipeline(steps=steps),
+                    self.ctx,
+                    self._rng,
+                    max_len=self.max_chain_len,
+                )
+                if not report.valid:
+                    self.n_errors += 1
+                    messages.append({
+                        "role": "user",
+                        "content": render_observation(
+                            obs_text="",
+                            error="Final solution failed common validation: " + "; ".join(report.errors),
+                            turn_left=self.max_explore_turn - turn_idx + 1,
+                            max_explore_turn=self.max_explore_turn,
+                        ),
+                    })
+                    if self.n_errors >= self.max_err_cnt:
+                        break
+                    continue
                 exec_res = self.sandbox.execute_chain(pipe.steps)
                 if not exec_res.success:
                     self.n_errors += 1
@@ -559,15 +630,19 @@ class TreeAgent:
                     f"solution attempt {attempt_idx}/{self.max_solution_attempts} "
                     f"fitness={fitness} err={eval_err}"
                 )
-                # Decide whether to stop attempting solutions.
+                # Decide whether to stop attempting solutions. Solution
+                # refinement attempts are allowed even after exploration turns
+                # are exhausted; max_solution_attempts is the controlling budget.
                 attempts_done = attempt_idx >= self.max_solution_attempts
-                turn_left = self.max_explore_turn - turn_idx + 1
-                if attempts_done or turn_left <= 0:
+                if attempts_done:
                     final_pipeline = self._select_best_attempt_pipeline()
                     if final_pipeline is None:
-                        # All attempts had downstream errors; keep this
-                        # structurally-valid pipeline as the fallback.
-                        final_pipeline = pipe
+                        # All downstream attempts failed; return a common
+                        # finalized mandatory scaffold rather than a pipeline
+                        # already known to fail downstream evaluation.
+                        final_pipeline, _ = finalize_pipeline(
+                            Pipeline(), self.ctx, self._rng, max_len=self.max_chain_len
+                        )
                     self._log(
                         f"solution loop done (attempts={attempt_idx}, "
                         f"best_fitness={best_fit})."
@@ -591,9 +666,10 @@ class TreeAgent:
         # pipeline so the rest of the system can still output something.
         success = final_pipeline is not None
         if final_pipeline is None:
-            self._log("agent exhausted turns without a solution; using repair fallback.")
-            final_pipeline = Pipeline()
-            repair(final_pipeline, self.ctx.task_type, self.ctx)
+            self._log("agent exhausted turns without a solution; using common finalized fallback.")
+            final_pipeline, _ = finalize_pipeline(
+                Pipeline(), self.ctx, self._rng, max_len=self.max_chain_len
+            )
 
         # Build a serialisable view of the solution attempts (drop pipeline
         # objects so the dict is JSON-friendly).

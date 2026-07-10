@@ -1,17 +1,9 @@
-"""BAT operator catalog.
+"""BAT operator catalog rendered from shared DPPBench metadata.
 
-Re-exports the shared authoritative operator catalog so that BAT operates
-on all dppbench operators (cleaning, encoding, feature gen, sequence,
-split, sampling, rec-specific JoinTable/CreateSequence/...). This satisfies
-the requirement that BAT's operator library cover the full
-``dppbench/operators/`` set and support both tabular and recommendation
-tasks.
-
-In addition, this module exposes a *function-family* description used by
-BAT's ``IdentifyColumnFunctionsAction`` prompt, which maps the BAT-paper
-function families (join / union / groupby / pivot / unpivot / rename /
-arithmetic / dateformat / add-drop columns) onto dppbench's
-:class:`OpCategory` taxonomy.
+The original BAT action sandbox operates over a fixed transformation DSL. In
+DPPBench, BAT must use the shared operator space, so this module only renders
+``baselines.common`` metadata for prompts and function-family hints; it does
+not maintain a private operator catalog.
 """
 from __future__ import annotations
 
@@ -21,7 +13,9 @@ from baselines.common.op_spec import (
     OpSpec,
     is_mandatory,
     operators_by_category,
+    valid_targets_for,
 )
+from baselines.common.pipeline import get_category_order
 from baselines.common.utils import get_available_ops
 
 
@@ -32,27 +26,46 @@ def operators_for_task(task_type: str, include_custom: bool = False) -> list[str
     ]
 
 
+def _param_space_text(spec: OpSpec) -> str:
+    if not spec.param_space:
+        return "{}"
+    return "{" + ", ".join(
+        f"{key}={value}" for key, value in spec.param_space.items()
+    ) + "}"
+
+
 def format_op_descriptions(task_type: str) -> str:
-    """Render the operator whitelist as a markdown bullet list, grouped by
-    category. Intended for direct prompt injection into BAT's
-    ``TransformationAction`` prompt.
-    """
+    """Render a rich operator whitelist for BAT prompts."""
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
     by_cat: dict[OpCategory, list[OpSpec]] = {}
     for spec in get_available_ops(task_type):
         by_cat.setdefault(spec.category, []).append(spec)
-    lines: list[str] = []
-    for cat, specs in by_cat.items():
+
+    lines: list[str] = ["# Canonical category order"]
+    lines.append(" -> ".join(cat.value for cat in get_category_order(task_type)))
+    lines.append("")
+    lines.append("# Operators")
+    for cat in get_category_order(task_type):
+        specs = by_cat.get(cat, [])
+        if not specs:
+            continue
         lines.append(f"### {cat.value}")
-        for spec in specs:
+        for spec in sorted(specs, key=lambda s: s.op_name):
             tag = "[mandatory]" if is_mandatory(spec.op_name, task_type) else "[optional]"
-            params = list(spec.default_params.keys())
-            params_str = ", ".join(params) if params else "(no params)"
+            required = ", ".join(spec.required_params) if spec.required_params else "none"
+            defaults = ", ".join(spec.default_params.keys()) if spec.default_params else "none"
+            targets = ", ".join(valid_targets_for(spec.op_name))
+            desc = (spec.nl_description or "").strip().replace("\n", " ")
+            if len(desc) > 220:
+                desc = desc[:217] + "..."
             lines.append(
                 f"- **{spec.op_name}** {tag} task={spec.task_type} "
-                f"params=[{params_str}]"
+                f"targets=[{targets}] required=[{required}] defaults=[{defaults}] "
+                f"param_space={_param_space_text(spec)}"
             )
+            if desc:
+                lines.append(f"  description: {desc}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -67,14 +80,16 @@ FUNCTION_FAMILY_MAP: dict[str, list[OpCategory]] = {
     "arithmetic_or_feature": [OpCategory.FEATURE_GEN, OpCategory.FEATURE_TIME],
     "datetime_format": [OpCategory.DATETIME_PARSE],
     "encoding": [OpCategory.ENCODING],
-    "scale_or_normalize": [OpCategory.NORMALIZATION, OpCategory.SCALING,
-                            OpCategory.DISTRIBUTION_RESHAPE],
+    "scale_or_normalize": [
+        OpCategory.NORMALIZATION,
+        OpCategory.SCALING,
+        OpCategory.DISTRIBUTION_RESHAPE,
+    ],
     "missing_value": [OpCategory.MISSING_VALUE],
     "outlier": [OpCategory.OUTLIER],
     "deduplicate": [OpCategory.DEDUPLICATE],
     "discretize": [OpCategory.DISCRETIZATION],
-    "feature_selection": [OpCategory.FEATURE_SELECTION,
-                           OpCategory.FEATURE_REDUCTION],
+    "feature_selection": [OpCategory.FEATURE_SELECTION, OpCategory.FEATURE_REDUCTION],
     "filter_rows": [OpCategory.FILTER_ROW],
     "imbalance_or_augment": [OpCategory.IMBALANCE, OpCategory.AUGMENT],
     "sequence_modeling": [OpCategory.SEQUENCE],
@@ -83,21 +98,17 @@ FUNCTION_FAMILY_MAP: dict[str, list[OpCategory]] = {
 
 
 def function_family_descriptions(task_type: str) -> str:
-    """Render which function families are populated for a given task type
-    and which operators belong to each family. Used by the
-    ``IdentifyColumnFunctionsAction`` prompt to guide the LLM's choice of
-    column-level transformations.
-    """
+    """Render populated BAT function families for the current task type."""
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
     valid_ops = {spec.op_name for spec in get_available_ops(task_type)}
+    by_category = operators_by_category(task_type)
     lines: list[str] = []
     for family, cats in FUNCTION_FAMILY_MAP.items():
         ops_in_family: list[str] = []
         for cat in cats:
             ops_in_family.extend(
-                op for op in operators_by_category(task_type).get(cat, [])
-                if op in valid_ops
+                op for op in by_category.get(cat, []) if op in valid_ops
             )
         if not ops_in_family:
             continue

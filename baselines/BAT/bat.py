@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import random as _random
 import time
 from typing import Optional
 
@@ -30,7 +31,7 @@ from baselines.common.config import (
 )
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import is_legal, repair
+from baselines.common.pipeline import finalize_pipeline, is_legal
 from baselines.common.utils import get_data_ctx
 
 from baselines.DeepPrep.llm_client import LLMClient
@@ -52,6 +53,7 @@ CONFIG_KEYS = (
     "max_rollout_steps",
     "max_depth",
     "max_chain_len",
+    "n_action_samples",
     "exploration_constant",
     "early_stop_n_paths",
     "early_stop_eps",
@@ -89,6 +91,7 @@ class BAT:
         max_rollout_steps: Optional[int] = None,
         max_depth: Optional[int] = None,
         max_chain_len: Optional[int] = None,
+        n_action_samples: Optional[int] = None,
         exploration_constant: Optional[float] = None,
         early_stop_n_paths: Optional[int] = None,
         early_stop_eps: Optional[float] = None,
@@ -127,6 +130,9 @@ class BAT:
         )
         max_depth = resolve_config_value(cfg, "max_depth", max_depth)
         max_chain_len = resolve_config_value(cfg, "max_chain_len", max_chain_len)
+        n_action_samples = resolve_config_value(
+            cfg, "n_action_samples", n_action_samples
+        )
         exploration_constant = resolve_config_value(
             cfg, "exploration_constant", exploration_constant
         )
@@ -165,6 +171,7 @@ class BAT:
         self.max_rollout_steps = int(max_rollout_steps)
         self.max_depth = int(max_depth)
         self.max_chain_len = int(max_chain_len)
+        self.n_action_samples = int(n_action_samples)
         self.exploration_constant = float(exploration_constant)
         self.early_stop_n_paths = int(early_stop_n_paths)
         self.early_stop_eps = float(early_stop_eps)
@@ -255,7 +262,8 @@ class BAT:
                 print(f"[BAT] llm={self.llm_backend}/{self.llm_model}  "
                       f"max_rollout={self.max_rollout_steps}  "
                       f"max_depth={self.max_depth}  "
-                      f"max_chain={self.max_chain_len}")
+                      f"max_chain={self.max_chain_len}  "
+                      f"n_action_samples={self.n_action_samples}")
                 print(f"[BAT] reward alpha={self.reward_cfg.alpha} "
                       f"beta={self.reward_cfg.beta} "
                       f"gamma={self.reward_cfg.gamma}  "
@@ -284,6 +292,7 @@ class BAT:
                 max_depth=self.max_depth,
                 exploration_constant=self.exploration_constant,
                 max_chain_len=self.max_chain_len,
+                n_action_samples=self.n_action_samples,
                 early_stop_n_paths=self.early_stop_n_paths,
                 early_stop_eps=self.early_stop_eps,
                 seed=self.seed,
@@ -300,9 +309,14 @@ class BAT:
             else:
                 pipeline = Pipeline(steps=list(best_node.final_pipeline_steps))
 
-            # 4. Final structural repair (canonical order + mandatory ops)
-            repair(pipeline, ctx.task_type, ctx)
-            legal = is_legal(pipeline, ctx.task_type)
+            # 4. Final common contract: repair, budget truncation, DAG and validation.
+            pipeline, check_report = finalize_pipeline(
+                pipeline,
+                ctx,
+                _random.Random(self.seed),
+                max_len=self.max_chain_len,
+            )
+            legal = check_report.valid and is_legal(pipeline, ctx.task_type)
 
             if self.verbose:
                 print(f"[BAT] mcts done. rollouts={mcts_res.n_rollouts}  "
@@ -352,6 +366,8 @@ class BAT:
                         "best_node": best_node_dump,
                         "ops": [s.op for s in pipeline.steps],
                         "is_legal": legal,
+                        "check_errors": check_report.errors,
+                        "check_warnings": check_report.warnings,
                     },
                     f,
                     ensure_ascii=False,
@@ -384,6 +400,16 @@ class BAT:
             except Exception as e:  # pragma: no cover -- safety net
                 eval_error = f"{type(e).__name__}: {e}"
 
+        reported_fitness = eval_fitness
+        reported_metrics = eval_metrics
+        if reported_fitness is None and best_node is not None:
+            if isinstance(best_node.downstream_fitness, float):
+                reported_fitness = float(best_node.downstream_fitness)
+                reported_metrics = dict(best_node.downstream_metrics or {})
+            elif isinstance(best_node.reward_value, float):
+                reported_fitness = float(best_node.reward_value)
+                reported_metrics = dict(best_node.reward_breakdown or {})
+
         # 7. Persist final pipeline YAML + report.
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
         yaml_text = pipeline.to_yaml()
@@ -394,10 +420,10 @@ class BAT:
         if self.verbose:
             print("=" * 60)
             print(f"[BAT] DONE in {duration:.1f}s")
-            fit_str = (f"{eval_fitness:.4f}"
-                       if isinstance(eval_fitness, float) else "n/a")
+            fit_str = (f"{reported_fitness:.4f}"
+                       if isinstance(reported_fitness, float) else "n/a")
             print(f"[BAT] downstream fitness = {fit_str}")
-            print(f"[BAT] downstream metrics = {eval_metrics}")
+            print(f"[BAT] downstream metrics = {reported_metrics}")
             if eval_error:
                 print(f"[BAT] eval error: {eval_error}")
             print(f"[BAT] best pipeline saved to: {out_yaml_path}")
@@ -409,13 +435,15 @@ class BAT:
         result_dict = {
             "best_pipeline_yaml": yaml_text,
             "best_pipeline_path": out_yaml_path,
-            "best_fitness": eval_fitness,
-            "best_metrics": eval_metrics,
+            "best_fitness": reported_fitness,
+            "best_metrics": reported_metrics,
             "eval_error": eval_error,
             "n_rollouts": mcts_res.n_rollouts,
             "n_best_paths": len(mcts_res.best_paths),
             "final_pipeline_ops": [s.op for s in pipeline.steps],
             "is_legal": legal,
+            "check_errors": check_report.errors,
+            "check_warnings": check_report.warnings,
             "task_type": ctx.task_type,
             "duration_seconds": duration,
             "output_dir": self.output_dir,

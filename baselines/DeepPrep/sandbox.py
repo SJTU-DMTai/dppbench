@@ -1,9 +1,9 @@
 """Sandbox for the DeepPrep agent.
 
-Materializes intermediate table states, runs operator chains via
-``dppbench.dataset``, and produces tag-friendly observation text containing
-schema, dtype counts, and sample rows. Crucially it never trains a
-downstream model — its execution feedback is purely structural.
+Materializes intermediate table states, runs operator chains via DPPBench's
+prev-only DAG YAML, and produces tag-friendly observation text containing
+schema, dtype counts, and sample rows. Crucially it never trains a downstream
+model — its execution feedback is purely structural.
 
 Snapshot / restore is implemented with ``pickle.dumps``/``pickle.loads`` over
 the underlying ``BaseData`` object, allowing the tree agent to backtrack to
@@ -11,9 +11,9 @@ any previously visited node.
 """
 from __future__ import annotations
 
-import io
 import os
 import pickle
+import random as _random
 import shutil
 import sys
 import tempfile
@@ -21,9 +21,14 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Optional
 
-import yaml
-
-from baselines.common.pipeline import Pipeline, PipelineStep
+from baselines.common.pipeline import (
+    Pipeline,
+    PipelineStep,
+    assign_dag_structure,
+    check_pipeline,
+)
+from baselines.common.search_evaluator import subsample_data_inplace
+from baselines.common.utils import get_data_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -40,10 +45,7 @@ from baselines.common.executor import TrainingExecutor  # noqa: E402
 
 @dataclass
 class ObsState:
-    """Structured representation of a sandbox state, used both for prompts
-    and for diagnostics. ``text`` is the human-readable form rendered into
-    the LLM's observation tag.
-    """
+    """Structured representation of a sandbox state."""
 
     shape: tuple
     columns: list[str]
@@ -65,10 +67,9 @@ class ExecutionResult:
 class Sandbox:
     """Stateful sandbox for incremental operator-chain execution.
 
-    The sandbox owns a ``data`` instance produced by the dataset's
-    ``Data`` class. Subsampling is supported via ``small_n``: tabular
-    train_df / rec interaction_df are truncated immediately after
-    ``load_data()`` to keep snapshot sizes manageable.
+    The sandbox owns a mutable ``data`` instance produced by the dataset's
+    ``Data`` class. Subsampling reuses the common search-time small-N helper
+    so its behavior stays aligned with ``SearchPipelineEvaluator``.
     """
 
     SAMPLE_ROWS = 5
@@ -91,6 +92,7 @@ class Sandbox:
         self._tmpdir = tempfile.mkdtemp(prefix="deepprep_sandbox_")
         self.task_type: str = self._executor.task_type
         self.data = None  # populated by reset()
+        self._ctx = None
         self._initial_snapshot: Optional[bytes] = None
 
     # ------------------------------------------------------------------
@@ -101,8 +103,9 @@ class Sandbox:
         data = self._executor._make_configured_data_instance()
         data.load_data()
         if self.small_n > 0:
-            self._subsample(data)
+            subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)
         self.data = data
+        self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
         self._initial_snapshot = self.snapshot()
         obs = self._observe()
         return ExecutionResult(success=True, obs=obs, snapshot=self._initial_snapshot)
@@ -117,21 +120,28 @@ class Sandbox:
     def snapshot(self) -> bytes:
         if self.data is None:
             raise RuntimeError("Sandbox.snapshot() called before reset().")
-        # Use a high pickle protocol; nested DataFrames pickle fine.
         return pickle.dumps(self.data, protocol=pickle.HIGHEST_PROTOCOL)
 
     def restore(self, snap: bytes) -> ObsState:
         self.data = pickle.loads(snap)
         return self._observe()
 
+    def _context(self):
+        if self.data is None:
+            raise RuntimeError("Sandbox context requested before reset().")
+        if self._ctx is None:
+            self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
+        return self._ctx
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
     def execute_chain(self, steps: list[PipelineStep]) -> ExecutionResult:
-        """Apply ``steps`` (in order) to the current data state.
+        """Apply ``steps`` to the current data state using common DAG APIs.
 
-        On failure, the data state is rolled back to what it was BEFORE the
-        chain so callers can keep exploring from a clean parent.
+        On failure, the data state is rolled back to what it was before this
+        call. Callers that want operator-level tree nodes should call this with
+        one step at a time.
         """
         if self.data is None:
             raise RuntimeError("Sandbox.execute_chain() called before reset().")
@@ -139,22 +149,30 @@ class Sandbox:
             return ExecutionResult(success=True, obs=self._observe(), applied_ops=[])
 
         pre_snapshot = self.snapshot()
-        chain_yaml = yaml.safe_dump(
-            {"pipeline": [s.to_dict() for s in steps]},
-            sort_keys=False, default_flow_style=False,
-        )
-        chain_path = os.path.join(self._tmpdir, "chain.yaml")
-        with open(chain_path, "w", encoding="utf-8") as f:
-            f.write(chain_yaml)
-
+        pipe = Pipeline(steps=[PipelineStep.from_dict(s.to_dict()) for s in steps])
+        ctx = self._context()
         try:
+            assign_dag_structure(pipe, ctx, _random.Random(self.seed))
+            report = check_pipeline(pipe, ctx)
+            if not report.valid:
+                self.data = pickle.loads(pre_snapshot)
+                return ExecutionResult(
+                    success=False,
+                    error="Pipeline precheck failed: " + "; ".join(report.errors),
+                    applied_ops=[],
+                )
+            chain_yaml = pipe.to_yaml()
+            chain_path = os.path.join(self._tmpdir, "chain.yaml")
+            with open(chain_path, "w", encoding="utf-8") as f:
+                f.write(chain_yaml)
             self.data.run_pre_process(chain_path)
+            if self.small_n > 0:
+                subsample_data_inplace(self.data, small_n=self.small_n, seed=self.seed)
         except Exception as e:
             err = (
                 f"{type(e).__name__}: {e}\n"
                 f"{traceback.format_exc()[-400:]}"
             )
-            # Rollback
             self.data = pickle.loads(pre_snapshot)
             return ExecutionResult(success=False, error=err, applied_ops=[])
 
@@ -219,7 +237,6 @@ class Sandbox:
         lines.append("sample rows (up to 5):")
         for i, row in enumerate(head):
             lines.append(f"  row{i}: {row}")
-        # Auxiliary tables / side info
         if self.task_type == "tabular":
             aux = getattr(self.data, "auxiliary_dfs", {}) or {}
             if aux:
@@ -235,34 +252,6 @@ class Sandbox:
             if idf is not None:
                 lines.append(f"item_df.shape: {list(idf.shape)}")
         return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Subsampling helper (mirrors SearchPipelineEvaluator's logic but in-place)
-    # ------------------------------------------------------------------
-    def _subsample(self, data) -> None:
-        n = self.small_n
-        seed = self.seed
-        train_df = getattr(data, "train_df", None)
-        if train_df is not None and len(train_df) > n:
-            data.train_df = train_df.sample(n=n, random_state=seed).reset_index(drop=True)
-            test_df = getattr(data, "test_df", None)
-            if test_df is not None:
-                ntest = max(1, n // 2)
-                if len(test_df) > ntest:
-                    data.test_df = test_df.sample(n=ntest, random_state=seed).reset_index(drop=True)
-
-        inter_df = getattr(data, "interaction_df", None)
-        if inter_df is not None and len(inter_df) > n:
-            time_col = None
-            for cand in ("timestamp", "time", "ts"):
-                if cand in inter_df.columns:
-                    time_col = cand
-                    break
-            if time_col is not None:
-                sub = inter_df.sort_values(time_col).tail(n)
-                data.interaction_df = sub.reset_index(drop=True)
-            else:
-                data.interaction_df = inter_df.sample(n=n, random_state=seed).reset_index(drop=True)
 
 
 def _truncate_value(v, limit: int = 80):

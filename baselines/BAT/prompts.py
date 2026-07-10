@@ -4,7 +4,7 @@ The five prompts mirror BAT's original ``get_prompt.py`` structure
 (SchemaMatch / IdentifyColumnFunctions / Transformation / Revision /
 Reward) but are adapted to dppbench: instead of asking the LLM to write
 free-form pandas code, BAT asks the LLM to compose an operator chain
-``Op1(arg=val) --> Op2 --> ... --> Terminate`` from the shared dppbench 58-op
+``Op1(arg=val) --> Op2 --> Terminate`` from the shared DPPBench operator
 whitelist, parsable by ``baselines.DeepPrep.tree_agent.chain_to_steps``.
 """
 from __future__ import annotations
@@ -26,10 +26,13 @@ roles, one per node type:
 Strict rules:
   * Only use operator names from the injected whitelist; never invent
     operator names or write raw pandas code.
+  * Follow the canonical category order shown in the whitelist.
   * Always end the operator chain with `Terminate`.
-  * Parameters that depend on the dataset (column lists, target column,
-    auxiliary tables) may be omitted; the system fills sensible defaults
-    based on the inferred ``DataContext``.
+  * Do NOT write placeholders such as `...`; every operator must be concrete.
+  * Use keyword arguments only. Parameters that depend on the dataset (column
+    lists, target column, auxiliary tables) may be omitted; the system fills
+    sensible defaults based on the inferred ``DataContext`` and validates all
+    supplied parameters.
   * BAT scores each terminal pipeline against (i) target-instance-free
     schema similarity, (ii) optional downstream-model fitness on a small
     subsample, (iii) optional self-judgement.
@@ -157,7 +160,7 @@ ready for the downstream model. Wrap it inside
 The chain MUST end with `Terminate`. Example:
 
 <pipeline>
-JoinTable --> CreateSequence(seq_len=20) --> SampleNegative(n_negatives=1) --> Terminate
+JoinTable --> CreateSequence --> SampleNegative(n_negatives=1) --> Terminate
 </pipeline>
 """
 

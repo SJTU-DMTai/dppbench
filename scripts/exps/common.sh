@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+EXPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
+
+DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/dengjiale/dppbench/output/paper_exps}"
+GPU_ID="${GPU_ID:--1}"
+
+DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,bondora,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
+TASKS="${TASKS:-${DEFAULT_TASKS}}"
+
+DEFAULT_BASELINES="SAGA SPIO ReAct BAT DataMaster AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe"
+BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
+
+SEEDS="${SEEDS:-42 43 44}"
+MAX_PIPELINE_LEN="${MAX_PIPELINE_LEN:-10}"
+
+run_eval() {
+  local baseline="$1"
+  local seed="$2"
+  local exp_dir="$3"
+  local max_pipeline_len="${4:-}"
+  local output_csv="$5"
+
+  mkdir -p "$(dirname "${output_csv}")"
+
+  local cmd=(
+    python scripts/evaluate_baseline.py
+    --baseline "${baseline}"
+    --data_names "${TASKS}"
+    --data_dir "${DATA_DIR}"
+    --output_dir "${exp_dir}"
+    --output_csv "${output_csv}"
+    --seed "${seed}"
+    --gpu_id "${GPU_ID}"
+  )
+
+  if [[ -n "${max_pipeline_len}" ]]; then
+    cmd+=(--max_pipeline_len "${max_pipeline_len}")
+  fi
+
+  echo "[run] ${cmd[*]}"
+  (cd "${REPO_ROOT}" && "${cmd[@]}")
+}
+
+collect_csv_columns() {
+  local source_dir="$1"
+  local output_csv="$2"
+  local columns="$3"
+
+  mkdir -p "$(dirname "${output_csv}")"
+  python - "$source_dir" "$output_csv" "$columns" <<'PY'
+import csv
+import os
+import sys
+
+source_dir, output_csv, columns_arg = sys.argv[1:4]
+columns = [c.strip() for c in columns_arg.split(",") if c.strip()]
+fields = ["source_csv"] + columns
+rows = []
+
+for root, _, files in os.walk(source_dir):
+    for name in files:
+        if not name.endswith(".csv"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    rows.append({"source_csv": path, **{c: row.get(c, "") for c in columns}})
+        except Exception as exc:
+            rows.append({"source_csv": path, **{c: "" for c in columns}, "error": f"{type(exc).__name__}: {exc}"})
+
+with open(output_csv, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=fields)
+    writer.writeheader()
+    writer.writerows(rows)
+
+print(f"[collect] wrote {output_csv} rows={len(rows)}")
+PY
+}
+
+require_exp1_source() {
+  local source_dir="$1"
+  if [[ ! -d "${source_dir}" ]]; then
+    echo "[error] source directory not found: ${source_dir}" >&2
+    echo "[hint] run scripts/exps/01_exp1_1_cost_effectiveness.sh first, or set ANALYSIS_SOURCE_DIR." >&2
+    exit 1
+  fi
+}

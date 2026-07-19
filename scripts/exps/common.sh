@@ -11,27 +11,68 @@ GPU_ID="${GPU_ID:--1}"
 CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
 QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
+MAX_PIPELINE_LEN="${MAX_PIPELINE_LEN:-10}"
+MAX_EVALUATIONS="${MAX_EVALUATIONS:-1000}"
+MAX_MEMORY_MB="${MAX_MEMORY_MB:-65536}"
+MAX_GPU_MEMORY_MB="${MAX_GPU_MEMORY_MB:-81920}"
+MAX_LLM_CALLS="${MAX_LLM_CALLS:-100}"
 
 usage() {
   cat <<EOF
-Usage: $0 [--gpu_id GPU_ID] [--cpu]
+Usage: $0 [--gpu_id GPU_ID] [--cpu] [budget options]
 
 Options:
   --gpu_id GPU_ID   GPU index passed to scripts/evaluate_baseline.py.
                     Use -1 for CPU. Default: ${GPU_ID}
   --gpu_id=GPU_ID   Same as --gpu_id GPU_ID.
   --cpu             Equivalent to --gpu_id -1.
+  --max_pipeline_len N
+                    Maximum generated pipeline length. Default: ${MAX_PIPELINE_LEN:-10}
+  --max_evaluations N
+                    Maximum search-time pipeline evaluations. Default: ${MAX_EVALUATIONS}
+  --max_llm_calls N Maximum LLM calls. Default: ${MAX_LLM_CALLS}
+  --max_memory_mb N Maximum process memory in MB. Default: ${MAX_MEMORY_MB}
+  --max_gpu_memory_mb N
+                    Maximum GPU memory in MB. Default: ${MAX_GPU_MEMORY_MB}
   -h, --help        Show this help.
 
 Environment variables such as GPU_ID, DATA_DIR, OUTPUT_ROOT, TASKS,
-BASELINES, SEEDS, and MAX_PIPELINE_LEN are still supported. Command-line
---gpu_id takes precedence over GPU_ID.
+BASELINES, SEEDS, MAX_PIPELINE_LEN, MAX_EVALUATIONS, MAX_LLM_CALLS,
+MAX_MEMORY_MB, and MAX_GPU_MEMORY_MB are still supported. Command-line
+arguments take precedence.
 EOF
 }
 
 parse_common_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --max_pipeline_len|--max_evaluations|--max_llm_calls|--max_memory_mb|--max_gpu_memory_mb)
+        if [[ $# -lt 2 ]]; then
+          echo "[error] $1 requires a value." >&2
+          usage >&2
+          exit 2
+        fi
+        case "$1" in
+          --max_pipeline_len) MAX_PIPELINE_LEN="$2" ;;
+          --max_evaluations) MAX_EVALUATIONS="$2" ;;
+          --max_llm_calls) MAX_LLM_CALLS="$2" ;;
+          --max_memory_mb) MAX_MEMORY_MB="$2" ;;
+          --max_gpu_memory_mb) MAX_GPU_MEMORY_MB="$2" ;;
+        esac
+        shift 2
+        ;;
+      --max_pipeline_len=*|--max_evaluations=*|--max_llm_calls=*|--max_memory_mb=*|--max_gpu_memory_mb=*)
+        local opt="${1%%=*}"
+        local val="${1#*=}"
+        case "${opt}" in
+          --max_pipeline_len) MAX_PIPELINE_LEN="${val}" ;;
+          --max_evaluations) MAX_EVALUATIONS="${val}" ;;
+          --max_llm_calls) MAX_LLM_CALLS="${val}" ;;
+          --max_memory_mb) MAX_MEMORY_MB="${val}" ;;
+          --max_gpu_memory_mb) MAX_GPU_MEMORY_MB="${val}" ;;
+        esac
+        shift
+        ;;
       --gpu_id)
         if [[ $# -lt 2 ]]; then
           echo "[error] --gpu_id requires a value." >&2
@@ -67,11 +108,22 @@ parse_common_args "$@"
 DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
 TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
-DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
+# DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
+
+# baselines not based on LLMs
+DEFAULT_BASELINES="SAGA AutoPrep Learn2Clean AlphaClean Random DiffPrep HAIPipe"
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
 SEEDS="${SEEDS:-42 43 44}"
-MAX_PIPELINE_LEN="${MAX_PIPELINE_LEN:-10}"
+
+add_optional_arg() {
+  local -n target_cmd="$1"
+  local arg_name="$2"
+  local arg_value="$3"
+  if [[ -n "${arg_value}" ]]; then
+    target_cmd+=("${arg_name}" "${arg_value}")
+  fi
+}
 
 run_eval() {
   local baseline="$1"
@@ -99,6 +151,10 @@ run_eval() {
   if [[ -n "${max_pipeline_len}" ]]; then
     cmd+=(--max_pipeline_len "${max_pipeline_len}")
   fi
+  add_optional_arg cmd --max_evaluations "${MAX_EVALUATIONS}"
+  add_optional_arg cmd --max_memory_mb "${MAX_MEMORY_MB}"
+  add_optional_arg cmd --max_gpu_memory_mb "${MAX_GPU_MEMORY_MB}"
+  add_optional_arg cmd --max_llm_calls "${MAX_LLM_CALLS}"
 
   echo "[run] ${cmd[*]}"
   (cd "${REPO_ROOT}" && "${cmd[@]}")

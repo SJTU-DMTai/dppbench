@@ -30,7 +30,7 @@ The `<solution>` chain you write is the DELTA pipeline that will be
 applied on top of the parent node's accumulated pipeline. It MUST end with
 `Terminate`. The system will:
   1. Concatenate (parent.accumulated_steps + your delta).
-  2. Repair the pipeline structurally (mandatory ops, canonical category order).
+  2. Repair the pipeline structurally (mandatory operators and DAG links).
   3. Execute the chain in a sandbox.
   4. Train the downstream model on a small subsample and record the
      resulting fitness as ``y_v`` for this black node.
@@ -115,9 +115,8 @@ NOT something you have to implement.
 Use ONLY these operators (grouped by category):
 {op_descriptions}
 
-# Canonical Category Order (HARD constraint)
-Your accumulated pipeline MUST contain operators in non-decreasing
-category-rank order. The system rejects out-of-order chains. Order is:
+# Operator Categories (grouping only)
+Categories describe implementation areas and impose no pipeline order.
 {ordering_hint}
 
 # Limits

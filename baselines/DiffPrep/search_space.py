@@ -43,21 +43,44 @@ class ContinuousPipeline(nn.Module):
         flex: bool = False,
         init_scale: float = 1e-3,
         n_features: int | None = None,
+        feature_names: List[str] | None = None,
     ):
         super().__init__()
         self.slots = slots
         self.s = len(slots)
         self.n_features = max(int(n_features or 1), 1)
+        self.feature_names = list(feature_names or [])
         self.m_max = max((slot.n_candidates for slot in slots), default=1)
         self.flex = bool(flex) and self.s > 1
+        # Official Flex keeps the initial missing-value stage outside the
+        # learned permutation. DPPBench can have several mandatory stages, so
+        # all mandatory slots remain fixed and only optional slots are ordered.
+        self.reorderable = [i for i, slot in enumerate(slots) if not slot.mandatory]
 
         tau = torch.randn(self.s, self.n_features, self.m_max) * init_scale
+        # Official DiffPrep initializes its default transform with probability
+        # 0.5 and distributes the remaining mass over other candidates.  In the
+        # shared space Identity is the default for optional slots.
+        for i, slot in enumerate(slots):
+            if slot.n_candidates <= 1:
+                continue
+            default_idx = (
+                slot.candidates.index(IDENTITY)
+                if IDENTITY in slot.candidates
+                else 0
+            )
+            probs = torch.full(
+                (slot.n_candidates,), 0.5 / (slot.n_candidates - 1)
+            )
+            probs[default_idx] = 0.5
+            tau[i, :, : slot.n_candidates] = probs.log()
         self.register_buffer("_cand_mask", self._build_cand_mask())
         self.tau = nn.Parameter(tau)
 
-        if self.flex:
+        if self.flex and len(self.reorderable) > 1:
+            r = len(self.reorderable)
             self.theta = nn.Parameter(
-                torch.randn(self.n_features, self.s, self.s) * init_scale
+                torch.randn(self.n_features, r, r) * init_scale
             )
         else:
             self.register_parameter("theta", None)
@@ -96,7 +119,15 @@ class ContinuousPipeline(nn.Module):
         if not self.flex:
             eye = torch.eye(self.s, device=self.tau.device)
             return eye.unsqueeze(0).expand(self.n_features, self.s, self.s)
-        return sinkhorn(self.theta)
+        full = torch.eye(self.s, device=self.tau.device).unsqueeze(0).expand(
+            self.n_features, self.s, self.s
+        ).clone()
+        if self.theta is None:
+            return full
+        learned = sinkhorn(self.theta)
+        idx = torch.tensor(self.reorderable, device=self.tau.device)
+        full[:, idx[:, None], idx[None, :]] = learned
+        return full
 
     def _apply_slot(
         self,
@@ -116,7 +147,18 @@ class ContinuousPipeline(nn.Module):
                 if op_name == IDENTITY or not has_soft_impl(op_name):
                     outputs.append(out)
                 else:
-                    outputs.append(apply_soft_op(op_name, out, mask))
+                    # Official DiffPrep evaluates the real transformation in
+                    # the forward pass and supplies dTF/dX through centered
+                    # numerical differentiation. Preserve that straight-
+                    # through construction for the shared tensor adapters.
+                    eps = 1e-6
+                    value = apply_soft_op(op_name, out, mask)
+                    value_pos = apply_soft_op(op_name, out.detach() + eps, mask)
+                    value_neg = apply_soft_op(op_name, out.detach() - eps, mask)
+                    grad = ((value_pos - value_neg) / (2.0 * eps)).detach()
+                    outputs.append(
+                        value.detach() + grad * out - (grad * out).detach()
+                    )
             return softmix(beta_row, outputs)
 
         if hard_sample and self.training:

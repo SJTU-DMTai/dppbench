@@ -4,81 +4,12 @@ dag:
     table: main
   ops:
   - id: o1
-    op: ExtractDateTimeFeature
-    prev:
-    - s0
-    params:
-      cols:
-      - _hour_ts
-      features:
-      - month
-      - day
-      - dayofweek
-      - is_weekend
-      - dayofyear
-      drop_original: true
-  - id: o2
-    op: CreateLagFeature
-    prev:
-    - o1
-    params:
-      target_col: rental_count
-      lags:
-      - 1
-      - 2
-      - 3
-      - 24
-      - 168
-      group_cols:
-      - start_station_id
-      time_col: _hour_idx
-  - id: o3
-    op: CreateRollingFeature
-    prev:
-    - o2
-    params:
-      target_col: rental_count
-      windows:
-      - 6
-      - 24
-      - 168
-      aggs:
-      - mean
-      - std
-      - min
-      - max
-      group_cols:
-      - start_station_id
-      time_col: _hour_idx
-  - id: o4
-    op: CustomProcess
-    prev:
-    - o3
-    params:
-      threshold: 0.7
-      mode: drop_high_null
-  - id: o5
     op: LabelEncode
-    prev:
-    - o4
-    params:
-      cols:
-      - start_station_id
-  - id: o6
+    prev: [s0]
+  - id: o2
     op: HandleMV
-    prev:
-    - o5
+    prev: [o1]
     params:
       method: median
-  - id: o7
-    op: SortRows
-    prev:
-    - o6
-    params:
-      by:
-      - start_station_id
-      - _hour_idx
-      ascending: true
   train:
-    prev:
-    - o7
+    prev: [o2]

@@ -7,10 +7,27 @@ root to a node represent complete pipeline prefixes.
 from __future__ import annotations
 
 import uuid
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
 from baselines.common.pipeline import PipelineStep
+
+
+def canonical_step(step: PipelineStep) -> str:
+    """Stable operator-instance text used in DeepPrep parent paths."""
+    params = step.params or {}
+    if not params:
+        return step.op
+    rendered = ", ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)}"
+        for key, value in sorted(params.items())
+    )
+    return f"{step.op}({rendered})"
+
+
+def canonical_path(steps: list[PipelineStep]) -> str:
+    return " --> ".join(canonical_step(step) for step in steps) or "root"
 
 
 @dataclass
@@ -93,10 +110,20 @@ class SearchTree:
         self.cursor_id = node_id
         return self.nodes[node_id]
 
-    def find_by_prefix(self, op_names: list[str]) -> Optional[SearchNode]:
-        """Find a node whose root-to-node operator path equals ``op_names``."""
+    def find_by_steps(self, steps: list[PipelineStep]) -> Optional[SearchNode]:
+        """Find a node by its complete, parameterized root-to-node path."""
+        expected = canonical_path(steps)
         for node in self.nodes.values():
-            if [s.op for s in node.accumulated_steps] == op_names:
+            if canonical_path(node.accumulated_steps) == expected:
+                return node
+        return None
+
+    def find_by_path(self, path: str) -> Optional[SearchNode]:
+        normalized = path.strip()
+        if normalized.lower() in ("", "root", "<root>"):
+            return self.nodes.get(self.root_id) if self.root_id else None
+        for node in self.nodes.values():
+            if canonical_path(node.accumulated_steps) == normalized:
                 return node
         return None
 
@@ -121,6 +148,8 @@ class SearchTree:
                     "parent_id": n.parent_id,
                     "depth": n.depth,
                     "accumulated_ops": [s.op for s in n.accumulated_steps],
+                    "path": canonical_path(n.accumulated_steps),
+                    "accumulated_steps": [s.to_dict() for s in n.accumulated_steps],
                     "is_terminal": n.is_terminal,
                     "error": n.error,
                     "children_ids": list(n.children_ids),
@@ -130,4 +159,4 @@ class SearchTree:
         }
 
 
-__all__ = ["SearchNode", "SearchTree"]
+__all__ = ["SearchNode", "SearchTree", "canonical_step", "canonical_path"]

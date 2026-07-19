@@ -252,17 +252,16 @@ class ReActAgent:
 
     # ------------------------------------------------------------------
     def _ordering_hint(self) -> str:
-        from baselines.common.pipeline import _TABULAR_ORDER, _REC_ORDER
+        from baselines.common.pipeline import get_category_order
         from baselines.common.utils import get_available_ops
-        order = _REC_ORDER if self.ctx.task_type == "rec" else _TABULAR_ORDER
         by_cat: dict = {}
         for spec in get_available_ops(self.ctx.task_type):
             by_cat.setdefault(spec.category, []).append(spec.op_name)
         lines = []
-        for i, cat in enumerate(order):
+        for cat in get_category_order(self.ctx.task_type):
             ops = sorted(by_cat.get(cat, []))[:5]
             ops_str = ", ".join(ops) if ops else "(no ops)"
-            lines.append(f"  {i+1:>2}. {cat.name}: {ops_str}")
+            lines.append(f"  - {cat.name}: {ops_str}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -515,9 +514,8 @@ class ReActAgent:
             tentative = Pipeline(steps=copy.deepcopy(steps))
             if not is_legal(tentative, self.ctx.task_type):
                 err = (
-                    "Pipeline violates the canonical category-order / "
-                    "mandatory-op constraints. Reorder operators or pick "
-                    "different ones."
+                    "Pipeline contains an unknown or inapplicable operator. "
+                    "Pick an operator allowed for this task type."
                 )
                 self.n_errors += 1
                 obs = render_observation(

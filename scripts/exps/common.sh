@@ -8,11 +8,14 @@ REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/dengjiale/dppbench/output/paper_exps}"
 GPU_ID="${GPU_ID:--1}"
+CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large}"
+DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
+QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 
-DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,bondora,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
+DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
 TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
-DEFAULT_BASELINES="SAGA SPIO ReAct BAT DataMaster AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe"
+DEFAULT_BASELINES="SAGA SPIO ReAct BAT DataMaster AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
 SEEDS="${SEEDS:-42 43 44}"
@@ -36,6 +39,9 @@ run_eval() {
     --output_csv "${output_csv}"
     --seed "${seed}"
     --gpu_id "${GPU_ID}"
+    --ctxpipe_gte_model_path "${CTXPIPE_GTE_MODEL_PATH}"
+    --deepprep_model_path "${DEEPPREP_MODEL_PATH}"
+    --qwen3_model_path "${QWEN3_MODEL_PATH}"
   )
 
   if [[ -n "${max_pipeline_len}" ]]; then

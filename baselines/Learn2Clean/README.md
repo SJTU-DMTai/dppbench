@@ -1,6 +1,6 @@
 # Learn2Clean Baseline
 
-Tabular Q-learning + Boltzmann exploration as proposed in *Learn2Clean:
+Tabular Q-learning + fixed epsilon-greedy exploration as proposed in *Learn2Clean:
 Optimizing the Sequence of Tasks for Web Data Preparation* (Berti-Équille,
 Information Systems / WWW 2019,
 [LaureBerti/Learn2Clean](https://github.com/LaureBerti/Learn2Clean)),
@@ -23,16 +23,14 @@ Learn2Clean models pipeline construction as a Markov Decision Process:
 Each episode runs the loop:
 
 1. **Reset** -- empty pipeline, baseline AUC measured once via `repair()`.
-2. **Select action** -- Boltzmann softmax over `Q(s, ·)` with overflow guard:
-   `P(a|s) = exp(Q(s,a)/T) / Σ exp(Q(s,a_j)/T)`.
+2. **Select action** -- fixed `epsilon=0.05` epsilon-greedy: choose a random
+   action with probability 0.05, otherwise choose `argmax Q(s, ·)`.
 3. **Step** -- legality check (duplicate / no_default_params / illegal_order),
    apply via `PipelineStep`, evaluate, roll back on NaN.
 4. **Update** -- tabular Q-learning:
    `Q(s,a) ← Q(s,a) + lr * (r + γ·max Q(s',a') - Q(s,a))`.
 
-The temperature is linearly decayed from `temperature_init` to
-`temperature_final` across episodes. After all episodes the best (and top-K)
-pipelines are repaired and persisted.
+After all episodes the best (and top-K) pipelines are repaired and persisted.
 
 ## Differences from the paper
 
@@ -41,7 +39,7 @@ pipelines are repaired and persisted.
 | Operator scope | 5 cleaning families (impute, outlier, dedup, FD, normalize) | All 33 dppbench operators (cleaning + featurisation + structural + rec/seq) |
 | Tasks | Tabular cleaning | Tabular + recommendation |
 | Quality function | Per-task normalised metrics per family | Real downstream AUC delta (matches SAGA / CtxPipe / DiffPrep / AlphaClean) |
-| Exploration | Boltzmann softmax | Same (T linearly decayed 2.0 → 0.1) |
+| Exploration | Fixed ε-greedy (`epsilon=0.05`) | Same |
 | Algorithm | Tabular Q-learning | Same (dict-based Q-table) |
 | State | Set of applied ops | `(frozenset(ops), last_op_idx)` (sharable across reorderings) |
 | Reward | Task-aware ±r_max | Per-step ±r_max (AUC delta) + terminal `r_max·(final-base)` |
@@ -61,7 +59,7 @@ Outputs land in `outputs/Learn2Clean/<data_name>/`:
 
 * `best_pipeline.yaml` -- top scoring pipeline.
 * `top{1..5}_pipeline.yaml` -- top-K dump.
-* `train_history.json` -- per-episode reward / fitness / ops / temperature.
+* `train_history.json` -- per-episode reward / fitness / ops / epsilon.
 * `q_table.json` -- learned Q values keyed by encoded state.
 
 ## Files
@@ -70,8 +68,8 @@ Outputs land in `outputs/Learn2Clean/<data_name>/`:
 |---|---|
 | `operator_catalog.py` | Re-exports the shared common operator catalog from `baselines.common.op_spec`. |
 | `env.py` | `Learn2CleanEnv` -- MDP wrapper; legal/duplicate/illegal-order checks, eval-and-rollback, AUC-delta reward. |
-| `agent.py` | `TabularQAgent` -- dict-based Q-table, Boltzmann softmax (overflow-safe), JSON save/load. |
-| `trainer.py` | `Learn2CleanTrainer` -- temperature schedule, episode loop, best/top-K bookkeeping. |
+| `agent.py` | `TabularQAgent` -- dict-based Q-table, fixed epsilon-greedy policy, JSON save/load. |
+| `trainer.py` | `Learn2CleanTrainer` -- episode loop and best/top-K bookkeeping. |
 | `learn2clean.py` | Top-level orchestrator (`Learn2Clean.run()`); wires evaluator/ctx/env/agent/trainer and writes artefacts. |
 | `__init__.py` | Re-exports `Learn2Clean`. |
 | `README.md` | This document. |

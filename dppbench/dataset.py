@@ -537,8 +537,10 @@ class RecData(BaseData):
                 non_null = df[col].dropna()
                 if len(non_null) == 0:
                     continue
-                sample = non_null.iloc[0]
-                if not isinstance(sample, (int, np.integer)):
+                all_integer = non_null.map(
+                    lambda value: isinstance(value, (int, np.integer))
+                ).all()
+                if not all_integer:
                     need_remap = True
                     break
                 col_min = int(non_null.min())

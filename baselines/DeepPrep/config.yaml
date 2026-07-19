@@ -1,17 +1,21 @@
-# llm_backend (default: api): LLM backend, either api or local.
-llm_backend: api
-# llm_model (default: gpt-4o-mini): Model name or local model path.
-llm_model: gpt-4o-mini
+# Use the released DeepPrep checkpoint directly. Set llm_model here or export
+# DEEPPREP_MODEL; a base Qwen/OpenAI model is not an equivalent replacement.
+llm_backend: local
+llm_model: null
 # api_key (default: null): Loaded from project apikeys.json; keep null.
 api_key: null
 # base_url (default: null): Loaded from project apikeys.json; keep null.
 base_url: null
-# temperature (default: 0.7): LLM sampling temperature.
-temperature: 0.7
+# Paper inference setting.
+temperature: 0.01
+top_p: 1.0
 # max_tokens (default: 2048): Maximum tokens per LLM response.
 max_tokens: 2048
 # timeout (default: 600): LLM request timeout in seconds.
 timeout: 600
+# Hugging Face checkpoint loading settings.
+torch_dtype: auto
+device_map: auto
 # max_explore_turn (default: 5): Maximum tree-agent exploration turns.
 max_explore_turn: 5
 # max_chain_len (default: 6): Maximum operator chain length.
@@ -24,12 +28,11 @@ max_err_cnt: 5
 small_n: 0
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
 eval_full: true
-# downstream_feedback (default: true): Enable in-loop downstream feedback.
-downstream_feedback: true
-# downstream_eval_n (default: 3000): In-loop downstream eval subsample; 0 is full.
-downstream_eval_n: 3000
-# max_solution_attempts (default: 3): Maximum solution attempts with feedback.
-max_solution_attempts: 3
+# Deprecated compatibility keys. Official-style inference does not feed
+# downstream model scores back to the DeepPrep policy.
+downstream_feedback: false
+downstream_eval_n: 0
+max_solution_attempts: 1
 # seed (default: 42): Random seed for agent and evaluation.
 seed: 42
 # fast_train (default: true): Enable search-time fast training overrides.

@@ -7,74 +7,52 @@ dag:
   ops:
   - id: o1
     op: Deduplicate
-    prev:
-    - s1
+    prev: [s1]
     params:
-      subset:
-      - item_id
+      subset: [item_id]
       keep: first
   - id: o2
-    op: HandleMV
-    prev:
-    - o1
-    params:
-      cols:
-      - item_brand
-      na_values:
-      - ''
-      action: mark
-  - id: o3
     op: JoinTable
-    prev:
-    - s0
-    - o2
+    prev: [s0, o1]
     params:
       user_col: user_id
       item_col: item_id
       how: left
       method: rec
-  - id: o4
+  - id: o3
     op: HandleMV
-    prev:
-    - o3
+    prev: [o2]
     params:
-      cols:
-      - item_brand
+      cols: [item_brand]
       method: constant
       fill_value: 0
       action: impute
-  - id: o5
-    op: FilterKCore
-    prev:
-    - o4
+  - id: o4
+    op: FilterSample
+    prev: [o3]
     params:
-      user_col: user_id
-      item_col: item_id
-      k: 2
-  - id: o6
+      subset: [user_id, item_id, rating]
+  - id: o5
     op: CreateSequence
-    prev:
-    - o5
+    prev: [o4]
     params:
       user_col: user_id
       item_col: item_id
       time_col: timestamp
       seq_col: item_id_seq
       max_len: 20
-  - id: o7
+  - id: o6
     op: CreateSequence
-    prev:
-    - o6
+    prev: [o5]
     params:
       user_col: user_id
       item_col: item_brand
       time_col: timestamp
       seq_col: cate_id_seq
       max_len: 20
-  - id: o8
+  - id: o7
     op: SampleNegative
-    prev:
-    - o7
+    prev: [o6]
     params:
       user_col: user_id
       item_col: item_id
@@ -84,5 +62,4 @@ dag:
       negative_label: 0
       seed: 42
   train:
-    prev:
-    - o8
+    prev: [o7]

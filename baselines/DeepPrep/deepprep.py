@@ -2,18 +2,14 @@
 
 Compared to :class:`baselines.SAGA.saga.SAGA` and
 :class:`baselines.CtxPipe.ctxpipe.CtxPipe`, DeepPrep replaces the search
-strategy with an LLM-driven *tree-based agentic reasoning* loop. The
-:class:`TreeAgent` observes sandbox structural feedback during exploration
-(``<operator>``); when ``downstream_feedback`` is enabled, every
-successful ``<solution>`` attempt also receives a small-data downstream
-metric so the LLM can iteratively refine the pipeline. A final full-data
-re-evaluation is still produced via :class:`DeepPrepEvaluator`.
+strategy with DeepPrep's execution-grounded ``<plan>/<expand>/<execute>/
+<answer>`` tree protocol. Downstream evaluation happens only after inference
+and is never fed back to the model.
 """
 from __future__ import annotations
 
 import json
 import os
-import random as _random
 import time
 from typing import Optional
 
@@ -23,8 +19,7 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import finalize_pipeline, is_legal
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
 from baselines.common.utils import get_data_ctx
 
 from .evaluator import DeepPrepEvaluator
@@ -39,8 +34,11 @@ CONFIG_KEYS = (
     "api_key",
     "base_url",
     "temperature",
+    "top_p",
     "max_tokens",
     "timeout",
+    "torch_dtype",
+    "device_map",
     "max_explore_turn",
     "max_chain_len",
     "max_depth",
@@ -69,8 +67,11 @@ class DeepPrep:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
+        torch_dtype: Optional[str] = None,
+        device_map: Optional[str] = None,
         # ---- Tree search ----
         max_explore_turn: Optional[int] = None,
         max_chain_len: Optional[int] = None,
@@ -99,8 +100,11 @@ class DeepPrep:
         api_key = resolve_config_value(cfg, "api_key", api_key)
         base_url = resolve_config_value(cfg, "base_url", base_url)
         temperature = resolve_config_value(cfg, "temperature", temperature)
+        top_p = resolve_config_value(cfg, "top_p", top_p)
         max_tokens = resolve_config_value(cfg, "max_tokens", max_tokens)
         timeout = resolve_config_value(cfg, "timeout", timeout)
+        torch_dtype = resolve_config_value(cfg, "torch_dtype", torch_dtype)
+        device_map = resolve_config_value(cfg, "device_map", device_map)
         max_explore_turn = resolve_config_value(
             cfg, "max_explore_turn", max_explore_turn
         )
@@ -130,8 +134,11 @@ class DeepPrep:
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = float(temperature)
+        self.top_p = float(top_p)
         self.max_tokens = int(max_tokens)
         self.timeout = int(timeout)
+        self.torch_dtype = str(torch_dtype)
+        self.device_map = str(device_map)
 
         self.max_explore_turn = int(max_explore_turn)
         self.max_chain_len = int(max_chain_len)
@@ -140,7 +147,9 @@ class DeepPrep:
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
-        self.downstream_feedback = bool(downstream_feedback)
+        # Kept as accepted constructor/config fields for runner compatibility.
+        # Official-style inference never feeds downstream scores to the agent.
+        self.downstream_feedback = False
         self.downstream_eval_n = int(downstream_eval_n) if downstream_eval_n else 0
         self.max_solution_attempts = int(max_solution_attempts)
         self.seed = int(seed)
@@ -163,8 +172,11 @@ class DeepPrep:
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=self.temperature,
+            top_p=self.top_p,
             max_tokens=self.max_tokens,
             timeout=self.timeout,
+            torch_dtype=self.torch_dtype,
+            device_map=self.device_map,
         )
 
     def _infer_context(self, sandbox: Sandbox) -> DataContext:
@@ -175,31 +187,6 @@ class DeepPrep:
     # ------------------------------------------------------------------
     def run(self) -> dict:
         t0 = time.time()
-
-        # Build the agent-side downstream evaluator FIRST so it survives the
-        # sandbox try/finally below (it owns its own TrainingExecutor and is
-        # decoupled from the sandbox's data instance).
-        agent_evaluator: Optional[DeepPrepEvaluator] = None
-        agent_eval_fn = None
-        if self.downstream_feedback:
-            agent_evaluator = DeepPrepEvaluator(
-                task_dir=self.task_dir,
-                data_name=self.data_name,
-                data_dir=self.data_dir,
-                small_n=self.downstream_eval_n,
-                seed=self.seed,
-                verbose=False,
-                device=self.device,
-                model_name=self.model_name,
-            )
-            agent_evaluator.set_evaluate_std_test(False)
-            if self.fast_train:
-                agent_evaluator.set_fast_mode(True)
-
-            def _agent_eval_fn(pipeline: Pipeline):
-                return agent_evaluator.evaluate_for_agent(pipeline)
-
-            agent_eval_fn = _agent_eval_fn
 
         # 1. Sandbox (also drives schema-based context inference)
         sandbox = Sandbox(
@@ -225,10 +212,7 @@ class DeepPrep:
                       f"max_chain={self.max_chain_len}  "
                       f"max_depth={self.max_depth}")
                 print(f"[DeepPrep] small_n={self.small_n or 'OFF'}  "
-                      f"eval_full={self.eval_full}  "
-                      f"downstream_feedback={self.downstream_feedback}  "
-                      f"downstream_eval_n={self.downstream_eval_n or 'OFF'}  "
-                      f"max_solution_attempts={self.max_solution_attempts}")
+                      f"eval_full={self.eval_full}  downstream_feedback=OFF")
                 print("=" * 60)
 
             # 2. LLM + Agent
@@ -243,27 +227,21 @@ class DeepPrep:
                 max_err_cnt=self.max_err_cnt,
                 verbose=self.verbose,
                 seed=self.seed,
-                downstream_evaluator=agent_eval_fn,
-                max_solution_attempts=self.max_solution_attempts,
             )
             run = agent.run()
             pipeline: Pipeline = run.pipeline
 
-            # 3. Final common contract: repair, budget, DAG assignment, validation.
-            pipeline, check_report = finalize_pipeline(
-                pipeline,
-                ctx,
-                _random.Random(self.seed),
-                max_len=self.max_chain_len,
-            )
-            legal = check_report.valid and is_legal(pipeline, ctx.task_type)
+            # 3. Assign serialization-only DAG metadata, then hard-validate.
+            # No semantic repair or mandatory operator insertion is allowed.
+            assign_dag_structure(pipeline, ctx)
+            check_report = check_pipeline(pipeline, ctx)
+            legal = check_report.valid
 
             if self.verbose:
                 print(f"[DeepPrep] agent done. success={run.success}  "
                       f"turns={run.n_turns}  errors={run.n_errors}  "
                       f"steps={[s.op for s in pipeline.steps]}  "
-                      f"legal={legal}  "
-                      f"solution_attempts={len(run.solution_attempts)}")
+                      f"legal={legal}")
         finally:
             sandbox.cleanup()
 
@@ -291,16 +269,8 @@ class DeepPrep:
             except Exception as e:  # pragma: no cover - safety net
                 eval_error = f"{type(e).__name__}: {e}"
 
-        agent_best = None
-        for attempt in run.solution_attempts:
-            if isinstance(attempt.get("fitness"), float):
-                if agent_best is None or attempt["fitness"] > agent_best["fitness"]:
-                    agent_best = attempt
         reported_fitness = eval_fitness
         reported_metrics = eval_metrics
-        if reported_fitness is None and agent_best is not None:
-            reported_fitness = float(agent_best["fitness"])
-            reported_metrics = dict(agent_best.get("metrics") or {})
 
         # 5. Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -321,10 +291,10 @@ class DeepPrep:
                     "ops": [s.op for s in pipeline.steps],
                     "check_errors": check_report.errors,
                     "check_warnings": check_report.warnings,
-                    "solution_attempts": run.solution_attempts,
+                    "protocol": "plan-expand-execute-answer",
+                    "checkpoint": self.llm_model,
+                    "llm_runtime": llm.runtime_metadata(),
                     "downstream_feedback": self.downstream_feedback,
-                    "downstream_eval_n": self.downstream_eval_n,
-                    "max_solution_attempts": self.max_solution_attempts,
                 },
                 f,
                 ensure_ascii=False,

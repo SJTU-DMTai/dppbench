@@ -10,10 +10,6 @@ eval_full: true
 gamma: 0.9
 # lr (default: 0.5): Q-table learning rate.
 lr: 0.5
-# temperature_init (default: 2.0): Initial Boltzmann exploration temperature.
-temperature_init: 2.0
-# temperature_final (default: 0.1): Final Boltzmann exploration temperature.
-temperature_final: 0.1
 # reward_max (default: 1.0): Magnitude for positive/negative step rewards.
 reward_max: 1.0
 # illegal_reward (default: -1.0): Reward assigned to illegal or failed actions.

@@ -11,6 +11,7 @@ from baselines.common.op_spec import (
 )
 from baselines.common.pipeline import get_category_order
 from baselines.common.utils import get_available_ops
+from .operator_adapter import ORIGINAL_OPERATOR_ALIASES
 
 
 def operators_for_task(task_type: str, include_custom: bool = False) -> list[str]:
@@ -34,7 +35,7 @@ def format_op_descriptions(task_type: str) -> str:
 
     The prompt intentionally exposes required params, allowed values, category,
     targets and descriptions so the LLM is less likely to invent parameter
-    names or violate canonical order.
+    names or violate the shared operator contract.
     """
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
@@ -42,8 +43,14 @@ def format_op_descriptions(task_type: str) -> str:
     for spec in get_available_ops(task_type):
         by_cat.setdefault(spec.category, []).append(spec)
 
-    lines: list[str] = ["# Canonical category order"]
-    lines.append(" -> ".join(cat.value for cat in get_category_order(task_type)))
+    lines: list[str] = ["# Operator categories (grouping only; no required order)"]
+    lines.append(", ".join(cat.value for cat in get_category_order(task_type)))
+    lines.append("")
+    lines.append("# Released-checkpoint aliases accepted by the adapter")
+    lines.extend(
+        f"- {source} -> {target}"
+        for source, target in sorted(ORIGINAL_OPERATOR_ALIASES.items())
+    )
     lines.append("")
     lines.append("# Operators")
     for cat in get_category_order(task_type):

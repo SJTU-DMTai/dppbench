@@ -27,8 +27,8 @@ from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
-    finalize_pipeline,
-    is_legal,
+    assign_dag_structure,
+    check_pipeline,
 )
 
 from . import prompts
@@ -46,10 +46,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-_PIPE_RE = re.compile(r"<pipeline>(.*?)</pipeline>", re.DOTALL)
-_SCHEMA_MATCH_RE = re.compile(r"<schema_match>(.*?)</schema_match>", re.DOTALL)
-_COL_FUNC_RE = re.compile(r"<column_functions>(.*?)</column_functions>",
-                           re.DOTALL)
+_PIPE_RE = re.compile(r"<pipeline>(.*?)</pipeline>", re.DOTALL)  # legacy
+_JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
 
 def _extract(pattern: re.Pattern, text: str) -> Optional[str]:
@@ -57,7 +55,7 @@ def _extract(pattern: re.Pattern, text: str) -> Optional[str]:
     return m.group(1).strip() if m else None
 
 
-def _safe_json_loads(s: Optional[str]) -> Optional[dict]:
+def _safe_json_loads(s: Optional[str]):
     if not s:
         return None
     s = s.strip()
@@ -65,6 +63,40 @@ def _safe_json_loads(s: Optional[str]) -> Optional[dict]:
         return json.loads(s)
     except Exception:
         return None
+
+
+def _extract_json_response(text: str):
+    match = _JSON_BLOCK_RE.search(text or "")
+    payload = match.group(1).strip() if match else (text or "").strip().strip("`")
+    return _safe_json_loads(payload)
+
+
+def _pipeline_from_response(text: str) -> Optional[str]:
+    data = _extract_json_response(text)
+    if isinstance(data, dict):
+        value = data.get("pipeline", data.get("code"))
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " --> ".join(str(item) for item in value)
+    # Compatibility with trajectories produced by the earlier adapter.
+    return _extract(_PIPE_RE, text)
+
+
+def _repair_pipeline_response(text: str, action_ctx: "ActionContext") -> Optional[str]:
+    chain = _pipeline_from_response(text)
+    if chain:
+        return chain
+    repair_prompt = (
+        "Convert the following response into valid JSON with exactly two keys: "
+        "chain_of_thought_reasoning and pipeline. pipeline must be one DPPBench "
+        "operator chain ending in Terminate. Return JSON only.\n\n" + (text or "")
+    )
+    try:
+        repaired = action_ctx.llm.chat([{"role": "user", "content": repair_prompt}])
+    except Exception:
+        return None
+    return _pipeline_from_response(repaired)
 
 
 def _summary_text(ctx: DataContext) -> str:
@@ -121,30 +153,28 @@ def _sandbox_columns(sandbox: "Sandbox") -> list[str]:
 
 
 def _column_similarity(actual: list[str], expected: list[str]) -> float:
-    if not expected and not actual:
+    """Official BAT target-column recall reward."""
+    if not expected:
         return 1.0
     a = set(actual)
     e = set(expected)
-    if not (a or e):
-        return 1.0
-    inter = a & e
-    union = a | e
-    return float(len(inter)) / float(len(union)) if union else 0.0
+    return float(len(a & e)) / float(len(e))
 
 
 def _score_steps_structurally(
     steps: list[PipelineStep],
     action_ctx: "ActionContext",
 ) -> tuple[list[PipelineStep], Optional[bool], Optional[float], Optional[str]]:
-    """Finalize and execute a candidate to provide BAT EPO feedback."""
-    pipe, report = finalize_pipeline(
-        Pipeline(steps=list(steps)),
-        action_ctx.ctx,
-        action_ctx.rng,
-        max_len=action_ctx.max_chain_len,
-    )
+    """Execute the unmodified candidate to provide BAT EPO feedback."""
+    if len(steps) > action_ctx.max_chain_len:
+        return list(steps), False, 0.0, (
+            f"pipeline length {len(steps)} exceeds {action_ctx.max_chain_len}"
+        )
+    pipe = Pipeline(steps=list(steps))
+    assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+    report = check_pipeline(pipe, action_ctx.ctx, require_mandatory=False)
     if not report.valid:
-        return list(pipe.steps), False, 0.0, "; ".join(report.errors)
+        return list(steps), False, 0.0, "; ".join(report.errors)
     initial = getattr(action_ctx.sandbox, "_initial_snapshot", None)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
@@ -158,7 +188,7 @@ def _score_steps_structurally(
     sim = _column_similarity(actual, expected)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
-    return list(pipe.steps), sim >= 0.99, sim, None
+    return list(steps), set(actual) == set(expected), sim, None
 
 
 # ---------------------------------------------------------------------------
@@ -209,24 +239,25 @@ class SchemaMatchAction(BaseAction):
             obs_text=obs.text,
             expected_target_columns=expected_target_columns(ctx),
         )
-        try:
-            response = action_ctx.llm.chat(
-                [
-                    {"role": "system", "content": prompts.SYSTEM_BAT},
-                    {"role": "user", "content": prompt},
-                ]
-            )
-        except Exception as e:
-            response = f"<schema_match>{{}}</schema_match>  (llm_error: {e})"
-        sm_json = _safe_json_loads(_extract(_SCHEMA_MATCH_RE, response)) or {}
-        child = MCTSNode(
-            node_type=MCTSNodeType.SCHEMA_MATCH,
-            parent=parent,
-            parent_action=self,
-            depth=parent.depth + 1,
-            schema_match=sm_json,
-        )
-        return [child]
+        nodes = []
+        for _ in range(max(1, action_ctx.n_action_samples)):
+            try:
+                response = action_ctx.llm.chat(
+                    [
+                        {"role": "system", "content": prompts.SYSTEM_BAT},
+                        {"role": "user", "content": prompt},
+                    ]
+                )
+            except Exception:
+                response = "[]"
+            nodes.append(MCTSNode(
+                node_type=MCTSNodeType.SCHEMA_MATCH,
+                parent=parent,
+                parent_action=self,
+                depth=parent.depth + 1,
+                schema_match=_extract_json_response(response) or [],
+            ))
+        return nodes
 
 
 # ---------------------------------------------------------------------------
@@ -254,24 +285,29 @@ class IdentifyColumnFunctionsAction(BaseAction):
             schema_match_text=schema_match_text,
             family_descriptions=function_family_descriptions(ctx.task_type),
         )
-        try:
-            response = action_ctx.llm.chat(
-                [
-                    {"role": "system", "content": prompts.SYSTEM_BAT},
-                    {"role": "user", "content": prompt},
-                ]
+        responses = []
+        for _ in range(max(1, action_ctx.n_action_samples)):
+            try:
+                response = action_ctx.llm.chat(
+                    [
+                        {"role": "system", "content": prompts.SYSTEM_BAT},
+                        {"role": "user", "content": prompt},
+                    ]
+                )
+            except Exception as exc:
+                response = f"LLM error while identifying functions: {exc}"
+            if response not in responses:
+                responses.append(response)
+        return [
+            MCTSNode(
+                node_type=MCTSNodeType.IDENTIFY_COLUMN_FUNCTIONS,
+                parent=parent,
+                parent_action=self,
+                depth=parent.depth + 1,
+                column_functions=response,
             )
-        except Exception as e:
-            response = f"<column_functions>{{}}</column_functions>  (llm_error: {e})"
-        cf_json = _safe_json_loads(_extract(_COL_FUNC_RE, response)) or {}
-        child = MCTSNode(
-            node_type=MCTSNodeType.IDENTIFY_COLUMN_FUNCTIONS,
-            parent=parent,
-            parent_action=self,
-            depth=parent.depth + 1,
-            column_functions=json.dumps(cf_json),
-        )
-        return [child]
+            for response in responses
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +350,8 @@ class TransformationAction(BaseAction):
                     ]
                 )
             except Exception as e:
-                response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
-            chain_str = _extract(_PIPE_RE, response) or ""
+                response = ""
+            chain_str = _repair_pipeline_response(response, action_ctx) or ""
             steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
             if parse_error is None:
                 steps, columns_match, column_similarity, exec_error = _score_steps_structurally(
@@ -379,8 +415,8 @@ class TransformationRevisionAction(BaseAction):
                     ]
                 )
             except Exception as e:
-                response = f"<pipeline>Terminate</pipeline>  (llm_error: {e})"
-            chain_str = _extract(_PIPE_RE, response) or ""
+                response = ""
+            chain_str = _repair_pipeline_response(response, action_ctx) or ""
             steps, parse_error = _parse_chain_safe(chain_str, ctx, action_ctx.rng)
             if parse_error is None:
                 steps, columns_match, column_similarity, exec_error = _score_steps_structurally(
@@ -416,22 +452,18 @@ class EndAction(BaseAction):
     target_node_type = MCTSNodeType.END
 
     def create_children_nodes(self, parent, action_ctx):
-        # Materialise the final pipeline by walking up the path and taking
-        # the most recent operator chain (revision wins), then apply the
-        # shared DPPBench execution contract before reward computation.
+        # Preserve the exact LLM candidate. DPPBench legality is a hard gate;
+        # unlike finalize_pipeline(), this never inserts or rewrites operators.
         steps = parent.latest_pipeline_steps()
-        pipe, report = finalize_pipeline(
-            Pipeline(steps=list(steps)),
-            action_ctx.ctx,
-            action_ctx.rng,
-            max_len=action_ctx.max_chain_len,
-        )
+        pipe = Pipeline(steps=list(steps))
+        assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+        report = check_pipeline(pipe, action_ctx.ctx)
         child = MCTSNode(
             node_type=MCTSNodeType.END,
             parent=parent,
             parent_action=self,
             depth=parent.depth + 1,
-            final_pipeline_steps=list(pipe.steps),
+            final_pipeline_steps=list(steps),
             exec_error=None if report.valid else "; ".join(report.errors),
         )
         return [child]
@@ -448,7 +480,7 @@ def _parse_chain_safe(
     if not chain_str.strip():
         return [], "empty pipeline chain"
     try:
-        steps = chain_to_steps(chain_str, ctx, rng)
+        steps = chain_to_steps(chain_str, ctx, rng, strict_instances=True)
     except ChainParseError as e:
         return [], f"ChainParseError: {e}"
     except Exception as e:  # pragma: no cover - defensive

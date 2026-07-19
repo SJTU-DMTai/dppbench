@@ -1,20 +1,20 @@
 """BAT reward model.
 
-The original BAT reward only looked at *column similarity* between the
-synthesized table and the (target-instance-free) target schema. dppbench
-additionally requires a downstream ML signal, so this reward fuses three
-sources:
+The default path follows official BAT: terminal reward is target-column
+recall computed after executing the candidate. Optional DPPBench ablations
+may explicitly enable downstream or LLM-judge terms.
 
   reward = alpha * column_similarity
          + beta  * downstream_metric  (LightGBM AUC / DIN AUC)
          + gamma * llm_judge          (optional, in {0, 0.5, 1})
 
-with ``alpha + beta + gamma`` typically equal to 1.0. Setting
-``use_downstream=False`` recovers the original BAT semantics exactly.
+The shared downstream metric remains the final benchmark evaluator and is not
+fed into MCTS by default.
 """
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -41,6 +41,15 @@ _REWARD_TAG_RE = re.compile(r"<reward>(.*?)</reward>", re.DOTALL)
 def _parse_llm_reward(text: str) -> Optional[float]:
     m = _REWARD_TAG_RE.search(text or "")
     raw = (m.group(1) if m else text or "").strip()
+    block = re.search(r"```json\s*(.*?)\s*```", raw, re.DOTALL)
+    if block:
+        raw = block.group(1).strip()
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            raw = str(parsed.get("reward", "0"))
+    except Exception:
+        pass
     try:
         v = float(raw)
     except Exception:
@@ -54,12 +63,12 @@ def _parse_llm_reward(text: str) -> Optional[float]:
 
 @dataclass
 class BATRewardConfig:
-    alpha: float = 0.4
-    beta: float = 0.5
-    gamma: float = 0.1
-    use_downstream: bool = True
+    alpha: float = 1.0
+    beta: float = 0.0
+    gamma: float = 0.0
+    use_downstream: bool = False
     use_llm_judge: bool = False
-    columns_match_threshold: float = 0.99
+    columns_match_threshold: float = 1.0  # compatibility; exact equality is used
 
 
 class BATReward:
@@ -109,7 +118,7 @@ class BATReward:
                 expected = expected_target_columns(self.ctx)
                 actual = _sandbox_columns(self.sandbox)
                 column_similarity = _column_similarity(actual, expected)
-                columns_match = column_similarity >= cfg.columns_match_threshold
+                columns_match = set(actual) == set(expected)
 
         end_node.exec_error = exec_error
         end_node.column_similarity = column_similarity

@@ -2,8 +2,7 @@
 
 Used both:
 * at the very end of ``DeepPrep.run()`` to score the pipeline (full data),
-* and (when downstream feedback is enabled) inside the agent loop after
-  every successful ``<solution>`` to give the LLM a real downstream metric.
+* after DeepPrep inference for DPPBench reporting.
 """
 from __future__ import annotations
 

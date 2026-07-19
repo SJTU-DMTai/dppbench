@@ -1,85 +1,71 @@
-"""Greedy inference for component-level CtxPipe."""
+"""Greedy inference using CtxPipe's logical and component policies."""
 from __future__ import annotations
-
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from baselines.common.pipeline import Pipeline
-    from baselines.common.search_evaluator import SearchPipelineEvaluator
-
-    from .agent import DQNAgent
-    from .env import PipelineEnv
 
 
 class CtxPipeTester:
     def __init__(self, verbose: bool = True) -> None:
         self.verbose = bool(verbose)
 
-    def run(
-        self,
-        agent: "DQNAgent",
-        env: "PipelineEnv",
-        eval_full_with: Optional["SearchPipelineEvaluator"] = None,
-    ) -> dict:
-        state = env.reset()
-        done = False
-        rl_reward = 0.0
-        rl_info: dict = {}
-        trace: list[dict] = []
-
-        while not done:
+    def run(self, agent, env, eval_full_with=None) -> dict:
+        env.reset(0)
+        logical_id, _ = agent.select_logical(
+            env.logical_state(), env.context_embedding(), epsilon=0.0,
+            context_factory=env.context_embedding,
+        )
+        env.set_logical_pipeline(logical_id)
+        trace = []
+        info = {}
+        while not env.done:
             component = env.current_component_id()
-            if component is None:
-                break
-            mask = env.action_mask()
-            action = agent.select_action(component, state, eps=0.0, action_mask=mask)
-            next_state, reward, done, info = env.step(action)
+            state = env.get_state()
+            context = env.context_embedding()
+            tried = []
+            while True:
+                action, _ = agent.select_component(
+                    component, state, context, epsilon=0.0, tried=tried,
+                    context_factory=env.context_embedding,
+                )
+                tried.append(action)
+                _, reward, done, info = env.step(action)
+                if not info.get("retry") or len(tried) >= env.component(component).action_dim:
+                    break
             trace.append({
-                "component": component,
-                "category": info.get("category"),
-                "action": int(action),
+                "component": component, "action": int(action),
                 "selected": info.get("op_added") or info.get("action_name"),
-                "reason": info.get("reason"),
-                "reward": float(reward),
+                "reward": float(reward), "error": info.get("error"),
             })
-            state = next_state
-            rl_reward += float(reward)
-            if done:
-                rl_info = info
+            if info.get("retry"):
+                break
 
-        pipeline: "Pipeline" = env.current_pipeline()
+        pipeline = env.current_pipeline()
         out = {
-            "pipeline": pipeline,
-            "pipeline_yaml": pipeline.to_yaml(),
-            "ops": [s.op for s in pipeline.steps],
-            "rl_reward": rl_reward,
-            "rl_success": bool(rl_info.get("success", False)),
-            "rl_fitness": rl_info.get("fitness"),
-            "rl_metrics": rl_info.get("metrics") or {},
-            "rl_error": rl_info.get("error"),
-            "trace": trace,
+            "pipeline": pipeline, "pipeline_yaml": pipeline.to_yaml(),
+            "ops": pipeline.op_names(), "rl_reward": info.get("fitness", reward),
+            "rl_success": bool(info.get("success", False)),
+            "rl_fitness": info.get("fitness"),
+            "rl_metrics": dict(info.get("metrics") or {}),
+            "rl_error": info.get("error"), "trace": trace,
+            "logical_pipeline_id": logical_id,
+            "logical_order": list(env.logical_pipelines[logical_id]),
         }
-
         if eval_full_with is not None:
-            if self.verbose:
-                print(f"[CtxPipe] re-evaluating final pipeline on full data "
-                      f"({len(pipeline)} ops)")
-            full_ev = eval_full_with.evaluate(pipeline)
-            out["full_success"] = bool(full_ev.success)
-            out["full_fitness"] = float(full_ev.fitness) if full_ev.success else None
-            out["full_metrics"] = dict(full_ev.metrics or {})
-            out["full_error"] = full_ev.error
-            out["fitness"] = out["full_fitness"]
-            out["metrics"] = out["full_metrics"]
-            out["error"] = full_ev.error
+            result = eval_full_with.evaluate(pipeline)
+            out.update({
+                "fitness": float(result.fitness) if result.success else None,
+                "metrics": dict(result.metrics or {}), "error": result.error,
+                "full_success": bool(result.success),
+            })
         else:
-            out["fitness"] = out["rl_fitness"]
-            out["metrics"] = out["rl_metrics"]
-            out["error"] = out["rl_error"]
-
+            out.update({
+                "fitness": out["rl_fitness"], "metrics": out["rl_metrics"],
+                "error": out["rl_error"],
+            })
         if self.verbose:
-            fit = out.get("fitness")
-            fit_str = f"{fit:.4f}" if isinstance(fit, float) else "n/a"
-            print(f"[CtxPipe] final ops={out['ops']}  fitness={fit_str}")
-
+            print(
+                f"[CtxPipe] logical_pipeline={logical_id} "
+                f"order={out['logical_order']} ops={out['ops']} fitness={out['fitness']}"
+            )
         return out
+
+
+__all__ = ["CtxPipeTester"]

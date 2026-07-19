@@ -49,7 +49,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 TASK_REGISTRY = {
     # --- tabular binary classification ---------------------------------
     "berka": ("dppbench.tasks.berka.berka_data.BerkaData", "binary"),
-    "bondora": ("dppbench.tasks.bondora.bondora_data.BondoraData", "binary"),
     "default_credit": (
         "dppbench.tasks.default_credit.default_credit_data.DefaultCreditData",
         "binary",

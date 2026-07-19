@@ -7,12 +7,11 @@ Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep` and
      sandbox (re-using DeepPrep's :class:`Sandbox`).
   2. Reset the sandbox and infer the dataset's :class:`DataContext` via
      SAGA's helpers (so both tabular and rec datasets are supported).
-  3. Run the MCTS solver over BAT's DPAS action set; the
-     :class:`BATReward` fuses the original BAT column-similarity feedback
-     with a downstream LightGBM/DIN AUC signal (and optionally an
-     LLM-judge term).
-  4. Take the best END node, structurally repair its pipeline (mandatory
-     ops, canonical ordering), and run a final full-data evaluation.
+  3. Run the MCTS solver over BAT's DPAS action set using the original
+     target-column reward. Downstream and LLM-judge terms are retained only
+     as explicitly enabled benchmark ablations.
+  4. Take the first of BAT's two ranked END candidates, attach DAG metadata,
+     hard-validate it without repair, and run the final evaluation.
   5. Persist YAML pipeline, agent log, search tree, and best paths under
      ``outputs/BAT/<data_name>/``.
 """
@@ -20,7 +19,6 @@ from __future__ import annotations
 
 import json
 import os
-import random as _random
 import time
 from typing import Optional
 
@@ -30,8 +28,7 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline
-from baselines.common.pipeline import finalize_pipeline, is_legal
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
 from baselines.common.utils import get_data_ctx
 
 from baselines.DeepPrep.llm_client import LLMClient
@@ -48,6 +45,7 @@ CONFIG_KEYS = (
     "api_key",
     "base_url",
     "temperature",
+    "top_p",
     "max_tokens",
     "timeout",
     "max_rollout_steps",
@@ -85,6 +83,7 @@ class BAT:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
         # ---- MCTS ----
@@ -123,6 +122,7 @@ class BAT:
         api_key = resolve_config_value(cfg, "api_key", api_key)
         base_url = resolve_config_value(cfg, "base_url", base_url)
         temperature = resolve_config_value(cfg, "temperature", temperature)
+        top_p = resolve_config_value(cfg, "top_p", top_p)
         max_tokens = resolve_config_value(cfg, "max_tokens", max_tokens)
         timeout = resolve_config_value(cfg, "timeout", timeout)
         max_rollout_steps = resolve_config_value(
@@ -165,6 +165,7 @@ class BAT:
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = float(temperature)
+        self.top_p = float(top_p)
         self.max_tokens = int(max_tokens)
         self.timeout = int(timeout)
 
@@ -208,6 +209,7 @@ class BAT:
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=self.temperature,
+            top_p=self.top_p,
             max_tokens=self.max_tokens,
             timeout=self.timeout,
         )
@@ -302,21 +304,18 @@ class BAT:
 
             best_node = mcts_res.best_node
             if best_node is None:
-                # All rollouts failed -- fall back to a repair-only pipeline.
+                # Preserve failure rather than synthesizing a substitute pipeline.
                 if self.verbose:
-                    print("[BAT] no successful rollout; using repair fallback.")
+                    print("[BAT] no terminal candidate; returning an empty failure candidate.")
                 pipeline = Pipeline()
             else:
                 pipeline = Pipeline(steps=list(best_node.final_pipeline_steps))
 
-            # 4. Final common contract: repair, budget truncation, DAG and validation.
-            pipeline, check_report = finalize_pipeline(
-                pipeline,
-                ctx,
-                _random.Random(self.seed),
-                max_len=self.max_chain_len,
-            )
-            legal = check_report.valid and is_legal(pipeline, ctx.task_type)
+            # 4. Attach deterministic DAG metadata and hard-validate the exact
+            # candidate. Never insert operators or repair BAT's answer.
+            assign_dag_structure(pipeline, ctx)
+            check_report = check_pipeline(pipeline, ctx)
+            legal = check_report.valid
 
             if self.verbose:
                 print(f"[BAT] mcts done. rollouts={mcts_res.n_rollouts}  "
@@ -358,12 +357,23 @@ class BAT:
                         "n_rollouts": mcts_res.n_rollouts,
                         "n_end_nodes": len(mcts_res.end_nodes),
                         "n_best_paths": len(mcts_res.best_paths),
+                        "llm_model": self.llm_model,
+                        "temperature": self.temperature,
+                        "top_p": self.top_p,
                         "use_downstream": self.reward_cfg.use_downstream,
                         "use_llm_judge": self.reward_cfg.use_llm_judge,
                         "reward_alpha": self.reward_cfg.alpha,
                         "reward_beta": self.reward_cfg.beta,
                         "reward_gamma": self.reward_cfg.gamma,
                         "best_node": best_node_dump,
+                        "selected_candidates": [
+                            {
+                                "ops": [s.op for s in node.final_pipeline_steps],
+                                "average_value": node.Q / node.N if node.N else 0.0,
+                                "reward": node.reward_value,
+                            }
+                            for node in mcts_res.selected_nodes
+                        ],
                         "ops": [s.op for s in pipeline.steps],
                         "is_legal": legal,
                         "check_errors": check_report.errors,

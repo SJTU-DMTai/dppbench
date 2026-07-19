@@ -147,7 +147,7 @@ def solve(
         j_model.optional_edges(),
         key=lambda e: -j_model.prob(e.name),
     )
-    # DPPBench's current canonical repair de-duplicates operator names, so a
+    # DPPBench's shared repair de-duplicates operator names, so a
     # pipeline can execute at most one JoinTable step.  Select the best optional
     # star edge deterministically rather than sampling invalid duplicate joins.
     chosen_optional = optional_edges[:1]

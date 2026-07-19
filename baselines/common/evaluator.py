@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from baselines.common.data_ctx import infer_data_context
+from baselines.common.budget import Budget, BudgetExceededError, get_active_budget
 from baselines.common.pipeline import Pipeline, check_pipeline
 
 # Ensure the repo root is importable so ``baselines.common.executor`` resolves
@@ -45,7 +46,7 @@ class PipelineEvaluator:
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
                  metric_key: str = "auc", verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
-                 scoring_method: str = "full_train"):
+                 scoring_method: str = "full_train", budget: Budget | None = None):
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
@@ -54,6 +55,7 @@ class PipelineEvaluator:
         self.device = device
         self.model_name = model_name
         self.scoring_method = scoring_method
+        self.budget = budget or get_active_budget()
         self._executor = TrainingExecutor(
             task_dir,
             data_name=data_name,
@@ -81,13 +83,39 @@ class PipelineEvaluator:
     def load_data(self):
         return self._executor.load_data()
 
+    def run_preprocessing(self, pipeline: Pipeline):
+        """Run a partial pipeline without downstream model evaluation."""
+        report = check_pipeline(
+            pipeline,
+            self._get_data_context(),
+            require_mandatory=False,
+            budget=self.budget,
+        )
+        if not report.valid:
+            raise ValueError("; ".join(report.errors))
+        self._executor.write_yaml(pipeline.to_yaml())
+        return self._executor.run_preprocessing()
+
     def evaluate(self, pipeline: Pipeline, scoring_method: Optional[str] = None) -> EvaluationResult:
         method = scoring_method or self.scoring_method
         key = f"{method}:{pipeline.hash()}"
         if key in self._cache:
             return self._cache[key]
 
-        report = check_pipeline(pipeline, self._get_data_context())
+        try:
+            if self.budget is not None:
+                self.budget.consume_evaluation()
+        except BudgetExceededError as exc:
+            ev = EvaluationResult(
+                fitness=-math.inf, success=False, metrics={},
+                error=f"BudgetExceededError: {exc}", duration_seconds=0.0,
+            )
+            self._cache[key] = ev
+            return ev
+
+        report = check_pipeline(
+            pipeline, self._get_data_context(), budget=self.budget,
+        )
         if not report.valid:
             ev = EvaluationResult(
                 fitness=-math.inf,
@@ -115,6 +143,18 @@ class PipelineEvaluator:
                 "error": f"{type(e).__name__}: {e}",
             }
         dur = time.time() - t0
+
+        post_report = check_pipeline(
+            pipeline,
+            self._get_data_context(),
+            budget=self.budget,
+            execution_data=result.get("execution_data"),
+        )
+        if not post_report.valid:
+            result["success"] = False
+            prior = result.get("error")
+            post_error = "; ".join(post_report.errors)
+            result["error"] = f"{prior}; {post_error}" if prior else post_error
 
         success = bool(result.get("success"))
         metrics = result.get("metrics") or {}

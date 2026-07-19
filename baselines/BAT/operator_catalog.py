@@ -42,8 +42,8 @@ def format_op_descriptions(task_type: str) -> str:
     for spec in get_available_ops(task_type):
         by_cat.setdefault(spec.category, []).append(spec)
 
-    lines: list[str] = ["# Canonical category order"]
-    lines.append(" -> ".join(cat.value for cat in get_category_order(task_type)))
+    lines: list[str] = ["# Operator categories (grouping only; no required order)"]
+    lines.append(", ".join(cat.value for cat in get_category_order(task_type)))
     lines.append("")
     lines.append("# Operators")
     for cat in get_category_order(task_type):
@@ -70,30 +70,26 @@ def format_op_descriptions(task_type: str) -> str:
     return "\n".join(lines).strip()
 
 
-# BAT paper function families -> dppbench OpCategory groups.
-FUNCTION_FAMILY_MAP: dict[str, list[OpCategory]] = {
-    "join": [OpCategory.JOIN],
-    "groupby_aggregate": [OpCategory.GROUP_AGG],
-    "pivot_unpivot": [OpCategory.RESHAPE_PIVOT, OpCategory.RESHAPE_LONGWIDE],
-    "string_reshape": [OpCategory.RESHAPE_STRING],
-    "rename_or_drop_columns": [OpCategory.SCHEMA, OpCategory.FILTER_COL],
-    "arithmetic_or_feature": [OpCategory.FEATURE_GEN, OpCategory.FEATURE_TIME],
-    "datetime_format": [OpCategory.DATETIME_PARSE],
-    "encoding": [OpCategory.ENCODING],
-    "scale_or_normalize": [
-        OpCategory.NORMALIZATION,
-        OpCategory.SCALING,
-        OpCategory.DISTRIBUTION_RESHAPE,
-    ],
-    "missing_value": [OpCategory.MISSING_VALUE],
-    "outlier": [OpCategory.OUTLIER],
-    "deduplicate": [OpCategory.DEDUPLICATE],
-    "discretize": [OpCategory.DISCRETIZATION],
-    "feature_selection": [OpCategory.FEATURE_SELECTION, OpCategory.FEATURE_REDUCTION],
-    "filter_rows": [OpCategory.FILTER_ROW],
-    "imbalance_or_augment": [OpCategory.IMBALANCE, OpCategory.AUGMENT],
-    "sequence_modeling": [OpCategory.SEQUENCE],
-    "split_or_sample": [OpCategory.SAMPLING],
+# BAT paper function families remain operator-level because the shared
+# categories now mirror broad implementation directories.
+FUNCTION_FAMILY_MAP: dict[str, list[str]] = {
+    "join": ["JoinTable", "ConcatTable"],
+    "groupby_aggregate": ["AggregateGroupFeature"],
+    "string_reshape": ["SplitColumn"],
+    "rename_or_drop_columns": ["RenameColumn", "DropColumns"],
+    "arithmetic_or_feature": ["CreateFeature", "CrossFeature", "CreatePolynomialFeature"],
+    "datetime_format": ["ParseDate", "ExtractDateTimeFeature"],
+    "encoding": ["OneHotEncode", "OrdinalEncode", "LabelEncode", "HashEncode", "TargetEncode"],
+    "scale_or_normalize": ["ScaleFeature", "TransformPower"],
+    "missing_value": ["HandleMV"],
+    "outlier": ["HandleOutlier", "ClipOutlier"],
+    "deduplicate": ["Deduplicate"],
+    "discretize": ["DiscretizeFeature"],
+    "feature_selection": ["SelectFeature", "ReduceDimension"],
+    "filter_rows": ["FilterSample", "FilterKCore"],
+    "imbalance_or_augment": ["Undersample", "Oversample", "AugmentMixup", "AugmentNoise"],
+    "sequence_modeling": ["CreateSequence", "TruncateSequence"],
+    "split_or_sample": ["SampleNegative"],
 }
 
 
@@ -102,14 +98,9 @@ def function_family_descriptions(task_type: str) -> str:
     if task_type not in ("tabular", "rec"):
         raise ValueError(f"Unknown task_type {task_type}")
     valid_ops = {spec.op_name for spec in get_available_ops(task_type)}
-    by_category = operators_by_category(task_type)
     lines: list[str] = []
-    for family, cats in FUNCTION_FAMILY_MAP.items():
-        ops_in_family: list[str] = []
-        for cat in cats:
-            ops_in_family.extend(
-                op for op in by_category.get(cat, []) if op in valid_ops
-            )
+    for family, op_names in FUNCTION_FAMILY_MAP.items():
+        ops_in_family = [op for op in op_names if op in valid_ops]
         if not ops_in_family:
             continue
         ops_str = ", ".join(sorted(set(ops_in_family)))

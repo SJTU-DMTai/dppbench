@@ -184,6 +184,18 @@ class TrainingExecutor:
         else:
             return self._run_rec_training()
 
+    def run_preprocessing(self):
+        """Execute only the working preparation DAG and return its primary frame.
+
+        CtxPipe uses this to mirror the original environment, where every
+        selected primitive is applied before the next state/context is built.
+        """
+        data = self._make_configured_data_instance()
+        data.load_data()
+        data.run_pre_process(os.path.abspath(self._working_yaml))
+        frame = self._primary_frame(data)
+        return frame.copy(deep=True) if frame is not None else None
+
     def run_static_quality(self):
         """Score a pipeline with cheap post-preprocess data-quality proxies.
 
@@ -221,6 +233,7 @@ class TrainingExecutor:
             raw_rows = int(len(raw_df)) if raw_df is not None else 0
 
             data.run_pre_process(os.path.abspath(self._working_yaml))
+            result["execution_data"] = self._execution_profile(data)
             processed_df = self._drop_std_test_rows(self._primary_frame(data))
             target_col = self._target_col_for_quality(data)
             post_profile = self._quality_profile(processed_df, target_col)
@@ -258,6 +271,17 @@ class TrainingExecutor:
         if self._task_type == "rec":
             return getattr(data, "interaction_df", None)
         return getattr(data, "train_df", None)
+
+    def _execution_profile(self, data):
+        """Return the post-pipeline primary-frame schema for legality checks."""
+        frame = self._primary_frame(data)
+        if frame is None:
+            return None
+        return {
+            "shape": [int(frame.shape[0]), int(frame.shape[1])],
+            "columns": [str(col) for col in frame.columns],
+            "dtypes": {str(col): str(dtype) for col, dtype in frame.dtypes.items()},
+        }
 
     @staticmethod
     def _drop_std_test_rows(df):
@@ -498,6 +522,7 @@ class TrainingExecutor:
             data = self._make_configured_data_instance()
             data.load_data()
             data.run_pre_process(os.path.abspath(self._working_yaml))
+            result["execution_data"] = self._execution_profile(data)
 
             cfg = self.get_model_config()
             model_name = cfg.get("model", "LightGBM")
@@ -677,6 +702,7 @@ class TrainingExecutor:
             data = self._make_configured_data_instance()
             data.load_data()
             data.run_pre_process(os.path.abspath(self._working_yaml))
+            result["execution_data"] = self._execution_profile(data)
 
             cfg = self.get_model_config()
             model_name = cfg.get("model", "GraphSAGE")
@@ -734,6 +760,7 @@ class TrainingExecutor:
             cfg = self.get_model_config()
             data.load_data()
             data.run_pre_process(os.path.abspath(self._working_yaml))
+            result["execution_data"] = self._execution_profile(data)
             splits = data.split()
 
             cfg.setdefault("model_params", {})["device"] = self.device

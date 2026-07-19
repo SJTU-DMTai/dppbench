@@ -39,8 +39,6 @@ CONFIG_KEYS = (
     "eval_full",
     "gamma",
     "lr",
-    "temperature_init",
-    "temperature_final",
     "reward_max",
     "illegal_reward",
     "improvement_eps",
@@ -61,8 +59,6 @@ class Learn2Clean:
         eval_full: Optional[bool] = None,
         gamma: Optional[float] = None,
         lr: Optional[float] = None,
-        temperature_init: Optional[float] = None,
-        temperature_final: Optional[float] = None,
         reward_max: Optional[float] = None,
         illegal_reward: Optional[float] = None,
         improvement_eps: Optional[float] = None,
@@ -83,12 +79,6 @@ class Learn2Clean:
         eval_full = resolve_config_value(cfg, "eval_full", eval_full)
         gamma = resolve_config_value(cfg, "gamma", gamma)
         lr = resolve_config_value(cfg, "lr", lr)
-        temperature_init = resolve_config_value(
-            cfg, "temperature_init", temperature_init
-        )
-        temperature_final = resolve_config_value(
-            cfg, "temperature_final", temperature_final
-        )
         reward_max = resolve_config_value(cfg, "reward_max", reward_max)
         illegal_reward = resolve_config_value(cfg, "illegal_reward", illegal_reward)
         improvement_eps = resolve_config_value(
@@ -106,8 +96,6 @@ class Learn2Clean:
         self.eval_full = bool(eval_full)
         self.gamma = float(gamma)
         self.lr = float(lr)
-        self.temperature_init = float(temperature_init)
-        self.temperature_final = float(temperature_final)
         self.reward_max = float(reward_max)
         self.illegal_reward = float(illegal_reward)
         self.improvement_eps = float(improvement_eps)
@@ -159,8 +147,7 @@ class Learn2Clean:
                   f"target={ctx.target_col}")
             print(f"[Learn2Clean] n_episodes={self.n_episodes}  "
                   f"max_steps={self.max_steps}  small_n={self.small_n or 'OFF'}  "
-                  f"gamma={self.gamma}  lr={self.lr}  "
-                  f"T={self.temperature_init}->{self.temperature_final}")
+                  f"gamma={self.gamma}  lr={self.lr}  epsilon=0.05")
             print("=" * 60)
 
         env = Learn2CleanEnv(
@@ -176,8 +163,6 @@ class Learn2Clean:
             n_actions=env.n_actions,
             gamma=self.gamma,
             lr=self.lr,
-            temperature_init=self.temperature_init,
-            temperature_final=self.temperature_final,
             seed=self.seed,
         )
         trainer = Learn2CleanTrainer(
@@ -209,7 +194,7 @@ class Learn2Clean:
                 "metrics": rec.metrics,
                 "ops": rec.ops,
                 "n_steps": rec.n_steps,
-                "temperature": rec.temperature,
+                "epsilon": rec.epsilon,
                 "duration_seconds": rec.duration_seconds,
             }
             for rec in result.history
@@ -284,7 +269,7 @@ class Learn2Clean:
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
             "eval_error": eval_error,
-            "is_legal": is_legal(best_pipe, ctx.task_type),
+            "is_legal": is_legal(best_pipe, ctx),
             "final_pipeline_ops": best_pipe.op_names(),
             "search_history": history_payload,
             "n_unique_evaluations": train_evaluator.n_unique_evaluations,

@@ -53,42 +53,11 @@ CODE_STAGES: list[str] = [
 # Map each stage to the OpCategory members that fall under it. Used to
 # describe the stage's typical operators in the NL-plan prompt.
 _STAGE_CATEGORIES: dict[str, tuple[OpCategory, ...]] = {
-    "integration": (OpCategory.JOIN,),
-    "cleaning": (
-        OpCategory.MISSING_VALUE,
-        OpCategory.OUTLIER,
-        OpCategory.DEDUPLICATE,
-        OpCategory.ERROR_DETECTION,
-        OpCategory.CLEAN_VALUE,
-        OpCategory.DATETIME_PARSE,
-    ),
-    "preprocessing": (
-        OpCategory.SCHEMA,
-        OpCategory.FILTER_COL,
-        OpCategory.FILTER_ROW,
-        OpCategory.ENCODING,
-        OpCategory.SCALING,
-        OpCategory.DISTRIBUTION_RESHAPE,
-        OpCategory.NORMALIZATION,
-        OpCategory.DISCRETIZATION,
-        OpCategory.IMBALANCE,
-        OpCategory.AUGMENT,
-        OpCategory.SAMPLING,
-    ),
-    "feature_engineering": (
-        OpCategory.FEATURE_GEN,
-        OpCategory.FEATURE_TIME,
-        OpCategory.FEATURE_SELECTION,
-        OpCategory.FEATURE_REDUCTION,
-        OpCategory.SEQUENCE,
-    ),
-    "transformation": (
-        OpCategory.RESHAPE_PIVOT,
-        OpCategory.RESHAPE_LONGWIDE,
-        OpCategory.RESHAPE_STRING,
-        OpCategory.SORT_ORDER,
-        OpCategory.GROUP_AGG,
-    ),
+    "integration": (OpCategory.INTEGRATION,),
+    "cleaning": (OpCategory.CLEANING,),
+    "preprocessing": (OpCategory.PREPROCESSING,),
+    "feature_engineering": (OpCategory.FEATURE_ENGINEERING,),
+    "transformation": (),
 }
 
 
@@ -133,8 +102,7 @@ def build_scaffolded_pipeline(
 
     Rec: prepend ``JoinTable`` (when user/item dfs exist), then the user's
     CustomOp steps, then the mandatory structural tail
-    (``CreateSequence`` ->
-    ``SampleNegative``) following ``baselines.common.pipeline._REC_ORDER``.
+    (``CreateSequence`` -> ``SampleNegative``).
     """
     rng = rng or _random.Random(0)
     pipe = Pipeline()
@@ -150,7 +118,7 @@ def build_scaffolded_pipeline(
         for s in code_steps:
             pipe.steps.append(s)
 
-        # ---- Rec: mandatory structural tail (matching _REC_ORDER) ----
+        # ---- Rec: mandatory structural tail ----
         for op_name in (
             "CreateSequence",
             "SampleNegative",

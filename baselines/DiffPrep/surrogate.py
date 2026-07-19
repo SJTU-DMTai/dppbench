@@ -19,23 +19,19 @@ import torch.nn as nn
 # Tabular surrogate
 # ---------------------------------------------------------------------------
 class TabularSurrogate(nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 32):
+    def __init__(self, in_dim: int, n_classes: int):
         super().__init__()
         self.in_dim = in_dim
-        self.body = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 1),
-        )
+        self.n_classes = max(int(n_classes), 2)
+        # The official implementation uses multinomial logistic regression.
+        self.body = nn.Linear(in_dim, self.n_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.body(x).squeeze(-1)
+        return self.body(x)
 
     def reset_parameters(self) -> None:
-        for m in self.body:
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
+        nn.init.xavier_uniform_(self.body.weight)
+        nn.init.zeros_(self.body.bias)
 
 
 # ---------------------------------------------------------------------------

@@ -1,56 +1,52 @@
 # CtxPipe baseline
 
-This directory contains the DPPBench adapter of CtxPipe.  The adapter keeps the
-core CtxPipe idea of **context-aware component-level reinforcement learning**,
-while replacing only the operator space and evaluation objective with the shared
-DPPBench contract.
+This directory adapts the original CtxPipe algorithm to DPPBench's shared
+operator, DAG, legality, and downstream-evaluation interfaces. The learning
+algorithm follows upstream CtxPipe; the deliberate structural difference is
+that the merged DPPBench operator space has four categories, so there are four
+component `RnnDQN` policies instead of upstream's five learned component
+policies. The logical-pipeline `DQN` remains separate.
 
-## Alignment with original CtxPipe
+## Alignment
 
-| Aspect | Original CtxPipe | DPPBench adapter |
-|---|---|---|
-| Pipeline construction | Component/stage-level RL | Component/stage-level RL over DPPBench operator categories |
-| Policies | Component-specific DQN agents | One DQN head and replay buffer per component slot |
-| Context | Dataset/schema context embedding with gated plug-in | Lightweight fixed context vector plus gated context plug-in in each component Q-network |
-| Actions | Component-specific transformation choices | Masked choices within the current component; optional components may `SKIP` |
-| Replay | Open-Closed-Gated experience replay | OCG-style success/failure/recent replay partitions per component |
-| Operator space | CtxPipe's tabular transformations | `baselines.common.utils.get_available_ops(task_type)` |
-| Evaluation | Downstream model score | Shared `SearchPipelineEvaluator` / final DPPBench replay |
+| Aspect | DPPBench CtxPipe |
+|---|---|
+| Component policies | Four independent `RnnDQN` models, one per merged operator category |
+| Logical-order policy | One `DQN` selecting one of the 24 permutations of four categories |
+| Context | Local GTE-large, 100-row CSV sample, 512-token truncation, attention-mask average pooling, 1024 dimensions |
+| State | 100 columns x 33 statistics, four primitive-sequence slots, predictor id, logical-pipeline id |
+| Networks | Upstream MLP/LSTM dimensions and LeakyReLU/Tanh activations |
+| Exploration | Exponential epsilon schedule from 1.0 to 0.2 with decay 2000 |
+| Replay/training | Shared FIFO replay, OCG closed/gated/open passes, no target network, Adam at `1e-5` |
+| Reward | Zero for intermediate steps and shared downstream-model fitness at termination |
 
-The adapter intentionally does **not** search arbitrary DAG parent/source edges.
-DPPBench's common pipeline layer is responsible for executable DAG generation:
-
-- `make_step(...)` creates context-aware operator parameters.
-- `repair(...)` enforces mandatory operators and de-duplication.
-- `truncate_optional_steps(...)` preserves the configured operator budget.
-- `assign_dag_structure(...)` creates `sources`, `prev`, and `train.prev`.
-- `check_pipeline(...)` validates the resulting DAG.
-
-This avoids duplicating private common DAG helpers and fixes the previous
-source/parent action semantics, where learned parent/source actions were either
-invalid or overwritten during DAG assignment.
-
-## Files
+The default encoder is loaded locally from:
 
 ```text
-baselines/CtxPipe/
-├── operator_catalog.py     # thin re-export of shared common operator metadata
-├── context.py              # fixed-size context encoder
-├── env.py                  # component-level MDP with action masks
-├── agent.py                # component-specific DQN networks and replay buffers
-├── trainer.py              # masked component-level training loop
-├── tester.py               # masked greedy inference
-├── ctxpipe.py              # top-level runner
-└── config.yaml             # default hyperparameters
+/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large
 ```
 
-## Notes
+The encoder deterministically samples up to 100 rows and caches the 1024-value
+embedding by the sampled CSV content hash under:
 
-- `max_steps` limits the number of selected executable operators; mandatory
-  operators may still be preserved by common repair when needed.
-- For fairness, search-time rewards come from the shared evaluator with
-  `evaluate_std_test=False`; frozen std-test replay remains the responsibility of
-  the benchmark harness.
-- The context encoder is lightweight to avoid the original large embedding model
-  dependency, but the RL state now includes the current component and an ordered
-  operator sequence so the policy can distinguish pipeline order.
+```text
+/mnt/sdb/dengjiale/dppbench/outputs/CtxPipe/context_cache/<task>/
+```
+
+This keeps different tasks and transformed table states separate. Context is
+requested once for replay storage and again on a greedy action, matching the
+upstream action path; repeated requests for identical table content are served
+from memory or disk without running GTE-large again. Random actions do not make
+the second request.
+
+## DPPBench adaptation boundary
+
+CtxPipe chooses the logical category order and one action from each category.
+DPPBench's shared layer supplies the available operators, materializes operator
+parameters and DAG edges, checks partial/final legality, runs preprocessing, and
+computes the downstream reward. `SKIP` is included in every category action
+space so the shared mandatory-operator repair and final legality checks remain
+authoritative.
+
+Search fitness is validation-only. Frozen `std_test` replay remains in the
+benchmark harness and is not used as an RL reward.

@@ -82,8 +82,8 @@ def _zscore(arr: np.ndarray) -> np.ndarray:
     sd = np.nanstd(arr, axis=0)
     sd = np.where(sd < 1e-6, 1.0, sd)
     return (arr - mu) / sd
-def _tabular_feature_tensors(data, ctx: DataContext, max_features: int,
-                             device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
+                             device: torch.device):
     train_df = data.train_df
     target = ctx.target_col
     if target is None or target not in train_df.columns:
@@ -92,29 +92,47 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int,
             f"none found for dataset {ctx.data_name}."
         )
 
-    cols = [c for c in ctx.numeric_cols if c != target][:max_features]
+    numeric_cols = [c for c in ctx.numeric_cols if c != target]
+    categorical_cols = [
+        c for c in ctx.categorical_cols
+        if c != target and c in train_df.columns
+    ]
+    cols = numeric_cols + categorical_cols
+    if max_features:
+        cols = cols[:max_features]
     if not cols:
         # Synthesise a single zero column so the surrogate can still run.
         feat = np.zeros((len(train_df), 1), dtype=np.float32)
+        feature_names = ["__constant__"]
     else:
-        feat = train_df[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
+        parts = []
+        feature_names = []
+        for col in cols:
+            if col in numeric_cols:
+                values = pd.to_numeric(train_df[col], errors="coerce")
+            else:
+                # Official DiffPrep keeps categorical inputs and one-hot encodes
+                # them. Category codes preserve that information without
+                # exploding DPPBench's larger schemas during search.
+                values = train_df[col].astype("category").cat.codes.replace(-1, np.nan)
+            parts.append(values.to_numpy(dtype=np.float32).reshape(-1, 1))
+            feature_names.append(str(col))
+        feat = np.concatenate(parts, axis=1)
 
     mask = np.isnan(feat).astype(np.float32)
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     feat = _zscore(feat)
     feat = np.clip(feat, -5.0, 5.0).astype(np.float32)
 
-    y = pd.to_numeric(train_df[target], errors="coerce").to_numpy(dtype=np.float32)
-    y = np.nan_to_num(y, nan=0.0)
-    # Binary-ize if labels are floats.
-    if not set(np.unique(y)).issubset({0.0, 1.0}):
-        thresh = float(np.median(y))
-        y = (y > thresh).astype(np.float32)
+    y_codes, classes = pd.factorize(train_df[target], sort=True)
+    y = y_codes.astype(np.int64)
+    if (y < 0).any():
+        y[y < 0] = 0
 
     x_t = torch.tensor(feat, dtype=torch.float32, device=device)
     m_t = torch.tensor(mask, dtype=torch.float32, device=device)
-    y_t = torch.tensor(y, dtype=torch.float32, device=device)
-    return x_t, m_t, y_t
+    y_t = torch.tensor(y, dtype=torch.long, device=device)
+    return x_t, m_t, y_t, feature_names, max(len(classes), 2)
 
 
 def _rec_feature_tensors(data, ctx: DataContext, max_features: int,
@@ -255,7 +273,7 @@ class DiffPrep:
         self.flex = bool(flex)
         self.eval_full = bool(eval_full)
         self.max_pipeline_len = int(max_pipeline_len) if max_pipeline_len else None
-        self.max_features = int(max_features)
+        self.max_features = int(max_features) if max_features else None
         self.batch_size = int(batch_size)
         self.val_ratio = float(val_ratio)
         self.continuous_init_scale = float(continuous_init_scale)
@@ -420,11 +438,11 @@ class DiffPrep:
                     acc = (pred == yy).float().mean().item()
                 return loss, acc
         else:
-            feat, mask, y = _tabular_feature_tensors(
+            feat, mask, y, feature_names, n_classes = _tabular_feature_tensors(
                 data, ctx, self.max_features, self.device,
             )
             surrogate = TabularSurrogate(
-                in_dim=feat.shape[1], hidden=self.surrogate_hidden_dim
+                in_dim=feat.shape[1], n_classes=n_classes
             ).to(self.device)
             tr_idx, va_idx = _train_val_split(
                 len(y), val_ratio=self.val_ratio, seed=self.seed
@@ -447,7 +465,7 @@ class DiffPrep:
                     hard_sample=self.hard_sample,
                 )
                 logits = model(out)
-                loss = F.binary_cross_entropy_with_logits(logits, yy)
+                loss = F.cross_entropy(logits, yy)
                 return loss
 
             def val_step(continuous: ContinuousPipeline, model: nn.Module):
@@ -466,9 +484,9 @@ class DiffPrep:
                     hard_sample=self.hard_sample,
                 )
                 logits = model(out)
-                loss = F.binary_cross_entropy_with_logits(logits, yy)
+                loss = F.cross_entropy(logits, yy)
                 with torch.no_grad():
-                    pred = (torch.sigmoid(logits) > 0.5).float()
+                    pred = logits.argmax(dim=1)
                     acc = (pred == yy).float().mean().item()
                 return loss, acc
 
@@ -477,6 +495,7 @@ class DiffPrep:
             flex=self.flex,
             init_scale=self.continuous_init_scale,
             n_features=int(feat.shape[1]),
+            feature_names=(feature_names if task_type == "tabular" else None),
         ).to(self.device)
 
         # 4) Bilevel training
@@ -519,6 +538,7 @@ class DiffPrep:
                 "theta": cont.theta.detach().cpu() if cont.theta is not None else None,
                 "alpha": cont.alpha().detach().cpu(),
                 "discrete_slot_order": discrete_slot_order,
+                "best_epoch": trainer.best_epoch,
                 "surrogate": surrogate.state_dict(),
             }, weights_path)
         except Exception as e:
@@ -602,6 +622,8 @@ class DiffPrep:
                 }
                 for rec in history
             ],
+            "best_epoch": trainer.best_epoch,
+            "best_val_loss": trainer.best_val_loss,
             "n_unique_evaluations": train_evaluator.n_unique_evaluations,
             "duration_seconds": duration,
             "output_dir": self.output_dir,

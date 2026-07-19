@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Optional
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
+from baselines.common.budget import Budget
 
 
 class SearchPipelineEvaluator(PipelineEvaluator):
@@ -29,6 +30,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         seed: int = 42,
         device: str = "cpu",
         model_name: Optional[str] = None,
+        budget: Budget | None = None,
     ) -> None:
         super().__init__(
             task_dir=task_dir,
@@ -38,6 +40,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
             verbose=verbose,
             device=device,
             model_name=model_name,
+            budget=budget,
         )
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)

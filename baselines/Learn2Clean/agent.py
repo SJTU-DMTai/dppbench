@@ -1,10 +1,9 @@
-"""Tabular Q-learning agent with Boltzmann (softmax) exploration.
+"""Tabular Q-learning agent with the original fixed epsilon-greedy policy.
 
 Implements the original Learn2Clean algorithm exactly:
 
 * dict-based Q-table keyed by ``(frozenset(applied_op_idx), last_op_idx)``;
-* Boltzmann policy ``P(a|s) = exp(Q(s,a)/T) / Sigma_j exp(Q(s,a_j)/T)`` with
-  numerical-overflow guard (subtract the max);
+* fixed ``epsilon=0.05`` epsilon-greedy exploration;
 * tabular update ``Q(s,a) <- Q(s,a) + lr * (r + gamma * max_a' Q(s',a') - Q(s,a))``.
 """
 from __future__ import annotations
@@ -19,21 +18,21 @@ import numpy as np
 from .env import StateKey
 
 
+EPSILON = 0.05
+
+
 class TabularQAgent:
     def __init__(
         self,
         n_actions: int,
         gamma: float = 0.9,
         lr: float = 0.5,
-        temperature_init: float = 2.0,
-        temperature_final: float = 0.1,
         seed: int = 42,
     ) -> None:
         self.n_actions = int(n_actions)
         self.gamma = float(gamma)
         self.lr = float(lr)
-        self.temperature_init = float(temperature_init)
-        self.temperature_final = float(temperature_final)
+        self.epsilon = EPSILON
         self._rng = _random.Random(seed)
         self._np_rng = np.random.default_rng(seed)
 
@@ -48,19 +47,11 @@ class TabularQAgent:
         return row
 
     # ------------------------------------------------------------------
-    def select_action(self, state: StateKey, temperature: float) -> int:
+    def select_action(self, state: StateKey) -> int:
         row = self._q_row(state)
-        T = max(float(temperature), 1e-6)
-        scaled = row / T
-        # Softmax with overflow guard.
-        scaled = scaled - scaled.max()
-        weights = np.exp(scaled)
-        s = weights.sum()
-        if not np.isfinite(s) or s <= 0.0:
-            # Fallback: uniform random.
+        if self._np_rng.random() < self.epsilon:
             return int(self._rng.randrange(self.n_actions))
-        probs = weights / s
-        return int(self._np_rng.choice(self.n_actions, p=probs))
+        return int(np.argmax(row))
 
     # ------------------------------------------------------------------
     def update(
@@ -91,8 +82,7 @@ class TabularQAgent:
             "n_actions": self.n_actions,
             "gamma": self.gamma,
             "lr": self.lr,
-            "temperature_init": self.temperature_init,
-            "temperature_final": self.temperature_final,
+            "epsilon": self.epsilon,
             "Q": {
                 self._encode_key(state): row.tolist()
                 for state, row in self.Q.items()
@@ -125,8 +115,6 @@ class TabularQAgent:
             n_actions=int(payload["n_actions"]),
             gamma=float(payload.get("gamma", 0.9)),
             lr=float(payload.get("lr", 0.5)),
-            temperature_init=float(payload.get("temperature_init", 2.0)),
-            temperature_final=float(payload.get("temperature_final", 0.1)),
         )
         for s, row in payload.get("Q", {}).items():
             agent.Q[cls._decode_key(s)] = np.asarray(row, dtype=np.float64)
@@ -138,4 +126,4 @@ class TabularQAgent:
         return len(self.Q)
 
 
-__all__ = ["TabularQAgent"]
+__all__ = ["EPSILON", "TabularQAgent"]

@@ -7,8 +7,7 @@ Faithfully reproduces ``ZJU-DAILY/BAT/src/mcts/mcts.py``:
                children via each action's ``create_children_nodes``.
   * Simulate -- random rollout (expand + uniform pick) until END.
   * Backpropagate -- single reward at END, propagated up.
-  * Early stop when ``early_stop_n_paths`` END nodes attain reward
-    ``>= 1 - eps``.
+  * Early stop when ``early_stop_n_paths`` END nodes attain reward exactly 1.
 """
 from __future__ import annotations
 
@@ -22,8 +21,6 @@ from baselines.common.data_ctx import DataContext
 from .action import (
     ActionContext,
     BaseAction,
-    EndAction,
-    expected_target_columns,
     get_valid_action_space_for_node,
 )
 from .node import MCTSNode, MCTSNodeType
@@ -39,6 +36,7 @@ class MCTSResult:
     root: MCTSNode
     end_nodes: list[MCTSNode] = field(default_factory=list)
     best_node: Optional[MCTSNode] = None
+    selected_nodes: list[MCTSNode] = field(default_factory=list)
     best_paths: list[list[str]] = field(default_factory=list)
     n_rollouts: int = 0
 
@@ -99,7 +97,7 @@ class MCTSSolver:
             return float("inf")
         exploit = child.Q / max(child.N, 1)
         explore = self.exploration_constant * math.sqrt(
-            math.log(max(parent_N, 1) + 1) / max(child.N, 1)
+            math.log(parent_N) / child.N
         )
         return exploit + explore
 
@@ -139,15 +137,21 @@ class MCTSSolver:
     def select(self, root: MCTSNode) -> MCTSNode:
         node = root
         while node.children and not node.is_terminal():
-            scores = [self._ucb_score(c, node.N) for c in node.children]
-            best = max(range(len(node.children)), key=lambda i: scores[i])
-            node = node.children[best]
+            unvisited = next((child for child in node.children if child.N == 0), None)
+            if unvisited is not None:
+                return unvisited
+            node = max(
+                node.children,
+                key=lambda child: self._ucb_score(child, node.N),
+            )
         return node
 
     # ------------------------------------------------------------------
     def expand(self, node: MCTSNode) -> list[MCTSNode]:
-        if node.is_terminal() or node.depth >= self.max_depth:
+        if node.is_terminal():
             return []
+        if node.children:
+            raise AssertionError("BAT expands only childless nodes")
         if not self._restore_node_state(node):
             return []
         legal_actions = get_valid_action_space_for_node(node)
@@ -164,25 +168,16 @@ class MCTSSolver:
             for c in children:
                 node.children.append(c)
                 new_children.append(c)
+        self.rng.shuffle(node.children)
         return new_children
 
     # ------------------------------------------------------------------
     def simulate(self, node: MCTSNode) -> MCTSNode:
         """Random rollout from ``node`` until an END node is reached."""
         cur = node
-        while not cur.is_terminal() and cur.depth < self.max_depth:
-            children = list(cur.children) if cur.children else self.expand(cur)
+        while not cur.is_terminal():
+            children = self.expand(cur)
             if not children:
-                # Force-finalize if nothing legal exists.
-                if not self._restore_node_state(cur):
-                    break
-                end_children = EndAction().create_children_nodes(
-                    cur, self._action_ctx()
-                )
-                if not end_children:
-                    break
-                cur.children.extend(end_children)
-                cur = end_children[0]
                 break
             cur = self.rng.choice(children)
         return cur
@@ -198,9 +193,8 @@ class MCTSSolver:
     # ------------------------------------------------------------------
     def solve(self) -> MCTSResult:
         root = MCTSNode(node_type=MCTSNodeType.ROOT, parent=None, depth=0)
-        root.N = 1  # avoid log(0) in UCB
-        end_nodes: list[MCTSNode] = []
-        best_paths: list[list[str]] = []
+        perfect_nodes: list[MCTSNode] = []
+        n_completed_rollouts = 0
 
         for it in range(self.max_rollout_steps):
             self._log(f"--- rollout {it + 1}/{self.max_rollout_steps} ---")
@@ -208,24 +202,15 @@ class MCTSSolver:
             leaf = self.select(root)
 
             # 2. Expansion (skip if leaf is terminal)
-            if not leaf.is_terminal() and leaf.depth < self.max_depth:
+            if not leaf.is_terminal():
                 children = self.expand(leaf)
                 if children:
                     leaf = self.rng.choice(children)
+                else:
+                    continue
 
             # 3. Simulation
             end_node = leaf if leaf.is_terminal() else self.simulate(leaf)
-            if not end_node.is_terminal():
-                # Force terminal even if max_depth tripped before END.
-                if not self._restore_node_state(end_node):
-                    continue
-                forced = EndAction().create_children_nodes(
-                    end_node, self._action_ctx()
-                )
-                if forced:
-                    end_node.children.extend(forced)
-                    end_node = forced[0]
-
             if not end_node.is_terminal():
                 self._log("simulation failed to reach END; skipping rollout")
                 continue
@@ -233,45 +218,58 @@ class MCTSSolver:
             # 4. Reward + backprop
             reward, breakdown = self.reward_model.score(end_node)
             self.backpropagate(end_node, reward)
-            end_nodes.append(end_node)
+            n_completed_rollouts += 1
 
             self._log(
                 f"end reward={reward:.4f} breakdown={breakdown} "
                 f"ops={[s.op for s in end_node.final_pipeline_steps]}"
             )
 
-            if reward >= 1.0 - self.early_stop_eps:
-                best_paths.append([n.label() for n in end_node.path_to_root()])
-                if len(best_paths) >= self.early_stop_n_paths:
+            if reward == 1.0:
+                perfect_nodes.append(end_node)
+                if len(perfect_nodes) >= self.early_stop_n_paths:
                     self._log(
-                        f"early stop after {len(best_paths)} perfect paths "
+                        f"early stop after {len(perfect_nodes)} perfect paths "
                         f"at rollout {it + 1}"
                     )
                     break
 
-        # Pick best by reward (tie-break by downstream_fitness)
-        best_node: Optional[MCTSNode] = None
-        for node in end_nodes:
-            if best_node is None:
-                best_node = node
-                continue
-            best_r = best_node.reward_value or 0.0
-            node_r = node.reward_value or 0.0
-            if node_r > best_r:
-                best_node = node
-            elif abs(node_r - best_r) < 1e-9:
-                best_d = best_node.downstream_fitness or -1.0
-                node_d = node.downstream_fitness or -1.0
-                if node_d > best_d:
-                    best_node = node
+        end_nodes = self._find_end_nodes(root)
+        selected_nodes = list(perfect_nodes[: self.early_stop_n_paths])
+        if len(selected_nodes) < self.early_stop_n_paths:
+            ranked = sorted(
+                end_nodes,
+                key=lambda node: node.Q / node.N if node.N else 0.0,
+                reverse=True,
+            )
+            for node in ranked:
+                if node in selected_nodes:
+                    continue
+                selected_nodes.append(node)
+                if len(selected_nodes) >= self.early_stop_n_paths:
+                    break
+        best_paths = [
+            [node.label() for node in selected.path_to_root()]
+            for selected in selected_nodes
+        ]
+        best_node = selected_nodes[0] if selected_nodes else None
 
         return MCTSResult(
             root=root,
             end_nodes=end_nodes,
             best_node=best_node,
+            selected_nodes=selected_nodes,
             best_paths=best_paths,
-            n_rollouts=len(end_nodes),
+            n_rollouts=n_completed_rollouts,
         )
+
+    def _find_end_nodes(self, node: MCTSNode) -> list[MCTSNode]:
+        if node.is_terminal():
+            return [node]
+        result: list[MCTSNode] = []
+        for child in node.children:
+            result.extend(self._find_end_nodes(child))
+        return result
 
 
 __all__ = ["MCTSSolver", "MCTSResult"]

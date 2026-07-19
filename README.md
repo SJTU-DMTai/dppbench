@@ -48,7 +48,7 @@ DPPBench currently includes tabular, time-series, graph, and recommendation task
 Supported formal tasks include:
 
 ```text
-amazon_beauty, beijing_air_quality, berka, bike_sharing, bondora,
+amazon_beauty, beijing_air_quality, berka, bike_sharing,
 citibike_jc_hourly, default_credit, elliptic_bitcoin, fraud_detection,
 home_credit, kuairec, movielens, nyc_taxi_hourly, polish_bankruptcy, tenrec,
 yelp

@@ -23,7 +23,6 @@ TABULAR_REGISTRY = {
     "home_credit": "dppbench.tasks.home_credit.home_credit_data.HomeCreditData",
     "fraud_detection": "dppbench.tasks.fraud_detection.fraud_detection_data.FraudDetectionData",
     "berka": "dppbench.tasks.berka.berka_data.BerkaData",
-    "bondora": "dppbench.tasks.bondora.bondora_data.BondoraData",
     "default_credit": "dppbench.tasks.default_credit.default_credit_data.DefaultCreditData",
     "polish_bankruptcy": "dppbench.tasks.polish_bankruptcy.polish_bankruptcy_data.PolishBankruptcyData",
     "bike_sharing": "dppbench.tasks.bike_sharing.bike_sharing_data.BikeSharingData",

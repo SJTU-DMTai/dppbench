@@ -298,7 +298,7 @@ class DataMaster:
 
             # 3. Final structural repair
             repair(pipeline, ctx.task_type, ctx)
-            legal = is_legal(pipeline, ctx.task_type)
+            legal = is_legal(pipeline, ctx)
 
             if self.verbose:
                 print(f"[DataMaster] agent done. success={run.success}  "

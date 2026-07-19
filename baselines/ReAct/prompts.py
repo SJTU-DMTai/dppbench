@@ -96,9 +96,8 @@ highest-fitness attempt across all turns as the final pipeline.
   the operator chain.
 - Parameters that depend on the dataset (column lists, target columns, etc.)
   may be omitted; the system will fill them with safe defaults.
-- The accumulated pipeline MUST contain ops in non-decreasing category-rank
-  order when read in topological order (the "Canonical Category Order" in the
-  user message). Out-of-order DAGs are rejected with a legality_error.
+- Operator categories are grouping labels only and impose no execution order.
+- The final pipeline must contain all context-dependent mandatory operators.
 - Every declared source/op must reach `train`; disconnected DAG fragments are
   rejected with a legality_error.
 - Reflect on the validation-set metrics from the previous observation when
@@ -138,10 +137,8 @@ Use ONLY these operators (grouped by category). Each entry shows whether
 it is mandatory, the task type it applies to, and its parameter names.
 {op_descriptions}
 
-# Canonical Category Order (HARD constraint)
-Your full pipeline MUST contain operators in non-decreasing category-rank
-order. The system rejects out-of-order pipelines with a legality_error.
-Order is:
+# Operator Categories (grouping only)
+Categories describe implementation areas and impose no pipeline order.
 {ordering_hint}
 
 # YAML Schema (FULL pipeline each turn)

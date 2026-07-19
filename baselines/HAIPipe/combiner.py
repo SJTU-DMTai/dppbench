@@ -1,11 +1,13 @@
-"""HAIPipe combination and selection utilities."""
+"""HAIPipe enumeration, rule pruning, and active candidate selection."""
 from __future__ import annotations
 
+import itertools
 import random as _random
 from dataclasses import dataclass, field
 
-from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline, PipelineStep, finalize_pipeline
+from baselines.common.pipeline import Pipeline, PipelineStep, assign_dag_structure, check_pipeline
+
+from .active_learning import ActiveCandidateSelector, pipeline_features
 
 
 @dataclass
@@ -17,101 +19,85 @@ class HAISelection:
     candidates: list[dict] = field(default_factory=list)
 
 
-def _copy_steps(steps: list[PipelineStep]) -> list[PipelineStep]:
-    return [PipelineStep.from_dict(step.to_dict()) for step in steps]
+def _copy(step: PipelineStep) -> PipelineStep:
+    return PipelineStep.from_dict(step.to_dict())
+
+
+def _subsequences(steps: list[PipelineStep]):
+    """All non-empty ordered subsets, matching upstream end-sequence enumeration."""
+    for length in range(len(steps), 0, -1):
+        for indices in itertools.combinations(range(len(steps)), length):
+            yield [_copy(steps[i]) for i in indices]
+
+
+def _candidate_from_slots(hi: Pipeline, ai: list[PipelineStep], slots: tuple[int, ...], ctx) -> Pipeline:
+    buckets: dict[int, list[PipelineStep]] = {}
+    for slot, step in zip(slots, ai):
+        buckets.setdefault(slot, []).append(_copy(step))
+    steps = []
+    for slot in range(len(hi.steps) + 1):
+        steps.extend(buckets.get(slot, []))
+        if slot < len(hi.steps):
+            steps.append(_copy(hi.steps[slot]))
+    candidate = Pipeline(steps=steps, sources=hi.sources)
+    return assign_dag_structure(candidate, ctx, _random.Random(0))
 
 
 def combine_pipelines(
     hi_pipeline: Pipeline,
     ai_pipeline: Pipeline,
-    ctx: DataContext,
+    ctx,
     rng: _random.Random,
     *,
     max_len: int | None,
-    n_combinations: int,
+    n_combinations: int | None = None,
 ) -> list[Pipeline]:
-    """Enumerate/sample legal HAI-pipeline candidates from HI + AI.
+    """Enumerate ordered AI subsets over every before/after/end insertion slot.
 
-    The original HAIPipe inserts AI operations into the HI-pipeline at multiple
-    positions.  DPPBench legality is expressed by common finalization, so each
-    enumerated insertion is repaired, assigned a DAG, validated, and deduped.
+    DPPBench YAML operators are atomic transformations, so an insertion slot
+    cannot fall inside an estimator's fit/transform pair.  The train node is
+    outside ``steps`` and therefore cannot be crossed.  These two structural
+    facts implement upstream pruning rules 2 and 3 directly.
     """
-    raw: list[Pipeline] = [hi_pipeline.copy()]
-    hi_steps = _copy_steps(hi_pipeline.steps)
-    ai_steps = _copy_steps(ai_pipeline.steps)
-
-    if ai_steps:
-        for end in range(1, len(ai_steps) + 1):
-            prefix = ai_steps[:end]
-            for pos in range(len(hi_steps) + 1):
-                raw.append(Pipeline(steps=_copy_steps(hi_steps[:pos] + prefix + hi_steps[pos:])))
-        for idx, step in enumerate(ai_steps):
-            for pos in range(len(hi_steps) + 1):
-                raw.append(Pipeline(steps=_copy_steps(hi_steps[:pos] + [step] + hi_steps[pos:])))
-        raw.append(Pipeline(steps=_copy_steps(hi_steps + ai_steps)))
-
-    rng.shuffle(raw)
-    out: list[Pipeline] = []
-    seen: set[str] = set()
-    limit = max(1, int(n_combinations))
-    for pipe in raw:
-        candidate, report = finalize_pipeline(pipe, ctx, rng, max_len=max_len)
-        if not report.valid:
+    del rng, n_combinations  # Enumeration is deterministic; AL limits executions.
+    candidates = [hi_pipeline.copy()]
+    seen = {hi_pipeline.hash()}
+    for subsequence in _subsequences(ai_pipeline.steps):
+        if max_len is not None and len(hi_pipeline) + len(subsequence) > int(max_len):
             continue
-        key = candidate.hash()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(candidate)
-        if len(out) >= limit:
-            break
-    if not out:
-        fallback, report = finalize_pipeline(hi_pipeline.copy(), ctx, rng, max_len=max_len)
-        if report.valid:
-            out.append(fallback)
-    return out
+        for slots in itertools.combinations_with_replacement(
+            range(len(hi_pipeline.steps) + 1), len(subsequence)
+        ):
+            candidate = _candidate_from_slots(hi_pipeline, subsequence, slots, ctx)
+            report = check_pipeline(candidate, ctx)
+            if not report.valid:
+                continue
+            key = candidate.hash()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(candidate)
+    return candidates
 
 
-def select_best_candidate(evaluator, candidates: list[Pipeline]) -> HAISelection:
-    """Evaluate sampled HAI candidates and return the best downstream result."""
-    best_pipe: Pipeline | None = None
-    best_fitness = float("-inf")
-    best_metrics: dict = {}
-    best_error: str | None = None
-    records: list[dict] = []
-
-    for pipe in candidates:
-        try:
-            ev = evaluator.evaluate(pipe)
-            success = bool(ev.success)
-            fitness = float(ev.fitness) if success else float("-inf")
-            metrics = dict(ev.metrics or {})
-            error = ev.error
-        except Exception as exc:  # pragma: no cover - defensive safety net
-            success = False
-            fitness = float("-inf")
-            metrics = {}
-            error = f"{type(exc).__name__}: {exc}"
-        records.append({
-            "ops": pipe.op_names(),
-            "fitness": fitness if fitness != float("-inf") else None,
-            "success": success,
-            "metrics": metrics,
-            "error": error,
-        })
-        if fitness > best_fitness or best_pipe is None:
-            best_pipe = pipe.copy()
-            best_fitness = fitness
-            best_metrics = metrics
-            best_error = error
-
-    if best_pipe is None:
-        raise RuntimeError("HAIPipe combiner received no candidates")
+def select_best_candidate(
+    evaluator,
+    candidates: list[Pipeline],
+    *,
+    selector: ActiveCandidateSelector,
+    dataset_feature,
+    vocabulary: list[str],
+) -> HAISelection:
+    features = __import__("numpy").stack([
+        pipeline_features(candidate, vocabulary) for candidate in candidates
+    ])
+    best_index, records = selector.select(dataset_feature, features, evaluator, candidates)
+    best = candidates[best_index].copy()
+    result = evaluator.evaluate(best)
     return HAISelection(
-        pipeline=best_pipe,
-        fitness=best_fitness,
-        metrics=best_metrics,
-        error=best_error,
+        pipeline=best,
+        fitness=float(result.fitness) if result.success else float("-inf"),
+        metrics=dict(result.metrics or {}),
+        error=result.error,
         candidates=records,
     )
 

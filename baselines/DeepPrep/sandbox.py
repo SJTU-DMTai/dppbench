@@ -53,6 +53,7 @@ class ObsState:
     head: list[dict]
     null_ratio: float
     text: str
+    tables: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -153,7 +154,7 @@ class Sandbox:
         ctx = self._context()
         try:
             assign_dag_structure(pipe, ctx, _random.Random(self.seed))
-            report = check_pipeline(pipe, ctx)
+            report = check_pipeline(pipe, ctx, require_mandatory=False)
             if not report.valid:
                 self.data = pickle.loads(pre_snapshot)
                 return ExecutionResult(
@@ -173,6 +174,7 @@ class Sandbox:
                 f"{type(e).__name__}: {e}\n"
                 f"{traceback.format_exc()[-400:]}"
             )
+            err = err.replace(self._tmpdir, "<sandbox>")
             self.data = pickle.loads(pre_snapshot)
             return ExecutionResult(success=False, error=err, applied_ops=[])
 
@@ -197,7 +199,7 @@ class Sandbox:
         if df is None:
             return ObsState(
                 shape=(0, 0), columns=[], dtypes={}, head=[],
-                null_ratio=0.0, text="(no primary table available)",
+                null_ratio=0.0, text="(no primary table available)", tables={},
             )
         cols = [str(c) for c in df.columns]
         dtypes = {c: str(df[c].dtype) for c in cols}
@@ -213,7 +215,8 @@ class Sandbox:
             ]
         except Exception:
             head = []
-        text = self._render_text(df, cols, dtypes, null_ratio, head)
+        tables = self._collect_tables()
+        text = self._render_text(tables)
         return ObsState(
             shape=tuple(df.shape),
             columns=cols,
@@ -221,36 +224,54 @@ class Sandbox:
             head=head,
             null_ratio=null_ratio,
             text=text,
+            tables=tables,
         )
 
-    def _render_text(self, df, cols, dtypes, null_ratio, head) -> str:
-        n_rows, n_cols = df.shape
-        col_view = cols[: self.MAX_COLS_IN_TEXT]
-        more = "" if len(cols) <= self.MAX_COLS_IN_TEXT else f" (+{len(cols) - self.MAX_COLS_IN_TEXT} more)"
-        lines = []
-        lines.append(f"primary_table: {'train_df' if self.task_type == 'tabular' else 'interaction_df'}")
-        lines.append(f"shape: rows={n_rows} cols={n_cols}")
-        lines.append(f"null_ratio_mean: {null_ratio:.4f}")
-        lines.append(f"columns ({len(cols)}){more}:")
-        for c in col_view:
-            lines.append(f"  - {c}: {dtypes[c]}")
-        lines.append("sample rows (up to 5):")
-        for i, row in enumerate(head):
-            lines.append(f"  row{i}: {row}")
+    def _collect_tables(self) -> dict:
+        named = {}
         if self.task_type == "tabular":
-            aux = getattr(self.data, "auxiliary_dfs", {}) or {}
-            if aux:
-                aux_summary = ", ".join(
-                    f"{k}={list(v.shape)}" for k, v in aux.items() if v is not None
-                )
-                lines.append(f"auxiliary_dfs: {aux_summary}")
+            named["main"] = getattr(self.data, "train_df", None)
+            named.update(getattr(self.data, "auxiliary_dfs", {}) or {})
         else:
-            udf = getattr(self.data, "user_df", None)
-            idf = getattr(self.data, "item_df", None)
-            if udf is not None:
-                lines.append(f"user_df.shape: {list(udf.shape)}")
-            if idf is not None:
-                lines.append(f"item_df.shape: {list(idf.shape)}")
+            named["interaction"] = getattr(self.data, "interaction_df", None)
+            named["user"] = getattr(self.data, "user_df", None)
+            named["item"] = getattr(self.data, "item_df", None)
+        result = {}
+        for name, table in named.items():
+            if table is None or not hasattr(table, "columns"):
+                continue
+            cols = [str(c) for c in table.columns]
+            dtypes = {c: str(table[c].dtype) for c in cols}
+            try:
+                null_ratio = float(table.isnull().mean().mean())
+            except Exception:
+                null_ratio = 0.0
+            try:
+                rows = table.head(self.SAMPLE_ROWS).to_dict(orient="records")
+                rows = [{k: _truncate_value(v) for k, v in row.items()} for row in rows]
+            except Exception:
+                rows = []
+            result[str(name)] = {
+                "shape": tuple(table.shape),
+                "columns": cols,
+                "dtypes": dtypes,
+                "null_ratio": null_ratio,
+                "head": rows,
+            }
+        return result
+
+    def _render_text(self, tables: dict) -> str:
+        lines = [f"materialized_tables: {list(tables)}"]
+        for name, profile in tables.items():
+            cols = profile["columns"]
+            col_view = cols[: self.MAX_COLS_IN_TEXT]
+            more = "" if len(cols) <= self.MAX_COLS_IN_TEXT else f" (+{len(cols) - self.MAX_COLS_IN_TEXT} more)"
+            n_rows, n_cols = profile["shape"]
+            lines.append(f"table {name}: rows={n_rows} cols={n_cols} null_ratio_mean={profile['null_ratio']:.4f}")
+            lines.append(f"  columns ({len(cols)}){more}:")
+            for col in col_view:
+                lines.append(f"    - {col}: {profile['dtypes'][col]}")
+            lines.append(f"  sample_rows: {profile['head']}")
         return "\n".join(lines)
 
 

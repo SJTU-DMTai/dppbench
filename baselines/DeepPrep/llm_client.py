@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from baselines.common.api_keys import load_openai_compatible_api_config
+from baselines.common.budget import get_active_budget
 
 
 @dataclass
@@ -26,9 +27,12 @@ class LLMConfig:
     model: str = "gpt-4o-mini"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
-    temperature: float = 0.7
+    temperature: float = 0.01
+    top_p: float = 1.0
     max_tokens: int = 2048
     timeout: int = 600
+    torch_dtype: str = "auto"
+    device_map: str = "auto"
 
 
 class LLMClient:
@@ -44,9 +48,12 @@ class LLMClient:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: float = 0.01,
+        top_p: float = 1.0,
         max_tokens: int = 2048,
         timeout: int = 600,
+        torch_dtype: str = "auto",
+        device_map: str = "auto",
     ) -> None:
         if backend not in ("api", "local"):
             raise ValueError(f"Unknown LLM backend {backend!r}")
@@ -58,14 +65,23 @@ class LLMClient:
         api_config = (
             load_openai_compatible_api_config() if backend == "api" else {}
         )
+        resolved_model = model or os.environ.get("DEEPPREP_MODEL")
+        if backend == "local" and not resolved_model:
+            raise ValueError(
+                "backend='local' requires llm_model or DEEPPREP_MODEL to point "
+                "to the official DeepPrep checkpoint."
+            )
         self.cfg = LLMConfig(
             backend=backend,
-            model=model or os.environ.get("LLM_MODEL", "gpt-4o-mini"),
+            model=resolved_model or os.environ.get("LLM_MODEL", "gpt-4o-mini"),
             api_key=api_config.get("api_key"),
             base_url=api_config.get("base_url"),
             temperature=temperature,
+            top_p=float(top_p),
             max_tokens=max_tokens,
             timeout=timeout,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
         )
         # Lazy-initialised handles
         self._api_client = None     # openai.OpenAI
@@ -89,11 +105,18 @@ class LLMClient:
         """Send a list of ``{"role", "content"}`` messages and return the
         assistant text. ``system`` is prepended to ``messages`` if provided.
         """
+        budget = get_active_budget()
+        if budget is not None:
+            budget.consume_llm_call()
         if system is not None:
             messages = [{"role": "system", "content": system}, *messages]
         if self.cfg.backend == "api":
-            return self._chat_api(messages, temperature=temperature)
-        return self._chat_local(messages, temperature=temperature)
+            answer = self._chat_api(messages, temperature=temperature)
+        else:
+            answer = self._chat_local(messages, temperature=temperature)
+        if budget is not None:
+            budget.check_resources()
+        return answer
 
     # ------------------------------------------------------------------
     # API backend
@@ -145,8 +168,16 @@ class LLMClient:
                 "pip install transformers torch"
             ) from e
         tok = AutoTokenizer.from_pretrained(self.cfg.model, trust_remote_code=True)
+        if not getattr(tok, "chat_template", None):
+            raise RuntimeError(
+                "The DeepPrep checkpoint tokenizer has no chat_template; "
+                "provide the official tokenizer files instead of a base model."
+            )
         mdl = AutoModelForCausalLM.from_pretrained(
-            self.cfg.model, trust_remote_code=True
+            self.cfg.model,
+            trust_remote_code=True,
+            torch_dtype=self.cfg.torch_dtype,
+            device_map=self.cfg.device_map,
         )
         mdl.eval()
         self._local_tokenizer = tok
@@ -156,30 +187,31 @@ class LLMClient:
         self._ensure_local_model()
         tok = self._local_tokenizer
         mdl = self._local_model
-        try:
-            prompt = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
-            )
-        except Exception:
-            # Fallback: simple concatenation if the tokenizer has no chat
-            # template registered (rare for instruction models).
-            prompt = ""
-            for m in messages:
-                prompt += f"<|{m['role']}|>\n{m['content']}\n"
-            prompt += "<|assistant|>\n"
+        prompt = tok.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
         import torch  # noqa: WPS433  -- local-only import
         inputs = tok(prompt, return_tensors="pt").to(mdl.device)
         temp = self.cfg.temperature if temperature is None else float(temperature)
+        eos_ids = [tok.eos_token_id] if tok.eos_token_id is not None else []
+        for marker in ("</expand>", "</answer>"):
+            marker_ids = tok.encode(marker, add_special_tokens=False)
+            if len(marker_ids) == 1 and marker_ids[0] not in eos_ids:
+                eos_ids.append(marker_ids[0])
         with torch.no_grad():
             out = mdl.generate(
                 **inputs,
                 max_new_tokens=self.cfg.max_tokens,
                 do_sample=temp > 0,
                 temperature=max(temp, 0.01),
+                top_p=self.cfg.top_p,
                 pad_token_id=tok.eos_token_id,
+                eos_token_id=eos_ids or None,
             )
         gen_ids = out[0][inputs["input_ids"].shape[1]:]
-        ans = tok.decode(gen_ids, skip_special_tokens=True)
+        # DeepPrep action markers may be registered as special tokens. They
+        # must survive decoding so the protocol parser can see them.
+        ans = tok.decode(gen_ids, skip_special_tokens=False)
         self.last_response = ans
         return ans
 
@@ -191,6 +223,24 @@ class LLMClient:
         self._local_model = model
         self._local_tokenizer = tokenizer
         self.cfg.backend = "local"
+
+    def runtime_metadata(self) -> dict:
+        """Serializable checkpoint and generation metadata for run logs."""
+        metadata = {
+            "backend": self.cfg.backend,
+            "model": self.cfg.model,
+            "temperature": self.cfg.temperature,
+            "top_p": self.cfg.top_p,
+            "max_new_tokens": self.cfg.max_tokens,
+            "torch_dtype": self.cfg.torch_dtype,
+            "device_map": self.cfg.device_map,
+            "total_tokens_used": self.total_tokens_used,
+        }
+        tok = self._local_tokenizer
+        if tok is not None:
+            metadata["chat_template"] = getattr(tok, "chat_template", None)
+            metadata["special_tokens_map"] = getattr(tok, "special_tokens_map", {})
+        return metadata
 
 
 __all__ = ["LLMClient", "LLMConfig"]

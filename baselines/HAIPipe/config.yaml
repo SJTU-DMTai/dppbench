@@ -1,23 +1,24 @@
-# HAIPipe adapter defaults.
-# Standard DPPBench mode uses the mandatory scaffold as HI-pipeline.
-n_episodes: 20
-max_ai_steps: 6
+# HAIPipe uses task prepare.yaml as HI and frozen cross-task checkpoints.
 max_pipeline_len: 8
-n_combinations: 32
 small_n: 3000
 eval_full: true
-
-gamma: 0.95
-eps_start: 1.0
-eps_end: 0.1
-eps_decay_episodes: null
-batch_size: 32
-target_update_every: 10
-min_buffer: 64
-hidden_dim: 128
-lr: 0.001
-buffer_capacity: 10000
-failure_reward: -1.0
 seed: 42
 fast_train: true
-hi_source: mandatory
+hi_source: prepare_yaml
+
+# Original AIPipe defaults, used by the separate cross-task pretrainer.
+learning_rate: 0.00001
+gamma: 0.0
+buffer_capacity: 2000
+batch_size: 100
+epsilon_start: 1.0
+epsilon_end: 0.4
+epsilon_decay: 500
+train_interval: 100
+frames: 100000
+
+# Original active-learning budget (K=20, T=7).
+al_k: 20
+al_iterations: 7
+aipipe_checkpoint: checkpoints/aipipe.pt
+al_checkpoint: checkpoints/alternative_evaluator.pt

@@ -1,0 +1,20 @@
+# Official FlowPipe requires an offline checkpoint trained across source tasks.
+checkpoint_path: null
+context_cache_dir: /mnt/sdb/dengjiale/dppbench/output/FlowPipe/context_embeddings
+llama_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt
+llm_name: Meta-Llama-3.1-8B
+ctx_dim: 4096
+hidden_dim: 512
+learning_rate: 0.0005
+buffer_capacity: 80000
+failure_weight: 0.2
+reward_temperature: 2.0
+inference_samples: 3
+inference_mode: sample
+inference_top_n: 3
+# DPPBench has four shared operator categories; the logic action is separate.
+max_steps: 4
+small_n: 0
+eval_full: true
+seed: 42
+fast_train: true

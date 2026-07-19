@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 DATASET_REGISTRY = {
     # --- tabular binary classification ---------------------------------
     "berka": ("tabular", "dppbench.tasks.berka.berka_data.BerkaData"),
-    "bondora": ("tabular", "dppbench.tasks.bondora.bondora_data.BondoraData"),
     "default_credit": (
         "tabular",
         "dppbench.tasks.default_credit.default_credit_data.DefaultCreditData",

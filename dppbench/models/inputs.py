@@ -260,6 +260,9 @@ def _target_to_array(df, cfg):
         mode = rule.get("mode")
         threshold = float(rule.get("threshold", 0))
         values = y.fillna(neg).to_numpy()
+        observed = y.dropna().to_numpy()
+        if len(observed) > 0 and np.isin(observed, [neg, pos]).all():
+            return np.where(values == pos, 1.0, 0.0).astype(np.float32)
         explicit_neg = values == neg
         if mode == "ge":
             y = np.where((values >= threshold) & ~explicit_neg, pos, neg)

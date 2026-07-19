@@ -1,6 +1,6 @@
 """Learn2Clean baseline.
 
-Tabular Q-learning + Boltzmann exploration over the dppbench operator zoo,
+Tabular Q-learning + fixed epsilon-greedy exploration over the dppbench operator zoo,
 inspired by *Learn2Clean: Optimizing the Sequence of Tasks for Web Data
 Preparation* (Berti-Equille, WWW'19,
 https://github.com/LaureBerti/Learn2Clean).

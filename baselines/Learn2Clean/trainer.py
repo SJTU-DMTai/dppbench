@@ -1,7 +1,7 @@
 """Learn2Clean Q-learning training loop.
 
 Mirrors the structure of :class:`baselines.CtxPipe.trainer.CtxPipeTrainer` but
-uses tabular Q-learning + Boltzmann exploration (Learn2Clean paper §4).
+uses tabular Q-learning + fixed epsilon-greedy exploration.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class EpisodeRecord:
     metrics: dict
     ops: list
     n_steps: int
-    temperature: float
+    epsilon: float
     duration_seconds: float
 
 
@@ -55,15 +55,6 @@ class Learn2CleanTrainer:
         self.history: List[EpisodeRecord] = []
 
     # ------------------------------------------------------------------
-    def _temperature_at(self, ep: int) -> float:
-        if self.n_episodes <= 1:
-            return self.agent.temperature_final
-        frac = ep / max(1, self.n_episodes - 1)
-        T0 = self.agent.temperature_init
-        T1 = self.agent.temperature_final
-        return T0 + (T1 - T0) * frac
-
-    # ------------------------------------------------------------------
     def train(self) -> TrainResult:
         best_fit = -math.inf
         best_pipe: Optional[Pipeline] = None
@@ -76,7 +67,6 @@ class Learn2CleanTrainer:
 
         for ep in range(self.n_episodes):
             t0 = time.time()
-            T = self._temperature_at(ep)
             state = self.env.reset()
             episode_reward = 0.0
             episode_ops: List[str] = []
@@ -84,7 +74,7 @@ class Learn2CleanTrainer:
 
             done = False
             while not done:
-                action = self.agent.select_action(state, T)
+                action = self.agent.select_action(state)
                 next_state, reward, done, info = self.env.step(action)
                 self.agent.update(state, action, reward, next_state, done)
                 episode_reward += float(reward)
@@ -121,7 +111,7 @@ class Learn2CleanTrainer:
                 metrics=metrics,
                 ops=list(final_pipe.op_names()),
                 n_steps=n_steps,
-                temperature=float(T),
+                epsilon=float(self.agent.epsilon),
                 duration_seconds=time.time() - t0,
             )
             self.history.append(record)
@@ -146,7 +136,7 @@ class Learn2CleanTrainer:
                 fit_str = f"{fitness:.4f}" if fitness is not None else "n/a"
                 print(
                     f"[Learn2Clean] ep={ep+1:>3}/{self.n_episodes}  "
-                    f"T={T:.3f}  reward={episode_reward:+.3f}  "
+                    f"epsilon={self.agent.epsilon:.2f}  reward={episode_reward:+.3f}  "
                     f"fitness={fit_str}  steps={n_steps}  "
                     f"ops={record.ops}  qstates={self.agent.n_states}"
                 )

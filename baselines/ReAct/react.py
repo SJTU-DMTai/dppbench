@@ -277,7 +277,7 @@ class ReAct:
             truncate_optional_steps(pipeline, ctx.task_type, self.max_pipeline_len)
             repair(pipeline, ctx.task_type, ctx)
             truncate_optional_steps(pipeline, ctx.task_type, self.max_pipeline_len)
-            legal = is_legal(pipeline, ctx.task_type)
+            legal = is_legal(pipeline, ctx)
 
             if self.verbose:
                 fit_str = (

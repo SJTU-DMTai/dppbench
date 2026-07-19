@@ -13,23 +13,22 @@
 | 2 | [beijing_air_quality](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/beijing_air_quality) | TabularData | LightGBM | 时序回归（PM2.5） | 1 + 1 = 2 | 11 | ★★★☆☆ |
 | 3 | [berka](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/berka) | TabularData | LightGBM | 二分类（贷款违约） | 1 + 7 = 8 | 17 | ★★★★★ |
 | 4 | [bike_sharing](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/bike_sharing) | TabularData | LightGBM | 时序回归（cnt） | 1 + 1 = 2 | 12 | ★★★☆☆ |
-| 5 | [bondora](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/bondora) | TabularData | LightGBM | 二分类（违约） | 1 + 1 = 2 | 13 | ★★★☆☆ |
-| 6 | [citibike_jc_hourly](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/citibike_jc_hourly) | TabularData | LightGBM | 时序回归（小时租量） | 1 + 0 = 1 | 10 | ★★★★☆ |
-| 7 | [default_credit](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/default_credit) | TabularData | LightGBM | 二分类（违约） | 1 + 1 = 2 | 11 | ★★★☆☆ |
-| 8 | [elliptic_bitcoin](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/elliptic_bitcoin) | TabularData (Graph) | GCN/SAGE/GAT | 节点分类（非法/合法） | 1 + 2 = 3 | 8 | ★★★★☆ |
-| 9 | [fraud_detection](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/fraud_detection) | TabularData | LightGBM | 二分类（欺诈） | 2（load 内 merge） | 9 | ★★★★☆ |
-| 10 | [home_credit](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/home_credit) | TabularData | LightGBM | 二分类（违约） | 1 + 6 = 7 | 19 | ★★★★★ |
-| 11 | [movielens](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/movielens) | RecData | DIN | 序列推荐 | 1 + 2 = 3 | 6 | ★★★☆☆ |
-| 12 | [nyc_taxi_hourly](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/nyc_taxi_hourly) | TabularData | LightGBM | 时序回归（小时单数） | 1 + 0 = 1 | 12 | ★★★★☆ |
-| 13 | [polish_bankruptcy](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/polish_bankruptcy) | TabularData | LightGBM | 二分类（破产） | 1 + 4 = 5 | 10 | ★★★★☆ |
-| 14 | [tenrec](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/tenrec) | RecData | DIN | 序列推荐（点击） | 1 + 0 = 1 | 2 | ★☆☆☆☆ |
-| 15 | [yelp](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/yelp) | RecData | DIN | 序列推荐（评分） | 1 + 2 = 3 | 6 | ★★★☆☆ |
+| 5 | [citibike_jc_hourly](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/citibike_jc_hourly) | TabularData | LightGBM | 时序回归（小时租量） | 1 + 0 = 1 | 10 | ★★★★☆ |
+| 6 | [default_credit](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/default_credit) | TabularData | LightGBM | 二分类（违约） | 1 + 1 = 2 | 11 | ★★★☆☆ |
+| 7 | [elliptic_bitcoin](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/elliptic_bitcoin) | TabularData (Graph) | GCN/SAGE/GAT | 节点分类（非法/合法） | 1 + 2 = 3 | 8 | ★★★★☆ |
+| 8 | [fraud_detection](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/fraud_detection) | TabularData | LightGBM | 二分类（欺诈） | 2（load 内 merge） | 9 | ★★★★☆ |
+| 9 | [home_credit](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/home_credit) | TabularData | LightGBM | 二分类（违约） | 1 + 6 = 7 | 19 | ★★★★★ |
+| 10 | [movielens](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/movielens) | RecData | DIN | 序列推荐 | 1 + 2 = 3 | 6 | ★★★☆☆ |
+| 11 | [nyc_taxi_hourly](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/nyc_taxi_hourly) | TabularData | LightGBM | 时序回归（小时单数） | 1 + 0 = 1 | 12 | ★★★★☆ |
+| 12 | [polish_bankruptcy](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/polish_bankruptcy) | TabularData | LightGBM | 二分类（破产） | 1 + 4 = 5 | 10 | ★★★★☆ |
+| 13 | [tenrec](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/tenrec) | RecData | DIN | 序列推荐（点击） | 1 + 0 = 1 | 2 | ★☆☆☆☆ |
+| 14 | [yelp](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/yelp) | RecData | DIN | 序列推荐（评分） | 1 + 2 = 3 | 6 | ★★★☆☆ |
 
 > 备注：[`ifasion/`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/ifasion) 目录仅包含原始 `.txt`（user/item/outfit），尚未实现 `data.py` 与 `prepare.yaml`，因此**未纳入正式任务列表**。
 
 按数据/模型类型分布：
 
-- 表格二分类（6 个）：berka、bondora、default_credit、fraud_detection、home_credit、polish_bankruptcy；模型族覆盖 `LightGBM`、`MLP`、`TabTransformer`、`FTTransformer`、`SAINT`
+- 表格二分类（5 个）：berka、default_credit、fraud_detection、home_credit、polish_bankruptcy；模型族覆盖 `LightGBM`、`MLP`、`TabTransformer`、`FTTransformer`、`SAINT`
 - 表格时序回归（4 个）：beijing_air_quality、bike_sharing、citibike_jc_hourly、nyc_taxi_hourly；模型族覆盖 `LightGBM`、`LSTM`、`Transformer`
 - 序列推荐（4 个）：amazon_beauty、movielens、yelp、tenrec；模型族覆盖 `FNN`、`DeepFM`、`DIN`、`DIEN`、`SIM`
 - 图神经网络（1 个）：elliptic_bitcoin；模型族覆盖 `GCN`、`GraphSAGE`、`GAT`
@@ -51,18 +50,18 @@
 
 ### 1.2 模型矩阵扩展与验证结果
 
-所有正式任务的 `model.yaml` 已接入向下兼容的 `model_options`，训练入口支持用 `--model` 或验证脚本的 `--models` 灵活选择模型。模型矩阵 fast 验证覆盖 65 个 task × model 组合，全部完成预处理、训练、评估与 std-test 指标落盘：
+所有正式任务的 `model.yaml` 已接入向下兼容的 `model_options`，训练入口支持用 `--model` 或验证脚本的 `--models` 灵活选择模型。模型矩阵 fast 验证覆盖 60 个 task × model 组合，全部完成预处理、训练、评估与 std-test 指标落盘：
 
 | 任务族 | 任务数 | 模型 | 验证组合 |
 |---|---:|---|---:|
 | 推荐 | 4 | `FNN`, `DeepFM`, `DIN`, `DIEN`, `SIM` | 20 |
-| 表格二分类 | 6 | `LightGBM`, `MLP`, `TabTransformer`, `FTTransformer`, `SAINT` | 30 |
+| 表格二分类 | 5 | `LightGBM`, `MLP`, `TabTransformer`, `FTTransformer`, `SAINT` | 25 |
 | 时序回归 | 4 | `LightGBM`, `LSTM`, `Transformer` | 12 |
 | 图节点分类 | 1 | `GCN`, `GraphSAGE`, `GAT` | 3 |
 
 验证产物：
 
-- 汇总报告：[`MODEL_MATRIX_VALIDATION_REPORT.md`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/MODEL_MATRIX_VALIDATION_REPORT.md)，结果为 `65/65 success`，总耗时约 2893 秒。
+- 汇总报告：[`MODEL_MATRIX_VALIDATION_REPORT.md`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/MODEL_MATRIX_VALIDATION_REPORT.md)，结果为 `60/60 success`，总耗时约 2893 秒。
 - 机器可读结果：[`model_matrix_validation_results.json`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/model_matrix_validation_results.json) / [`model_matrix_validation_results.csv`](file:///Users/bytedance/Documents/dppbech/dppbench/tasks/model_matrix_validation_results.csv)。
 - 分族验证报告：`MODEL_MATRIX_REC_REPORT.md`、`MODEL_MATRIX_TABULAR_REPORT.md`、`MODEL_MATRIX_TIMESERIES_REPORT.md`、`MODEL_MATRIX_GRAPH_REPORT.md`。
 
@@ -77,7 +76,6 @@
 | beijing_air_quality | ~420k 行（12 站 × 35064h） | `station_meta`（站点维表，1） | 11 → ~30+ | CreateFeature×2 → TransformPower → ScaleFeature → CreateLagFeature → CreateRollingFeature → JoinTable → CustomProcess → LabelEncode → HandleMV | 多站时序、滞后/滚动衍生 |
 | berka | ~6.2k loan | account, client, disp, card, order, trans, district（7 表） | 6 → ~50+ | ParseDate×5 → OrdinalEncode → CastType → CreateFeature → TransformPower → JoinTable×4 → CustomProcess → CrossFeature → LabelEncode → HandleMV | 多表 ASCII；YYMMDD 整数日期；状态映射（A/C→0, B/D→1） |
 | bike_sharing | 17 379 小时 | `day_aux`（日级聚合表） | 16 → ~30+ | ExtractDateTimeFeature×2 → CustomProcess(day drop target parts) → CreateFeature → TransformPower → JoinTable → CreateLagFeature → CreateRollingFeature → CustomProcess×2 → LabelEncode → HandleMV | 时序滞后/滚动；日聚合特征；删除 `casual/registered` 防泄漏 |
-| bondora | ~50k loans | `country_stats`（loader 内 groupby 派生） | ~110 → ~50（列过滤后） | CustomProcess → CreateFeature×2 → TransformPower → ScaleFeature → JoinTable → HandleError → CustomProcess×2 → LabelEncode → HandleMV → ScaleFeature → Undersample | xlsx；高基类别；国家异常值修复 |
 | citibike_jc_hourly | ~140 万行原始 trip → loader 聚合到小时桶 | 无 | loader 输出小时面板 → ~30+ | ExtractDateTimeFeature → CreateLagFeature → CreateRollingFeature → CustomProcess → LabelEncode → HandleMV → SortRows | 兼容无 `birth_year` schema；loader 内离群点/错误过滤与小时聚合 |
 | default_credit | 30 000 行 | `monthly_history`（wide→long 派生） | 24 → ~40+ | CustomClean → CreateFeature → TransformPower → JoinTable → CustomProcess → OneHotEncode → LabelEncode → HandleMV×2 → ReduceDimension → SelectFeature | EDUCATION/MARRIAGE 异常值；月度历史 wide→long pivot |
 | elliptic_bitcoin | 203 769 节点 | `classes`（标签）+ `edges`（234 355 条） | 165 节点特征 → Z-score 165 维 | JoinTable → CustomClean → Deduplicate → ScaleFeature → HandleMV → ReduceDimension×3 | 标签 vocab "unknown"/"1"/"2"；图边去重；节点特征标准化 |
@@ -113,7 +111,7 @@
 
 ### 中复杂度（★★★☆☆ 4 个）
 
-- **beijing_air_quality / bike_sharing / bondora / movielens / yelp**：典型时序回归或推荐流水线，算子数 5–13，含 1–2 张辅助表。
+- **beijing_air_quality / bike_sharing / movielens / yelp**：典型时序回归或推荐流水线，算子数 5–12，含 1–2 张辅助表。
 
 ### 低复杂度（★★☆☆☆ 及以下 4 个）
 
@@ -136,7 +134,7 @@
 
 ## 5. 算子使用频率
 
-> 统计自全部 15 个 task 的 `prepare.yaml`（截至 papers 算子补齐 D 批次回归后）。
+> 统计自全部 14 个 task 的 `prepare.yaml`（截至 papers 算子补齐 D 批次回归后）。
 > 全部新增的 paper 类算子（C1/C2/C3）均已在至少一个 task 接入并通过 smoke test。
 
 ### 5.1 高频核心算子（≥4 个 task 使用）
@@ -167,11 +165,11 @@
 
 按 Figure 2 分类：
 
-- **Cleaning**：Deduplicate（elliptic_bitcoin）、HandleError（bondora）、HandleOutlier（citibike_jc_hourly）、HandleMV(method=iterative/knn)（polish_bankruptcy/default_credit）、CustomClean（home_credit / citibike_jc_hourly）
+- **Cleaning**：Deduplicate（elliptic_bitcoin）、HandleOutlier（citibike_jc_hourly）、HandleMV(method=iterative/knn)（polish_bankruptcy/default_credit）、CustomClean（home_credit / citibike_jc_hourly）
 - **Integration**：JoinTable（elliptic_bitcoin / 多表聚合）、ConcatTable（polish_bankruptcy）、SplitColumn（berka）
 - **Preprocessing - Encoding**：OneHotEncode（default_credit）、OrdinalEncode（berka）、HashEncode（fraud_detection）
-- **Preprocessing - Scaling/Transform**：ScaleFeature（elliptic_bitcoin / beijing_air_quality / bondora）、TransformPower（nyc_taxi_hourly / bike_sharing）
-- **Preprocessing - Imbalance**：Oversample（polish_bankruptcy）、Undersample（bondora）
+- **Preprocessing - Scaling/Transform**：ScaleFeature（elliptic_bitcoin / beijing_air_quality）、TransformPower（nyc_taxi_hourly / bike_sharing）
+- **Preprocessing - Imbalance**：Oversample（polish_bankruptcy）
 - **Feature Engineering - Generation**：CreatePolynomialFeature（polish_bankruptcy）、CrossFeature（berka）、RenameColumn（fraud_detection）
 - **Feature Engineering - Selection**：SelectFeature（home_credit / default_credit）
 - **Feature Engineering - Reduction**：ReduceDimension（elliptic_bitcoin / default_credit）
@@ -218,7 +216,7 @@
 ### 7.1 一键生成
 
 ```bash
-python scripts/build_std_test.py                # 全部 15 个 task
+python scripts/build_std_test.py                # 全部 14 个 task
 python scripts/build_std_test.py --data_names fraud_detection,movielens
 python scripts/build_std_test.py --dry_run      # 只打印切分摘要，不落盘
 ```
@@ -229,7 +227,7 @@ python scripts/build_std_test.py --dry_run      # 只打印切分摘要，不落
 
 | 任务类型 | 任务名 | 切分方式 | std-test 大小 | 是否含负例采样 |
 |---|---|---|---|---|
-| Tabular 二分类 | `berka`、`bondora`、`default_credit`、`fraud_detection`、`home_credit`、`polish_bankruptcy` | Stratified holdout（按标签分层）| 训练集 20% | 否 |
+| Tabular 二分类 | `berka`、`default_credit`、`fraud_detection`、`home_credit`、`polish_bankruptcy` | Stratified holdout（按标签分层）| 训练集 20% | 否 |
 | Tabular 时序回归 | `beijing_air_quality`、`bike_sharing`、`citibike_jc_hourly`、`nyc_taxi_hourly` | 按时间列尾部 20% chronological holdout（不打乱）| 训练集尾部 20% | 否 |
 | Tabular 图（Graph） | `elliptic_bitcoin` | 按节点 id 随机 20% holdout（保留完整边集） | 有标签节点 20% | 否 |
 | Rec | `amazon_beauty`、`movielens`、`yelp`、`tenrec` | Leave-one-out（每用户最近 1 条交互）| 用户数 × 1 | **是**：每条正例配 100 条预抽样固定负例 |

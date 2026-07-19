@@ -210,22 +210,17 @@ class DataMasterAgent:
 
     # ------------------------------------------------------------------
     def _ordering_hint(self) -> str:
-        """Render the canonical category order with a few example ops per
-        bucket, so the LLM can sort its delta chain to satisfy ``is_legal``.
-        """
-        from baselines.common.pipeline import (
-            _TABULAR_ORDER, _REC_ORDER,
-        )
+        """Render category groups with a few example operators."""
+        from baselines.common.pipeline import get_category_order
         from baselines.common.utils import get_available_ops
-        order = _REC_ORDER if self.ctx.task_type == "rec" else _TABULAR_ORDER
         by_cat: dict = {}
         for spec in get_available_ops(self.ctx.task_type):
             by_cat.setdefault(spec.category, []).append(spec.op_name)
         lines = []
-        for i, cat in enumerate(order):
+        for cat in get_category_order(self.ctx.task_type):
             ops = sorted(by_cat.get(cat, []))[:5]
             ops_str = ", ".join(ops) if ops else "(no ops)"
-            lines.append(f"  {i+1:>2}. {cat.name}: {ops_str}")
+            lines.append(f"  - {cat.name}: {ops_str}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -421,7 +416,7 @@ class DataMasterAgent:
 
         accumulated = copy.deepcopy(parent_node.accumulated_steps) + list(delta_steps)
         full_pipeline = Pipeline(steps=accumulated)
-        # Apply the canonical repair so the evaluator sees a fully-valid pipe.
+        # Apply shared repair so the evaluator sees a fully-valid pipe.
         repair(full_pipeline, self.ctx.task_type, self.ctx)
 
         if sandbox_err is not None:
@@ -626,7 +621,7 @@ class DataMasterAgent:
         # 4. Re-build the best pipeline and apply final repair.
         final = Pipeline(steps=copy.deepcopy(best.accumulated_steps))
         repair(final, self.ctx.task_type, self.ctx)
-        legal = is_legal(final, self.ctx.task_type)
+        legal = is_legal(final, self.ctx)
         self._log(
             f"agent done. best_node={best.node_id} fitness={best.fitness} "
             f"steps={[s.op for s in final.steps]} legal={legal}"

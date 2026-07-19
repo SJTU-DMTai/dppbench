@@ -253,11 +253,11 @@ class SPIO:
             )
             run = agent.run()
             final_pipeline = _scaffold_fn(run.chosen_prefix)
-            legal = is_legal(final_pipeline, ctx.task_type)
+            legal = is_legal(final_pipeline, ctx)
             if not legal:
                 repair(final_pipeline, ctx.task_type, ctx)
                 repair_applied = True
-                legal = is_legal(final_pipeline, ctx.task_type)
+                legal = is_legal(final_pipeline, ctx)
 
             if self.verbose:
                 in_loop = run.best_fitness_in_loop
@@ -275,7 +275,7 @@ class SPIO:
         eval_metrics: dict = {}
         eval_fitness: Optional[float] = None
         eval_error: Optional[str] = None
-        legal = is_legal(final_pipeline, ctx.task_type) if ctx is not None else legal
+        legal = is_legal(final_pipeline, ctx) if ctx is not None else legal
         if self.eval_full:
             evaluator = SPIOEvaluator(
                 task_dir=self.task_dir,

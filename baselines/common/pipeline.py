@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from baselines.common.data_ctx import DataContext
+from baselines.common.budget import Budget, get_active_budget
 from baselines.common.op_spec import (
     CATALOG, OpCategory, is_mandatory, operators_for_task, valid_targets_for,
 )
@@ -944,72 +945,22 @@ def assign_dag_structure(pipeline: Pipeline, ctx: DataContext, rng: _random.Rand
 # -----------------------------------------------------------------------------
 # Pipeline legality checks, repair, and random factory
 # -----------------------------------------------------------------------------
-# Canonical ordering of categories used to sort steps. Lower index = earlier.
-_TABULAR_ORDER: list[OpCategory] = [
-    OpCategory.SCHEMA,
-    OpCategory.DATETIME_PARSE,
-    OpCategory.CLEAN_VALUE,
-    OpCategory.ERROR_DETECTION,
-    OpCategory.DEDUPLICATE,
-    OpCategory.JOIN,
-    OpCategory.RESHAPE_PIVOT,
-    OpCategory.RESHAPE_LONGWIDE,
-    OpCategory.RESHAPE_STRING,
-    OpCategory.GROUP_AGG,
-    OpCategory.SORT_ORDER,
-    OpCategory.FEATURE_GEN,
-    OpCategory.FEATURE_TIME,
-    OpCategory.OUTLIER,
-    OpCategory.MISSING_VALUE,
-    OpCategory.DISCRETIZATION,
-    OpCategory.ENCODING,
-    OpCategory.NORMALIZATION,
-    OpCategory.SCALING,
-    OpCategory.DISTRIBUTION_RESHAPE,
-    OpCategory.FEATURE_REDUCTION,
-    OpCategory.FEATURE_SELECTION,
-    OpCategory.FILTER_COL,
-    OpCategory.FILTER_ROW,
-    OpCategory.IMBALANCE,
-    OpCategory.AUGMENT,
-]
-_TABULAR_RANK = {c: i for i, c in enumerate(_TABULAR_ORDER)}
-
-_REC_ORDER: list[OpCategory] = [
-    OpCategory.SCHEMA,
-    OpCategory.JOIN,
-    OpCategory.DATETIME_PARSE,
-    OpCategory.CLEAN_VALUE,
-    OpCategory.FILTER_COL,
-    OpCategory.FILTER_ROW,
-    OpCategory.OUTLIER,
-    OpCategory.NORMALIZATION,
-    OpCategory.SCALING,
-    OpCategory.DISTRIBUTION_RESHAPE,
-    OpCategory.FEATURE_GEN,
-    OpCategory.FEATURE_TIME,
-    OpCategory.FEATURE_REDUCTION,
-    OpCategory.FEATURE_SELECTION,
-    OpCategory.ENCODING,
-    OpCategory.SEQUENCE,
-    OpCategory.DISCRETIZATION,
-    OpCategory.MISSING_VALUE,
-    OpCategory.SAMPLING,
-]
-_REC_RANK = {c: i for i, c in enumerate(_REC_ORDER)}
+_CATEGORY_GROUPS: list[OpCategory] = list(OpCategory)
 
 
-def _rank(op_name: str, task_type: str) -> int:
-    spec = CATALOG[op_name]
-    if task_type == "tabular":
-        return _TABULAR_RANK.get(spec.category, len(_TABULAR_ORDER))
-    return _REC_RANK.get(spec.category, len(_REC_ORDER))
+def is_legal(pipeline: "Pipeline", task_type: str | DataContext) -> bool:
+    """Return operator applicability, or full legality with a data context.
 
-
-def is_legal(pipeline: "Pipeline", task_type: str) -> bool:
-    """Return whether pipeline operators follow the canonical category order."""
-    ranks = [_rank(n, task_type) for n in pipeline.op_names()]
-    return ranks == sorted(ranks)
+    Passing a :class:`DataContext` performs the full :func:`check_pipeline`
+    contract. Passing only a task-type string is the lightweight form used for
+    partial search states. Categories impose no execution order.
+    """
+    if isinstance(task_type, DataContext):
+        return check_pipeline(pipeline, task_type).valid
+    return all(
+        name in CATALOG and CATALOG[name].task_type in (task_type, "both")
+        for name in pipeline.op_names()
+    )
 
 
 def truncate_optional_steps(
@@ -1045,9 +996,8 @@ def repair(
 ) -> "Pipeline":
     """In-place structural repair. Returns the same pipeline.
 
-    By default repaired pipelines are sorted into the benchmark's canonical
-    category order. Baselines that explicitly search operator order may set
-    ``sort_steps=False`` and then run ``check_pipeline`` to verify legality.
+    ``sort_steps`` is retained for API compatibility but categories no longer
+    impose an operator order.
     """
     seen = set()
     deduped: list[PipelineStep] = []
@@ -1063,10 +1013,16 @@ def repair(
         if CATALOG[step.op].task_type in (task_type, "both")
     ]
 
+    if ctx.secondary_tables and "JoinTable" not in pipeline.op_names():
+        step = make_step("JoinTable", ctx, _random.Random())
+        if step is not None:
+            pipeline.steps.insert(0, step)
+
     if task_type == "rec":
         rng = _random.Random()
         existing = {step.op for step in pipeline.steps}
-        for op_name in ("JoinTable", "CreateSequence", "SampleNegative"):
+        required = ["CreateSequence", "SampleNegative"]
+        for op_name in required:
             if op_name not in existing:
                 step = make_step(op_name, ctx, rng)
                 if step is not None:
@@ -1074,8 +1030,6 @@ def repair(
     else:
         ensure_tabular_tail(pipeline, ctx)
 
-    if sort_steps:
-        pipeline.steps.sort(key=lambda step: _rank(step.op, task_type))
     return pipeline
 
 
@@ -1114,12 +1068,12 @@ def random_pipeline(
     probability ``p_optional`` per category slot.
     """
     rng = rng or _random.Random()
-    order = _REC_ORDER if task_type == "rec" else _TABULAR_ORDER
+    categories = list(OpCategory)
 
     # always include LabelEncode + HandleMV for tabular as the trailing
     # normalisation; this matches dppbench task templates.
     steps: list[PipelineStep] = []
-    for cat in order:
+    for cat in categories:
         candidates = _ops_in_category(cat, task_type)
         if not candidates:
             continue
@@ -1278,16 +1232,15 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
 
 
 def get_order_constraints(task_type: str) -> list[OpCategory]:
-    """Return the canonical operator-category order for a task type."""
-    if task_type == "rec":
-        return list(_REC_ORDER)
-    if task_type == "tabular":
-        return list(_TABULAR_ORDER)
-    return []
+    """Compatibility alias returning category groups, without order semantics."""
+    if task_type not in ("tabular", "rec"):
+        return []
+    applicable = {CATALOG[name].category for name in operators_for_task(task_type)}
+    return [category for category in _CATEGORY_GROUPS if category in applicable]
 
 
 def get_category_order(task_type: str) -> list[OpCategory]:
-    """Public alias for the canonical operator-category order."""
+    """Compatibility alias returning the available category groups."""
     return get_order_constraints(task_type)
 
 
@@ -1301,15 +1254,26 @@ def _pipeline_data(pipeline: Pipeline | str | dict) -> dict:
     raise TypeError(f"Unsupported pipeline type: {type(pipeline).__name__}")
 
 
-def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = None) -> PipelineCheckReport:
+def check_pipeline(
+    pipeline: Pipeline | str | dict,
+    ctx: DataContext | None = None,
+    *,
+    require_mandatory: bool = True,
+    budget: Budget | None = None,
+    execution_data: Any | None = None,
+    required_columns: list[str] | None = None,
+) -> PipelineCheckReport:
     """Validate the shared DAG pipeline format.
 
     Checks source/op id uniqueness, predecessor references, operator input
-    counts, reachability from ``train.prev``, and canonical category ordering
-    when a task context is provided.
+    counts, reachability from ``train.prev``, operator applicability,
+    context-dependent mandatory operators, active budgets and (when supplied)
+    the shape/schema/dtypes produced by execution. Categories do not constrain
+    order.
     """
     errors: list[str] = []
     warnings: list[str] = []
+    budget = budget or get_active_budget()
     try:
         data = _pipeline_data(pipeline)
     except Exception as exc:
@@ -1327,8 +1291,19 @@ def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = No
     if not isinstance(ops, list):
         errors.append("dag.ops must be a list")
         ops = []
+    if budget is not None:
+        if (
+            budget.max_pipeline_length is not None
+            and len(ops) > budget.max_pipeline_length
+        ):
+            errors.append(
+                f"pipeline length {len(ops)} exceeds budget "
+                f"max_pipeline_length={budget.max_pipeline_length}"
+            )
+        errors.extend(budget.violations())
 
     known: set[str] = set()
+    source_ids: set[str] = set()
     for idx, source in enumerate(sources):
         sid = source.get("id") if isinstance(source, dict) else None
         if not sid:
@@ -1337,6 +1312,26 @@ def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = No
         if sid in known:
             errors.append(f"source id {sid} is duplicated")
         known.add(sid)
+        source_ids.add(sid)
+
+    if ctx is not None:
+        source_tables = {
+            source.get("table") for source in sources if isinstance(source, dict)
+        }
+        unknown_tables = sorted(
+            table for table in source_tables
+            if table is not None and table not in ctx.tables
+        )
+        if unknown_tables:
+            errors.append(f"dag.sources contains unknown context tables: {unknown_tables}")
+        if ctx.primary_table not in source_tables:
+            errors.append(f"dag.sources must contain primary table {ctx.primary_table}")
+        if (
+            require_mandatory
+            and ctx.secondary_tables
+            and not source_tables.intersection(ctx.secondary_tables)
+        ):
+            errors.append("multi-table pipeline must contain at least one secondary source table")
 
     op_by_id: dict[str, dict] = {}
     deps: dict[str, list[str]] = {}
@@ -1399,16 +1394,116 @@ def check_pipeline(pipeline: Pipeline | str | dict, ctx: DataContext | None = No
     for oid in op_by_id:
         if oid not in reachable:
             errors.append(f"op {oid} is not reachable from train.prev")
+    for source in sources:
+        sid = source.get("id") if isinstance(source, dict) else None
+        if sid and sid not in reachable:
+            errors.append(f"source {sid} is not reachable from train.prev")
 
-    if ctx is not None and not errors:
-        try:
-            parsed = Pipeline.from_yaml(yaml.safe_dump(data, sort_keys=False))
-            if not is_legal(parsed, ctx.task_type):
-                errors.append("pipeline violates canonical operator order constraints")
-        except Exception as exc:
-            warnings.append(f"order check skipped: {type(exc).__name__}: {exc}")
+    if ctx is not None and require_mandatory:
+        op_names = {
+            node.get("op") for node in ops
+            if isinstance(node, dict) and node.get("op") in CATALOG
+        }
+        required = (
+            {"CreateSequence", "SampleNegative"}
+            if ctx.task_type == "rec"
+            else {"LabelEncode", "HandleMV"}
+        )
+        requires_join = bool(ctx.secondary_tables or len(sources) > 1)
+        if requires_join:
+            required.add("JoinTable")
+        missing = sorted(required - op_names)
+        if missing:
+            errors.append(
+                f"pipeline is missing mandatory operators for current data context: {missing}"
+            )
+        if requires_join and "JoinTable" in op_names:
+            provenance: dict[str, set[str]] = {sid: {sid} for sid in source_ids}
+            valid_join = False
+            for oid, node in op_by_id.items():
+                ancestors: set[str] = set()
+                for pid in deps.get(oid, []):
+                    ancestors.update(provenance.get(pid, set()))
+                provenance[oid] = ancestors
+                if node.get("op") == "JoinTable" and len(ancestors) >= 2:
+                    valid_join = True
+            if not valid_join:
+                errors.append("JoinTable must combine branches from at least two source tables")
+
+    if execution_data is not None:
+        errors.extend(_validate_execution_data(
+            execution_data,
+            ctx=ctx,
+            budget=budget,
+            required_columns=required_columns,
+        ))
 
     return PipelineCheckReport(not errors, errors, warnings)
+
+
+def _validate_execution_data(
+    execution_data: Any,
+    *,
+    ctx: DataContext | None,
+    budget: Budget | None,
+    required_columns: list[str] | None,
+) -> list[str]:
+    """Validate the primary frame produced by pipeline execution."""
+    if isinstance(execution_data, dict):
+        shape = execution_data.get("shape")
+        columns = list(execution_data.get("columns") or [])
+        dtypes = dict(execution_data.get("dtypes") or {})
+    else:
+        shape = getattr(execution_data, "shape", None)
+        raw_columns = getattr(execution_data, "columns", None)
+        columns = list(raw_columns) if raw_columns is not None else []
+        raw_dtypes = getattr(execution_data, "dtypes", None)
+        dtypes = (
+            {str(col): str(dtype) for col, dtype in raw_dtypes.items()}
+            if raw_dtypes is not None else {}
+        )
+    errors: list[str] = []
+    if not isinstance(shape, (list, tuple)) or len(shape) != 2:
+        return ["execution output must expose a two-dimensional shape"]
+    rows, cols = int(shape[0]), int(shape[1])
+    if rows <= 0 or cols <= 0:
+        errors.append(f"execution output must be non-empty, got shape=({rows}, {cols})")
+    if len(columns) != cols:
+        errors.append(f"execution output shape has {cols} columns but schema reports {len(columns)}")
+    if len(set(columns)) != len(columns):
+        errors.append("execution output contains duplicate column names")
+
+    required = set(required_columns or [])
+    if ctx is not None:
+        if ctx.target_col:
+            required.add(ctx.target_col)
+        if ctx.task_type == "rec":
+            required.update(col for col in (ctx.user_col, ctx.item_col) if col)
+    missing = sorted(required - set(columns))
+    if missing:
+        errors.append(f"execution output is missing required columns: {missing}")
+
+    missing_dtypes = sorted(set(columns) - set(dtypes))
+    if missing_dtypes:
+        errors.append(f"execution output is missing dtype metadata for columns: {missing_dtypes}")
+    unsupported = sorted(
+        col for col, dtype in dtypes.items()
+        if not str(dtype).strip() or any(token in str(dtype).lower() for token in ("complex", "void"))
+    )
+    if unsupported:
+        errors.append(f"execution output has unsupported dtypes in columns: {unsupported}")
+
+    if budget is not None:
+        if budget.max_output_rows is not None and rows > budget.max_output_rows:
+            errors.append(
+                f"execution output rows {rows} exceed budget max_output_rows={budget.max_output_rows}"
+            )
+        if budget.max_output_columns is not None and cols > budget.max_output_columns:
+            errors.append(
+                f"execution output columns {cols} exceed budget "
+                f"max_output_columns={budget.max_output_columns}"
+            )
+    return errors
 
 
 class Evaluator:
@@ -1428,6 +1523,7 @@ class Evaluator:
         model_name: str | None = None,
         verbose: bool = False,
         scoring_method: str = "full_train",
+        budget: Budget | None = None,
     ) -> None:
         self.data_name = data_name
         self.metric_key = metric_key
@@ -1436,6 +1532,7 @@ class Evaluator:
         self.model_name = model_name
         self.verbose = verbose
         self.scoring_method = scoring_method
+        self.budget = budget
         if task_dir is None:
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
             task_dir = os.path.join(root, "dppbench", "tasks", data_name)
@@ -1455,6 +1552,7 @@ class Evaluator:
                 device=self.device,
                 model_name=self.model_name,
                 scoring_method=self.scoring_method,
+                budget=self.budget,
             )
         return self._delegate
 
@@ -1478,4 +1576,3 @@ class Evaluator:
             Pipeline.from_yaml(pipeline_yaml),
             scoring_method=scoring_method,
         )
-

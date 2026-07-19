@@ -15,7 +15,6 @@ TASKS = [
     ("beijing_air_quality", "LightGBM", "cpu"),
     ("berka", "LightGBM", "cpu"),
     ("bike_sharing", "LightGBM", "cpu"),
-    ("bondora", "LightGBM", "cpu"),
     ("citibike_jc_hourly", "LightGBM", "cpu"),
     ("default_credit", "LightGBM", "cpu"),
     ("fraud_detection", "LightGBM", "cpu"),

@@ -59,6 +59,7 @@ from scripts.build_std_test import (  # noqa: E402
     rec_cold_start_user_filter,
     run_for_task as build_std_test_for_task,
 )
+from baselines.common.budget import Budget, budget_scope  # noqa: E402
 
 
 def _load_class(cls_path: str):
@@ -125,7 +126,7 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
     "DeepPrep": {
         "cls_path": "baselines.DeepPrep.deepprep.DeepPrep",
         "supports_eval_full": True,
-        "time_cost_kind": "training",
+        "time_cost_kind": "search_inference",
         "max_len_arg": "max_chain_len",
         "kwargs": {},
     },
@@ -168,6 +169,13 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "cls_path": "baselines.HAIPipe.haipipe.HAIPipe",
         "supports_eval_full": True,
         "time_cost_kind": "training",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
+    "FlowPipe": {
+        "cls_path": "baselines.FlowPipe.flowpipe.FlowPipe",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
@@ -284,6 +292,28 @@ def parse_args():
             "and rejects final pipelines that still exceed it."
         ),
     )
+    parser.add_argument("--max_evaluations", type=int, default=None)
+    parser.add_argument("--max_memory_mb", type=float, default=None)
+    parser.add_argument("--max_gpu_memory_mb", type=float, default=None)
+    parser.add_argument("--max_llm_calls", type=int, default=None)
+    parser.add_argument("--max_seconds", type=float, default=None)
+    parser.add_argument("--max_output_rows", type=int, default=None)
+    parser.add_argument("--max_output_columns", type=int, default=None)
+    parser.add_argument(
+        "--ctxpipe_gte_model_path", type=str,
+        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large",
+        help="Local GTE checkpoint used by CtxPipe.",
+    )
+    parser.add_argument(
+        "--deepprep_model_path", type=str,
+        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B",
+        help="Released local DeepPrep checkpoint.",
+    )
+    parser.add_argument(
+        "--qwen3_model_path", type=str,
+        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
+        help="Local Qwen3-8B checkpoint used by BAT and FlowPipe.",
+    )
     parser.add_argument(
         "--skip_build", action="store_true",
         help=(
@@ -365,11 +395,37 @@ def _apply_max_pipeline_len(
     kwargs[arg_name] = int(max_pipeline_len)
 
 
+def _apply_baseline_model_paths(
+    baseline_name: str,
+    kwargs: dict[str, Any],
+    args,
+) -> None:
+    """Map experiment checkpoint arguments to each baseline's public API."""
+    if baseline_name == "CtxPipe":
+        kwargs["gte_model_path"] = args.ctxpipe_gte_model_path
+    elif baseline_name == "DeepPrep":
+        kwargs.update({
+            "llm_backend": "local",
+            "llm_model": args.deepprep_model_path,
+        })
+    elif baseline_name == "BAT":
+        kwargs.update({
+            "llm_backend": "local",
+            "llm_model": args.qwen3_model_path,
+        })
+    elif baseline_name == "FlowPipe":
+        kwargs.update({
+            "llama_model_path": args.qwen3_model_path,
+            "llm_name": "Qwen3-8B",
+        })
+
+
 def _run_baseline_and_eval(
     task_name: str,
     baseline_name: str,
     args,
     out_root: str,
+    budget: Budget | None = None,
 ) -> dict[str, Any]:
     """Run the baseline construction loop, then re-evaluate the produced
     pipeline end-to-end so the downstream model is trained and scored on
@@ -383,9 +439,14 @@ def _run_baseline_and_eval(
     conf = BASELINE_CONFIGS[baseline_name]
     cls = _load_class(conf["cls_path"])
     kwargs = dict(conf["kwargs"])
+    _apply_baseline_model_paths(baseline_name, kwargs, args)
     if conf["supports_eval_full"]:
         kwargs["eval_full"] = False
-    _apply_max_pipeline_len(conf, cls, kwargs, args.max_pipeline_len)
+    max_pipeline_len = (
+        budget.max_pipeline_length if budget is not None
+        else args.max_pipeline_len
+    )
+    _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
 
     task_dir = os.path.join(_ROOT, "dppbench", "tasks", task_name)
     task_data_dir = _task_data_dir(task_name, args.data_dir)
@@ -398,20 +459,27 @@ def _run_baseline_and_eval(
     if "model_name" in inspect.signature(cls).parameters:
         kwargs["model_name"] = model_name
 
-    runner = cls(
-        task_dir=task_dir,
-        data_name=task_name,
-        data_dir=task_data_dir,
-        seed=args.seed,
-        output_dir=runner_output_dir,
-        verbose=not args.quiet,
-        device=args.device,
-        **kwargs,
-    )
-
     # ---- Phase 1: construct preprocessing pipeline ---------------------
     t0 = time.time()
-    result = runner.run()
+    if budget is not None:
+        budget.start()
+    with budget_scope(budget):
+        if budget is not None:
+            budget.check_resources()
+        runner = cls(
+            task_dir=task_dir,
+            data_name=task_name,
+            data_dir=task_data_dir,
+            seed=args.seed,
+            output_dir=runner_output_dir,
+            verbose=not args.quiet,
+            device=args.device,
+            **kwargs,
+        )
+        result = runner.run()
+        if budget is not None:
+            budget.check_resources()
+    search_budget_snapshot = budget.snapshot() if budget is not None else None
     construct_time = time.time() - t0
     if result.get("unsupported_task_type"):
         error = result.get("error") or result.get("eval_error") or (
@@ -433,10 +501,10 @@ def _run_baseline_and_eval(
     from baselines.common.pipeline import Pipeline
 
     pipeline = Pipeline.from_yaml(pipeline_yaml)
-    if args.max_pipeline_len is not None and len(pipeline) > args.max_pipeline_len:
+    if max_pipeline_len is not None and len(pipeline) > max_pipeline_len:
         raise RuntimeError(
             f"{baseline_name} produced pipeline length {len(pipeline)} "
-            f"> max_pipeline_len={args.max_pipeline_len}"
+            f"> max_pipeline_len={max_pipeline_len}"
         )
     evaluator = PipelineEvaluator(
         task_dir=task_dir, data_name=task_name,
@@ -495,7 +563,8 @@ def _run_baseline_and_eval(
         "baseline": baseline_name,
         "model": model_name,
         "output_dir": runner_output_dir,
-        "max_pipeline_len": args.max_pipeline_len,
+        "max_pipeline_len": max_pipeline_len,
+        "budget": search_budget_snapshot,
         "search_fitness": (
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
@@ -566,6 +635,7 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
             "ops": row.get("ops"),
             "n_unique_evals": row.get("n_unique_evals"),
         },
+        "budget": row.get("budget"),
         "error": row.get("error"),
     }
 
@@ -586,7 +656,7 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "final_model_training_seconds", "final_model_inference_seconds",
         "final_eval_seconds", "construct_time_s", "eval_time_s",
         "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
-        "baseline_eval_error", "std_test_error", "error",
+        "baseline_eval_error", "std_test_error", "budget", "error",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -595,6 +665,8 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
             out = dict(r)
             if isinstance(out.get("ops"), list):
                 out["ops"] = "|".join(out["ops"])
+            if isinstance(out.get("budget"), dict):
+                out["budget"] = json.dumps(out["budget"], ensure_ascii=False)
             writer.writerow({k: out.get(k) for k in fields})
 
 
@@ -646,10 +718,20 @@ def main():
             "output_dir": run_output_dir,
             "max_pipeline_len": args.max_pipeline_len,
         }
+        budget = Budget(
+            max_pipeline_length=args.max_pipeline_len,
+            max_evaluations=args.max_evaluations,
+            max_memory_mb=args.max_memory_mb,
+            max_gpu_memory_mb=args.max_gpu_memory_mb,
+            max_llm_calls=args.max_llm_calls,
+            max_seconds=args.max_seconds,
+            max_output_rows=args.max_output_rows,
+            max_output_columns=args.max_output_columns,
+        )
         try:
             _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
             row.update(_run_baseline_and_eval(
-                task_name, args.baseline, args, out_root
+                task_name, args.baseline, args, out_root, budget=budget
             ))
         except Exception as e:
             tb = traceback.format_exc(limit=2)
@@ -676,6 +758,7 @@ def main():
                 "n_steps": None,
                 "ops": None,
                 "n_unique_evals": None,
+                "budget": budget.snapshot(),
                 "error": f"{type(e).__name__}: {e}",
             })
         rows.append(row)

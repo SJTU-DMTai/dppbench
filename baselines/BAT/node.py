@@ -43,7 +43,7 @@ class MCTSNode:
     depth: int = 0
 
     # ---- DPAS payload ----
-    schema_match: Optional[dict] = None
+    schema_match: Optional[Any] = None
     column_functions: Optional[str] = None
     pipeline_steps: list[PipelineStep] = field(default_factory=list)
     revised_pipeline_steps: list[PipelineStep] = field(default_factory=list)

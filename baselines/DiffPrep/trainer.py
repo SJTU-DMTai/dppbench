@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Callable, List, Tuple
 
@@ -46,6 +47,7 @@ class DiffPrepTrainer:
         eps_finite_diff: float = 1e-3,
         second_order: bool = False,
         sgd_momentum: float = 0.9,
+        arch_betas: tuple[float, float] = (0.5, 0.999),
         verbose: bool = True,
     ) -> None:
         self.continuous = continuous
@@ -67,8 +69,12 @@ class DiffPrepTrainer:
         self.arch_params = [self.continuous.tau]
         if self.continuous.theta is not None:
             self.arch_params.append(self.continuous.theta)
-        self.opt_alpha = torch.optim.Adam(self.arch_params, lr=self.lr_alpha)
+        self.opt_alpha = torch.optim.Adam(
+            self.arch_params, lr=self.lr_alpha, betas=arch_betas
+        )
         self.history: List[EpochRecord] = []
+        self.best_epoch: int | None = None
+        self.best_val_loss = float("inf")
 
     @staticmethod
     def _params(module: nn.Module) -> list[torch.nn.Parameter]:
@@ -105,7 +111,12 @@ class DiffPrepTrainer:
     ) -> list[torch.Tensor]:
         model_params = self._params(self.surrogate)
         norm = torch.sqrt(sum((v.detach() ** 2).sum() for v in vector)).clamp(min=1e-12)
-        r = self.eps / norm
+        weight_norm = torch.sqrt(
+            sum((p.detach() ** 2).sum() for p in model_params)
+        ).clamp(min=1e-12)
+        # Match the official implementation:
+        #   eps * ||w|| / ||dL_val/dw||
+        r = self.eps * weight_norm / norm
 
         with torch.no_grad():
             for p, old, v in zip(model_params, backup, vector):
@@ -157,18 +168,17 @@ class DiffPrepTrainer:
 
     def train(self) -> List[EpochRecord]:
         self.history.clear()
+        self.best_epoch = None
+        self.best_val_loss = float("inf")
+        best_continuous = None
+        best_surrogate = None
         self.continuous.train()
         self.surrogate.train()
 
         for epoch in range(self.n_epochs):
             t0 = time.time()
-            try:
-                val_loss, val_acc, virtual_train_loss = self._step_arch()
-                train_loss = self._step_inner()
-            except Exception as e:
-                if self.verbose:
-                    print(f"[DiffPrep] epoch {epoch}: bilevel step failed ({e})")
-                train_loss = val_loss = val_acc = virtual_train_loss = float("nan")
+            val_loss, val_acc, virtual_train_loss = self._step_arch()
+            train_loss = self._step_inner()
 
             argmax_ops = self.argmax_op_fn(self.continuous)
             rec = EpochRecord(
@@ -180,6 +190,11 @@ class DiffPrepTrainer:
                 duration_seconds=time.time() - t0,
             )
             self.history.append(rec)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.best_epoch = epoch
+                best_continuous = deepcopy(self.continuous.state_dict())
+                best_surrogate = deepcopy(self.surrogate.state_dict())
             if self.verbose:
                 print(
                     f"[DiffPrep] epoch={epoch+1}/{self.n_epochs}  "
@@ -188,6 +203,11 @@ class DiffPrepTrainer:
                     f"val_loss={val_loss:.4f}  val_acc={val_acc:.4f}  "
                     f"ops={argmax_ops}"
                 )
+        # The official experiment discretizes/evaluates the checkpoint with the
+        # smallest validation loss, rather than the last optimization iterate.
+        if best_continuous is not None:
+            self.continuous.load_state_dict(best_continuous)
+            self.surrogate.load_state_dict(best_surrogate)
         return self.history
 
     def save_history(self, path: str) -> None:

@@ -12,10 +12,62 @@ CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/ll
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
 QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 
+usage() {
+  cat <<EOF
+Usage: $0 [--gpu_id GPU_ID] [--cpu]
+
+Options:
+  --gpu_id GPU_ID   GPU index passed to scripts/evaluate_baseline.py.
+                    Use -1 for CPU. Default: ${GPU_ID}
+  --gpu_id=GPU_ID   Same as --gpu_id GPU_ID.
+  --cpu             Equivalent to --gpu_id -1.
+  -h, --help        Show this help.
+
+Environment variables such as GPU_ID, DATA_DIR, OUTPUT_ROOT, TASKS,
+BASELINES, SEEDS, and MAX_PIPELINE_LEN are still supported. Command-line
+--gpu_id takes precedence over GPU_ID.
+EOF
+}
+
+parse_common_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --gpu_id)
+        if [[ $# -lt 2 ]]; then
+          echo "[error] --gpu_id requires a value." >&2
+          usage >&2
+          exit 2
+        fi
+        GPU_ID="$2"
+        shift 2
+        ;;
+      --gpu_id=*)
+        GPU_ID="${1#*=}"
+        shift
+        ;;
+      --cpu)
+        GPU_ID="-1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "[error] unknown argument: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+parse_common_args "$@"
+
 DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
 TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
-DEFAULT_BASELINES="SAGA SPIO ReAct BAT DataMaster AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
+DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
 SEEDS="${SEEDS:-42 43 44}"

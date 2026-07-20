@@ -112,6 +112,10 @@ TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
 # baselines not based on LLMs
 DEFAULT_BASELINES="SAGA AutoPrep Learn2Clean AlphaClean Random DiffPrep HAIPipe"
+
+# baselines based on LLMs
+# DEFAULT_BASELINES="BAT DeepPrep CtxPipe FlowPipe"
+
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
 SEEDS="${SEEDS:-42 43 44}"

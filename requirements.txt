@@ -24,3 +24,4 @@ kaggle
 # LLM-based baselines
 openai
 transformers
+accelerate

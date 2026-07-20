@@ -7,6 +7,7 @@ import unittest
 from baselines.common.data_ctx import DataContext, TableContext
 from baselines.common.pipeline import PipelineStep
 from baselines.DeepPrep.llm_client import LLMClient
+from baselines.DeepPrep.operator_catalog import mandatory_ops_for_context
 from baselines.DeepPrep.sandbox import ExecutionResult, ObsState
 from baselines.DeepPrep.target_schema import TargetSchema
 from baselines.DeepPrep.tree_agent import TreeAgent, chain_to_steps, parse_response
@@ -48,6 +49,56 @@ class DeepPrepProtocolTest(unittest.TestCase):
             parse_response("<plan>x</plan><expand parent='root'>A</expand><answer></answer>").kind,
             "noop",
         )
+
+    def test_qwen_thinking_block_is_accepted_as_plan(self):
+        action = parse_response(
+            "<think>include all required operators</think>"
+            "<expand>HandleMV(method='median', action='impute')</expand>"
+        )
+        self.assertEqual(action.kind, "expand")
+        self.assertEqual(action.plan, "include all required operators")
+
+    def test_qwen_prompt_owned_opening_think_tag_is_accepted(self):
+        action = parse_response(
+            "include all required operators</think>"
+            "<expand>HandleMV(method='median', action='impute')</expand>"
+        )
+        self.assertEqual(action.kind, "expand")
+        self.assertEqual(action.plan, "include all required operators")
+
+    def test_initial_prompt_exposes_context_contract(self):
+        ctx = DataContext(
+            task_type="rec",
+            data_name="unit_rec",
+            primary_table="interaction",
+            secondary_tables=["item"],
+            tables={
+                "interaction": TableContext(
+                    name="interaction",
+                    role="primary",
+                    shape=(3, 3),
+                    dtypes={"user_id": "int64", "item_id": "int64", "label": "int64"},
+                ),
+                "item": TableContext(
+                    name="item",
+                    role="secondary",
+                    shape=(2, 2),
+                    dtypes={"item_id": "int64", "brand": "object"},
+                    join_keys_to_primary=[{"primary": "item_id", "secondary": "item_id"}],
+                ),
+            },
+        )
+        self.assertEqual(
+            mandatory_ops_for_context(ctx),
+            ["CreateSequence", "JoinTable", "SampleNegative"],
+        )
+        agent = TreeAgent(object(), object(), ctx, verbose=False)
+        prompt = agent._initial_messages("root observation")[1]["content"]
+        self.assertIn("# Mandatory DPPBench contract", prompt)
+        self.assertIn("- CreateSequence", prompt)
+        self.assertIn("- JoinTable", prompt)
+        self.assertIn("- SampleNegative", prompt)
+        self.assertIn("join_keys_to_primary=[{'primary': 'item_id'", prompt)
 
     def test_strict_chain_uses_only_declared_defaults(self):
         steps = chain_to_steps(

@@ -10,6 +10,7 @@ from baselines.common.op_spec import (
     valid_targets_for,
 )
 from baselines.common.pipeline import get_category_order
+from baselines.common.data_ctx import DataContext
 from baselines.common.utils import get_available_ops
 from .operator_adapter import ORIGINAL_OPERATOR_ALIASES
 
@@ -19,6 +20,18 @@ def operators_for_task(task_type: str, include_custom: bool = False) -> list[str
         spec.op_name
         for spec in get_available_ops(task_type, include_custom=include_custom)
     ]
+
+
+def mandatory_ops_for_context(ctx: DataContext) -> list[str]:
+    """Return the exact mandatory set enforced by the shared legality gate."""
+    names = {
+        spec.op_name
+        for spec in get_available_ops(ctx.task_type)
+        if is_mandatory(spec.op_name, ctx.task_type)
+    }
+    if ctx.secondary_tables:
+        names.add("JoinTable")
+    return sorted(names)
 
 
 def _param_space_text(spec: OpSpec) -> str:
@@ -83,5 +96,6 @@ __all__ = [
     "OpSpec",
     "operators_by_category",
     "operators_for_task",
+    "mandatory_ops_for_context",
     "format_op_descriptions",
 ]

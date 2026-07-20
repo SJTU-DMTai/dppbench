@@ -28,7 +28,7 @@ from baselines.common.pipeline import (
 from baselines.common.utils import get_available_ops, get_op
 
 from .llm_client import LLMClient
-from .operator_catalog import format_op_descriptions
+from .operator_catalog import format_op_descriptions, mandatory_ops_for_context
 from .operator_adapter import adapt_operator_instance
 from .prompts import (
     SYSTEM_TREE_SEARCH,
@@ -77,6 +77,14 @@ def _extract_reasoning(text: str, regex: re.Pattern) -> Optional[str]:
 def parse_response(text: str) -> ParsedAction:
     plan = _extract_reasoning(text, _PLAN_RE)
     think = _extract_reasoning(text, _THINK_RE)
+    if not think and "</think>" in text:
+        # Some Qwen chat-template combinations include the opening tag in the
+        # prompt, so decoded new tokens contain only its closing tag.
+        think = text.split("</think>", 1)[0].strip() or None
+    # Released Qwen3 checkpoints may still emit their native thinking block
+    # despite protocol instructions. Treat it as the plan for compatibility.
+    if not plan and think:
+        plan = think
     found = []
     for kind, regex in _ACTIONS.items():
         match = regex.search(text)
@@ -265,15 +273,30 @@ class TreeAgent:
             print("[DeepPrep.Agent]", message)
 
     def _initial_messages(self, observation: str) -> list[dict]:
-        summary = (
-            f"task_type={self.ctx.task_type} dataset={self.ctx.data_name}\n"
-            f"target_col={self.ctx.target_col} time_col={self.ctx.time_col} id_col={self.ctx.id_col}\n"
-            f"source_tables={self.ctx.source_tables()}"
-        )
+        summary_lines = [
+            f"task_type={self.ctx.task_type} dataset={self.ctx.data_name}",
+            f"target_col={self.ctx.target_col} time_col={self.ctx.time_col} id_col={self.ctx.id_col}",
+            f"user_col={self.ctx.user_col} item_col={self.ctx.item_col}",
+            "source_tables:",
+        ]
+        for table_name in self.ctx.source_tables():
+            table = self.ctx.tables.get(table_name)
+            if table is None:
+                continue
+            summary_lines.append(
+                f"- {table_name}: role={table.role} shape={table.shape} "
+                f"dtypes={table.dtypes} join_keys_to_primary={table.join_keys_to_primary}"
+            )
+        summary = "\n".join(summary_lines)
+        mandatory_ops = mandatory_ops_for_context(self.ctx)
+        required_ops_text = "\n".join(
+            f"- {name}" for name in mandatory_ops
+        ) or "- none"
         user = render_user_initial(
             task_type=self.ctx.task_type,
             data_name=self.ctx.data_name,
             summary_text=summary,
+            required_ops_text=required_ops_text,
             target_schema_text=self.target_schema.render(),
             op_descriptions=format_op_descriptions(self.ctx.task_type),
             obs_text=observation,

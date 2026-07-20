@@ -188,7 +188,9 @@ class LLMClient:
         tok = self._local_tokenizer
         mdl = self._local_model
         prompt = tok.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
         import torch  # noqa: WPS433  -- local-only import
         inputs = tok(prompt, return_tensors="pt").to(mdl.device)

@@ -8,7 +8,9 @@ SYSTEM_TREE_SEARCH = """You are DeepPrep, an execution-grounded data-preparation
 You search a materialized tree of intermediate table states.
 
 # Protocol
-Every response MUST contain a <plan>...</plan> followed by exactly one action:
+Every response MUST contain one reasoning block followed by exactly one action.
+Use <plan>...</plan>. If your native chat template already starts a
+<think>...</think> block, that block is accepted as the plan; do not emit both.
 
 1. <expand>FULL ROOT-TO-NODE PATH --> OpA(...) --> OpB(...)</expand>
    Emit the complete path: copy an existing materialized root-to-node path,
@@ -38,6 +40,7 @@ def render_user_initial(
     task_type: str,
     data_name: str,
     summary_text: str,
+    required_ops_text: str,
     target_schema_text: str,
     op_descriptions: str,
     obs_text: str,
@@ -50,6 +53,12 @@ dataset `{data_name}`.
 
 # Source-table summary
 {summary_text}
+
+# Mandatory DPPBench contract
+The final answered path MUST contain every operator listed below. These are
+context-dependent benchmark requirements, not suggestions, and the environment
+will reject an answer that omits any of them.
+{required_ops_text}
 
 # Target schema Sigma*
 {target_schema_text}
@@ -64,7 +73,8 @@ dataset `{data_name}`.
 - Maximum operators in one <expand>: {max_chain_len}
 - Maximum reasoning turns: {max_explore_turn}
 
-Start with <plan>, then emit exactly one <expand> or <answer> action.
+Emit one <plan> (or the native <think> block already started by your chat
+template), then exactly one <expand> or <answer> action.
 """.strip()
 
 
@@ -94,8 +104,8 @@ def render_protocol_error(error: str, turn_left: int) -> str:
     return (
         '<execute status="FAILED" parent="unchanged">\n'
         f"error: {error}\n"
-        "No tree state was changed. Emit <plan> followed by exactly one "
-        "<expand> or <answer>.\n"
+        "No tree state was changed. Emit one <plan> (or native <think>) "
+        "followed by exactly one <expand> or <answer>.\n"
         f"turns_left: {max(0, turn_left)}\n"
         "</execute>"
     )

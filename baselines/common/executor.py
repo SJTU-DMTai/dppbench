@@ -33,13 +33,14 @@ GRAPH_MODELS = {"GCN", "GraphSAGE", "GAT"}
 
 class TrainingExecutor:
     def __init__(self, task_dir, data_name, data_dir=None, device="cpu",
-                 model_name=None, model_config=None):
+                 model_name=None, model_config=None, seed=None):
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
         self.device = device
         self.model_name = model_name
         self.model_config = model_config
+        self.seed = int(seed) if seed is not None else None
         self.original_yaml = os.path.join(task_dir, "prepare.yaml")
         self.model_yaml = os.path.join(task_dir, "model.yaml")
         if data_name not in DATASET_REGISTRY:
@@ -136,7 +137,11 @@ class TrainingExecutor:
     def get_model_config(self):
         with open(self.model_yaml, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
-        return self._resolve_model_config(cfg)
+        cfg = self._resolve_model_config(cfg)
+        if self.seed is not None:
+            cfg.setdefault("model_params", {})["seed"] = self.seed
+            cfg.setdefault("train", {})["seed"] = self.seed
+        return cfg
 
     def _resolve_model_config(self, cfg):
         cfg = copy.deepcopy(cfg)
@@ -701,6 +706,8 @@ class TrainingExecutor:
         try:
             data = self._make_configured_data_instance()
             data.load_data()
+            if self._evaluate_std_test:
+                data.load_std_test_frozen()
             data.run_pre_process(os.path.abspath(self._working_yaml))
             result["execution_data"] = self._execution_profile(data)
 
@@ -731,7 +738,25 @@ class TrainingExecutor:
             graph_result = train_graph(model, graph, model_params, train_cfg, device=self.device)
 
             result["success"] = True
-            result["metrics"] = dict(graph_result) if isinstance(graph_result, dict) else {"result": graph_result}
+            raw_metrics = (
+                dict(graph_result)
+                if isinstance(graph_result, dict)
+                else {"result": graph_result}
+            )
+            val_metrics = {
+                key[len("val_"):]: value
+                for key, value in raw_metrics.items()
+                if key.startswith("val_")
+            }
+            result["metrics"] = val_metrics or raw_metrics
+            if self._evaluate_std_test and val_metrics:
+                for key, value in raw_metrics.items():
+                    if key.startswith("std_test_"):
+                        result["metrics"][key] = value
+                    elif not key.startswith("val_"):
+                        if key == "std_test_n_nodes":
+                            result["metrics"]["std_test_n_rows"] = value
+                        result["metrics"][f"test_{key}"] = value
             result["train_shape"] = (int(graph["x"].shape[0]), int(graph["x"].shape[1]))
             result["n_features"] = int(graph["x"].shape[1])
 

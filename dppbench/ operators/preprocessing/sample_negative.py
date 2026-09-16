@@ -100,9 +100,6 @@ dag:
         if len(item_pool) == 0:
             return df.reset_index(drop=True)
         item_pool = np.asarray(item_pool)
-        item_to_idx = {it: i for i, it in enumerate(item_pool)}
-        n_items = len(item_pool)
-
         item_feature_cols = self._item_feature_cols(df)
 
         # Identify columns that must be zeroed out on negative rows
@@ -133,40 +130,31 @@ dag:
         n_pos = len(pos_df)
         total_neg = n_pos * self.n_negatives
 
-        # Build per-user forbidden item mask as a dense boolean array.
-        user_items_grouped = df.groupby(self.user_col)[self.item_col].apply(
-            lambda s: np.array([item_to_idx[v] for v in s if v in item_to_idx])
+        # Reject observed user-item pairs using a sparse set. Sampling all rows
+        # together avoids one RNG call per user on large, sparse datasets.
+        observed_pairs = set(zip(df[self.user_col], df[self.item_col]))
+        item_counts = df.groupby(self.user_col)[self.item_col].nunique()
+        saturated_users = set(item_counts[item_counts >= len(item_pool)].index)
+        eligible_pos_idx = np.flatnonzero(~np.isin(users, list(saturated_users)))
+        out_pos_idx = np.repeat(eligible_pos_idx, self.n_negatives)
+        sampled_users = users[out_pos_idx]
+        neg_item_ids = rng.choice(item_pool, size=len(out_pos_idx), replace=True)
+        conflicts = np.fromiter(
+            ((user, item) in observed_pairs
+             for user, item in zip(sampled_users, neg_item_ids)),
+            dtype=bool, count=len(out_pos_idx),
         )
-        user_forbidden = {}
-        for uid, idxs in user_items_grouped.items():
-            mask = np.zeros(n_items, dtype=bool)
-            if len(idxs) > 0:
-                mask[np.asarray(idxs, dtype=np.int64)] = True
-            user_forbidden[uid] = mask
-
-        # For each positive row, sample n_negatives items from allowed pool.
-        neg_item_ids = np.empty(total_neg, dtype=item_pool.dtype)
-        out_pos_idx = np.empty(total_neg, dtype=np.int64)
-        write_ptr = 0
-
-        # Group positive indices by user for vectorized sampling.
-        user_pos_idx: dict = {}
-        for i, u in enumerate(users):
-            user_pos_idx.setdefault(u, []).append(i)
-
-        for uid, pidxs in user_pos_idx.items():
-            forbidden = user_forbidden.get(uid, np.zeros(n_items, dtype=bool))
-            allowed_mask = ~forbidden
-            allowed_items = item_pool[allowed_mask]
-            if len(allowed_items) == 0:
-                continue
-            n_needed = len(pidxs) * self.n_negatives
-            picks = rng.choice(allowed_items, size=n_needed, replace=True)
-            neg_item_ids[write_ptr:write_ptr + n_needed] = picks
-            out_pos_idx[write_ptr:write_ptr + n_needed] = np.repeat(
-                np.asarray(pidxs, dtype=np.int64), self.n_negatives
+        while conflicts.any():
+            neg_item_ids[conflicts] = rng.choice(
+                item_pool, size=int(conflicts.sum()), replace=True,
             )
-            write_ptr += n_needed
+            conflict_idx = np.flatnonzero(conflicts)
+            conflicts[conflict_idx] = np.fromiter(
+                ((sampled_users[i], neg_item_ids[i]) in observed_pairs
+                 for i in conflict_idx),
+                dtype=bool, count=len(conflict_idx),
+            )
+        write_ptr = len(out_pos_idx)
 
         if write_ptr == 0:
             return pd.concat([neg_df, pos_df], ignore_index=True)

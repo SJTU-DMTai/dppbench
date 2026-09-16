@@ -313,9 +313,14 @@ def train_graph(model, graph, model_params, train_cfg, device=None):
         threshold = 0.5
         if "f1" in metrics and bool(train_cfg.get("calibrate_threshold", True)):
             threshold = _best_f1_threshold(logits_eval, y, val_mask)
+        val_result = _eval_metrics(
+            logits_eval, y, val_mask, metrics, threshold=threshold,
+        )
         test_result = _eval_metrics(
             logits_eval, y, test_mask, metrics, threshold=threshold,
         )
+        for key, value in val_result.items():
+            test_result[f"val_{key}"] = value
         if "f1" in metrics:
             test_result["f1_threshold"] = threshold
         std_test_mask_np = graph.get("std_test_mask")

@@ -67,6 +67,26 @@ def adapt_operator_instance(op_name: str, params: dict) -> tuple[str, dict]:
         if p or not other:
             raise ValueError("Append requires an existing other table")
         return "ConcatTable", {"other_dfs": [f"${other}_df"], "axis": "vertical"}
+    if op_name == "CreateSequence":
+        # Released DeepPrep checkpoints use these names for the same
+        # DPPBench CreateSequence constructor fields.
+        p.pop("target_col", None)
+        aliases = {
+            "source_col": "item_col",
+            "sequence_col": "seq_col",
+            "output_col": "seq_col",
+            "max_sequence_length": "max_len",
+            "truncate_length": "max_len",
+            "n_sequences": "max_len",
+        }
+        for source, target in aliases.items():
+            if source in p:
+                if target in p:
+                    raise ValueError(
+                        f"CreateSequence specifies both {source!r} and {target!r}"
+                    )
+                p[target] = p.pop(source)
+        return "CreateSequence", p
     return ORIGINAL_OPERATOR_ALIASES.get(op_name, op_name), p
 
 

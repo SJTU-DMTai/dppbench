@@ -90,14 +90,14 @@ class DeepPrepProtocolTest(unittest.TestCase):
         )
         self.assertEqual(
             mandatory_ops_for_context(ctx),
-            ["CreateSequence", "JoinTable", "SampleNegative"],
+            ["CreateSequence", "JoinTable"],
         )
         agent = TreeAgent(object(), object(), ctx, verbose=False)
         prompt = agent._initial_messages("root observation")[1]["content"]
         self.assertIn("# Mandatory DPPBench contract", prompt)
         self.assertIn("- CreateSequence", prompt)
         self.assertIn("- JoinTable", prompt)
-        self.assertIn("- SampleNegative", prompt)
+        self.assertNotIn("- SampleNegative", prompt)
         self.assertIn("join_keys_to_primary=[{'primary': 'item_id'", prompt)
 
     def test_strict_chain_uses_only_declared_defaults(self):

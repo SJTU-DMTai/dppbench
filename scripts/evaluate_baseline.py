@@ -37,6 +37,7 @@ import argparse
 import csv
 import inspect
 import json
+import math
 import os
 import re
 import sys
@@ -54,7 +55,7 @@ if _ROOT not in sys.path:
 # Reuse the std-test builder and the existing baseline registry so we
 # don't duplicate task lists / baseline configs.
 from scripts.build_std_test import (  # noqa: E402
-    REC_SPLIT_METHOD,
+    rec_split_method,
     TASK_REGISTRY as STD_TEST_TASKS,
     rec_cold_start_user_filter,
     run_for_task as build_std_test_for_task,
@@ -275,6 +276,7 @@ def parse_args():
             "<data_dir>/<data_name>/std_test."
         ),
     )
+    parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output_dir", type=str,
@@ -354,7 +356,7 @@ def _ensure_std_test(
     rebuild_reason = "std-test not found" if needs_build else None
     if not needs_build and STD_TEST_TASKS.get(task_name, (None, None))[1] == "rec":
         meta = _load_std_test_meta(task_name, data_dir=data_dir)
-        needs_build = meta.get("split_method") != REC_SPLIT_METHOD
+        needs_build = meta.get("split_method") != rec_split_method(task_name)
         if needs_build:
             rebuild_reason = "std-test protocol changed"
         elif meta.get("cold_start_user_filter") != rec_cold_start_user_filter(task_name):
@@ -512,10 +514,22 @@ def _run_baseline_and_eval(
         device=args.device,
         model_name=model_name,
         scoring_method="full_train",
+        seed=args.seed,
     )
+    hpo_summary = {}
+    if args.final_hpo:
+        from scripts.final_model_hpo import tune_final_model
+        evaluator._executor.cleanup()
+        evaluator, hpo_summary = tune_final_model(
+            pipeline, task_dir=task_dir, data_name=task_name,
+            data_dir=task_data_dir, device=args.device, model_name=model_name,
+            seed=args.seed, verbose=not args.quiet,
+            output_dir=runner_output_dir,
+        )
     eval_t0 = time.time()
     ev = evaluator.evaluate(pipeline, scoring_method="full_train")
     eval_time = time.time() - eval_t0
+    evaluator._executor.cleanup()
 
     metrics = ev.metrics or {}
     std_test_metrics = {
@@ -543,7 +557,12 @@ def _run_baseline_and_eval(
                 std_test_primary = v
                 std_test_primary_name = k
                 break
-    if std_test_error is not None:
+    if std_test_primary is not None and not math.isfinite(float(std_test_primary)):
+        std_test_error = (
+            f"non-finite std-test metric {std_test_primary_name}="
+            f"{std_test_primary!r}"
+        )
+    if std_test_error is not None and evaluator.task_type == "graph":
         std_test_primary_name = "unsupported_graph_std_test"
 
     baseline_time_kind = conf.get("time_cost_kind", "search_inference")
@@ -569,6 +588,9 @@ def _run_baseline_and_eval(
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
         ),
+        "final_hpo_seconds": hpo_summary.get("seconds"),
+        "final_hpo_best_params": json.dumps(hpo_summary.get("best_params")) if hpo_summary else None,
+        "final_hpo_trials": len(hpo_summary.get("trials", [])),
         "final_val_fitness": float(ev.fitness) if ev.success else None,
         "val_fitness": float(ev.fitness) if ev.success else None,
         "std_test_auc": float(std_test_auc) if std_test_auc is not None else None,
@@ -648,7 +670,7 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
         "task", "baseline", "model", "output_dir", "max_pipeline_len",
-        "search_fitness",
+        "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",
         "final_val_fitness", "val_fitness", "std_test_metric_name",
         "std_test_metric", "std_test_auc", "std_test_inference_seconds",
         "std_test_n_rows", "baseline_time_kind",

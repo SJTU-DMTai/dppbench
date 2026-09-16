@@ -107,12 +107,19 @@ class BeijingAirQualityData(TabularData):
             + df["hour"].astype("int64")
         )
 
+        # Rows without PM2.5 have no supervised regression label.
+        df = df[df[self.target_col].notna()].copy()
+        df = df[np.isfinite(df[self.target_col].astype(float))].copy()
+
         # Drop original "No" id col if present (per-station numbering).
         if "No" in df.columns:
             df = df.drop(columns=["No"])
 
-        # Build station_meta aux table: per-station numeric summary.
-        meta_cols = [c for c in self.POLLUTANTS + self.METEO if c in df.columns]
+        # Station metadata must not aggregate the current prediction target.
+        meta_cols = [
+            c for c in self.POLLUTANTS + self.METEO
+            if c in df.columns and c != self.target_col
+        ]
         meta = (
             df[["station"] + meta_cols]
             .groupby("station")

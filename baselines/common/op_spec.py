@@ -38,7 +38,7 @@ CATALOG: dict[str, OpSpec] = {}
 VALID_TARGETS: dict[str, tuple[str, ...]] = {}
 NEEDS_CONTEXT: set[str] = set()
 TABULAR_MANDATORY_OPS: set[str] = {"LabelEncode", "HandleMV"}
-REC_MANDATORY_OPS: set[str] = {"CreateSequence", "SampleNegative"}
+REC_MANDATORY_OPS: set[str] = {"CreateSequence"}
 
 
 _OP_DESCRIPTIONS: dict[str, str] | None = None
@@ -244,7 +244,7 @@ def needs_context(op_name: str) -> bool:
 
 
 def is_mandatory(op_name: str, task_type: str | None = None) -> bool:
-    if task_type == "tabular":
+    if task_type in ("tabular", "graph"):
         return op_name in TABULAR_MANDATORY_OPS
     if task_type == "rec":
         return op_name in REC_MANDATORY_OPS
@@ -263,11 +263,12 @@ def operators_for_task(task_type: str, include_custom: bool = False) -> list[str
     names start with ``Custom`` are excluded. LLM/custom-code baselines may pass
     ``include_custom=True`` explicitly.
     """
-    if task_type not in ("tabular", "rec"):
+    if task_type not in ("tabular", "rec", "graph"):
         raise ValueError(f"Unknown task_type {task_type}")
+    applicable_task_types = ("both",) if task_type == "graph" else (task_type, "both")
     return [
         name for name, spec in CATALOG.items()
-        if (spec.task_type == task_type or spec.task_type == "both")
+        if spec.task_type in applicable_task_types
         and (include_custom or not is_custom_operator(name))
     ]
 

@@ -41,6 +41,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
             device=device,
             model_name=model_name,
             budget=budget,
+            seed=seed,
         )
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)

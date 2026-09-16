@@ -14,6 +14,7 @@ class TableContext:
     shape: tuple[int, int] | None = None
     dtypes: dict[str, str] = field(default_factory=dict)
     join_keys_to_primary: list[dict[str, str]] = field(default_factory=list)
+    configured_target_col: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -45,9 +46,11 @@ class TableContext:
 
     @property
     def target_col(self) -> str | None:
+        if self.configured_target_col in self.columns:
+            return self.configured_target_col
         return _first_existing(
             self.columns,
-            ("target", "label", "rating", "stars", "click", "is_click", "y"),
+            ("target", "label", "class", "rating", "stars", "click", "is_click", "y"),
         )
 
     @property
@@ -196,6 +199,7 @@ def _profile_table(
     df,
     *,
     join_keys_to_primary: list[dict[str, str]] | None = None,
+    target_col: str | None = None,
 ) -> TableContext:
     if df is None:
         return TableContext(name=name, role=role)
@@ -206,6 +210,7 @@ def _profile_table(
         shape=tuple(df.shape),
         dtypes={c: str(df[c].dtype) for c in columns},
         join_keys_to_primary=join_keys_to_primary or [],
+        configured_target_col=target_col,
     )
 
 
@@ -268,13 +273,16 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
 def _infer_tabular_context(data_name: str, data) -> DataContext:
     train_df = data.train_df
     id_col = getattr(data, "id_col", None)
+    target_col = getattr(data, "target_col", None)
     aux_tables = {
         name: df
         for name, df in (getattr(data, "auxiliary_dfs", None) or {}).items()
         if df is not None
     }
     tables: dict[str, TableContext] = {
-        "main": _profile_table("main", "primary", train_df)
+        "main": _profile_table(
+            "main", "primary", train_df, target_col=target_col
+        )
     }
     preferred_keys = [id_col] if id_col else []
     for name, df in aux_tables.items():
@@ -296,13 +304,16 @@ def _infer_tabular_context(data_name: str, data) -> DataContext:
 def _infer_graph_context(data_name: str, data) -> DataContext:
     train_df = data.train_df
     id_col = getattr(data, "id_col", None)
+    target_col = getattr(data, "target_col", None)
     aux_tables = {
         name: df
         for name, df in (getattr(data, "auxiliary_dfs", None) or {}).items()
         if df is not None
     }
     tables: dict[str, TableContext] = {
-        "main": _profile_table("main", "primary", train_df)
+        "main": _profile_table(
+            "main", "primary", train_df, target_col=target_col
+        )
     }
     preferred_keys = [id_col] if id_col else []
     for name, df in aux_tables.items():

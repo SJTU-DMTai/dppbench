@@ -10,14 +10,13 @@ For each task this script:
       - tabular time-series regression: chronological tail 20%.
       - tabular graph (elliptic_bitcoin): node-id random 20% (seed=42).
       - rec temporal split: the global chronological tail 20% is held
-        out; positive rows in that tail whose user has enough training
-        interactions and whose item appeared in the training window become
-        std-test positives. We additionally sample a fixed set of 100
-        negative items per std-test positive with seed=42 so that ranking
-        metrics are stable across baselines.
+        out, restricted to eligible users and items seen during training.
+        KuaiRec, MovieLens, Yelp and Amazon Beauty retain observed positive
+        feedback. Other rec tasks retain positives and sample fixed
+        negatives with seed=42.
   * Writes raw artefacts to ``dppbench/tasks/<task>/std_test/``:
-      - ``std_test.parquet``            (held-out rows — positives + fixed
-                                         sampled negatives — with labels)
+      - ``std_test.parquet``            (held-out rows with labels; negative
+                                         source depends on the task)
       - ``train_frozen.parquet``        (tabular only — the rest of train)
       - ``interaction_frozen.parquet``  (rec only — interactions w/o std-test)
       - ``meta.json``
@@ -105,6 +104,14 @@ STD_TEST_SEED = 42
 STD_TEST_FRAC = 0.20
 REC_NUM_NEGATIVES = 1
 REC_SPLIT_METHOD = "global_temporal_tail_train_domain_cold_user_filter"
+REC_OBSERVED_FEEDBACK_TASKS = {"amazon_beauty", "kuairec", "movielens", "yelp"}
+
+
+def rec_split_method(task_name):
+    if task_name in REC_OBSERVED_FEEDBACK_TASKS:
+        return REC_SPLIT_METHOD + "_observed_feedback_v1"
+    return REC_SPLIT_METHOD
+
 
 def rec_cold_start_user_filter(task_name, model_cfg=None):
     cfg = model_cfg or _load_model_config(task_name)
@@ -228,6 +235,13 @@ def build_binary(task_name, data, out_dir, dry_run):
 # ---------------------------------------------------------------------------
 def build_timeseries(task_name, data, out_dir, dry_run):
     df = data.train_df.copy()
+    target = data.target_col
+    if target not in df.columns:
+        raise ValueError(f"{task_name}: target_col '{target}' not in train_df")
+    numeric_target = pd.to_numeric(df[target], errors="coerce")
+    valid_target = numeric_target.notna() & np.isfinite(numeric_target)
+    dropped_missing_target = int((~valid_target).sum())
+    df = df.loc[valid_target].copy()
 
     # Resolve the ordering column.
     sort_col = getattr(data, "_sort_col", None)
@@ -247,7 +261,8 @@ def build_timeseries(task_name, data, out_dir, dry_run):
     meta = {
         "task": task_name,
         "kind": "timeseries",
-        "split_method": "chronological_tail",
+        "split_method": "chronological_tail_labeled_v1",
+        "dropped_missing_target_rows": dropped_missing_target,
         "sort_col": sort_col,
         "cut_value": cut_ts.item() if hasattr(cut_ts, "item") else str(cut_ts),
         "test_size": STD_TEST_FRAC,
@@ -367,14 +382,21 @@ def build_rec(task_name, data, out_dir, dry_run):
     train_frozen = df.iloc[:cut_pos].copy()
     future = df.iloc[cut_pos:].copy()
 
+    observed_feedback = task_name in REC_OBSERVED_FEEDBACK_TASKS
     std_candidates = future
-    if target_col and target_col in std_candidates.columns:
+    if observed_feedback:
+        negative_label = label_rule.get("negative_label", 0)
+        if not target_col or target_col not in df.columns:
+            raise ValueError(f"{task_name}: observed feedback requires a target column")
+        if not df[target_col].isin([positive_label, negative_label]).all():
+            raise ValueError(f"{task_name}: observed feedback labels must be binary and non-null")
+    elif target_col and target_col in std_candidates.columns:
         std_candidates = std_candidates[
             std_candidates[target_col] == positive_label
         ].copy()
     if std_candidates.empty:
         raise ValueError(
-            f"{task_name}: no positive interactions in temporal std-test tail "
+            f"{task_name}: no eligible interactions in temporal std-test tail "
             f"(target_col={target_col!r}, positive_label={positive_label!r})"
         )
 
@@ -394,7 +416,7 @@ def build_rec(task_name, data, out_dir, dry_run):
     ].copy()
     if std_test.empty:
         raise ValueError(
-            f"{task_name}: no std-test positives after filtering future rows "
+            f"{task_name}: no std-test interactions after filtering future rows "
             f"to users with >= {min_train_interactions} training interactions "
             "and items seen in the training window"
         )
@@ -408,23 +430,21 @@ def build_rec(task_name, data, out_dir, dry_run):
     )
     std_test = std_test.drop(columns="__row_idx__").reset_index(drop=True)
 
-    # Fixed negatives per std-test positive: sample items from the
-    # training item pool that the user has not interacted with in the
-    # frozen interactions. Negatives are materialized with full columns
-    # (user static attributes back-filled, interaction feedback zeroed,
-    # item features left to JoinTable downstream) so downstream pipelines
-    # see exactly the same columns as positives.
-    all_items = pd.unique(interaction_frozen["item_id"].dropna()).tolist()
-    negatives_raw = _sample_rec_negatives(std_test, interaction_frozen, all_items, rng)
-
-    negative_label = label_rule.get("negative_label", 0)
-    neg_rows = _materialize_rec_negatives(
-        negatives_raw, std_test, interaction_frozen, data,
-        target_col, negative_label,
-    )
-    std_test_combined = pd.concat(
-        [std_test, neg_rows[std_test.columns]], ignore_index=True
-    )
+    if observed_feedback:
+        std_test_combined = std_test.reset_index(drop=True)
+    else:
+        # Implicit-feedback tasks retain fixed sampled negatives. Training
+        # and validation sampling is independently controlled by the pipeline.
+        all_items = pd.unique(interaction_frozen["item_id"].dropna()).tolist()
+        negatives_raw = _sample_rec_negatives(std_test, interaction_frozen, all_items, rng)
+        negative_label = label_rule.get("negative_label", 0)
+        neg_rows = _materialize_rec_negatives(
+            negatives_raw, std_test, interaction_frozen, data,
+            target_col, negative_label,
+        )
+        std_test_combined = pd.concat(
+            [std_test, neg_rows[std_test.columns]], ignore_index=True
+        )
 
     n_pos = int((std_test_combined[target_col] == positive_label).sum()) if target_col else len(std_test)
     n_neg = len(std_test_combined) - n_pos
@@ -435,7 +455,8 @@ def build_rec(task_name, data, out_dir, dry_run):
     meta = {
         "task": task_name,
         "kind": "rec",
-        "split_method": REC_SPLIT_METHOD,
+        "split_method": rec_split_method(task_name),
+        "label_source": "observed_feedback" if observed_feedback else "sampled_negatives",
         "seed": STD_TEST_SEED,
         "test_size": STD_TEST_FRAC,
         "std_test_positives": n_pos,

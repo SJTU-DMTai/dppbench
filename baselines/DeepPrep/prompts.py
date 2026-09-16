@@ -25,12 +25,20 @@ Use <plan>...</plan>. If your native chat template already starts a
 The environment, not you, emits <execute>...</execute> after an expansion.
 Never emit <execute>, <operator>, <solution>, or <backtrack> yourself.
 
+The released checkpoint's native fallback format is also accepted:
+CONCRETE_OP(...) --> CONCRETE_OP(...) </execute>
+Use it only when the chat template does not produce <expand>. The text before
+</execute> must contain only the concrete operator chain, with no prose,
+numbered list, Markdown, or invented execution result.
+
 # Constraints
 - Use only operators and parameter values in the injected DPPBench catalog.
 - Every operator instance must be concrete and use keyword arguments only.
 - Required parameters may not be omitted. The environment never guesses or
   randomly fills missing parameters.
 - Categories are descriptive and do not impose an execution order.
+- Every operator in the mandatory contract must appear in the concrete chain,
+  even when you believe its data contribution is small.
 - To abandon a branch, choose another materialized parent in the next <expand>.
 - Do not claim success until the current tables satisfy the target schema.
 """
@@ -85,6 +93,7 @@ def render_execute(
     obs_text: str,
     error: Optional[str],
     turn_left: int,
+    remaining_required_ops: Optional[list[str]] = None,
 ) -> str:
     status = "FAILED" if error else "OK"
     lines = [f'<execute status="{status}" parent="{parent_path}">']
@@ -95,6 +104,8 @@ def render_execute(
         lines.append("No child was created for the failed operator.")
     elif obs_text:
         lines.append(obs_text)
+    if remaining_required_ops is not None:
+        lines.append(f"mandatory_ops_remaining: {remaining_required_ops}")
     lines.append(f"turns_left: {max(0, turn_left)}")
     lines.append("</execute>")
     return "\n".join(lines)

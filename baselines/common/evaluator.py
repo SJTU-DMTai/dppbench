@@ -46,7 +46,8 @@ class PipelineEvaluator:
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
                  metric_key: str = "auc", verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
-                 scoring_method: str = "full_train", budget: Budget | None = None):
+                 scoring_method: str = "full_train", budget: Budget | None = None,
+                 seed: int | None = None, model_config: dict | None = None):
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
@@ -62,6 +63,8 @@ class PipelineEvaluator:
             data_dir=data_dir,
             device=device,
             model_name=model_name,
+            seed=seed,
+            model_config=model_config,
         )
         self._cache: dict[str, EvaluationResult] = {}
         self._data_context = None

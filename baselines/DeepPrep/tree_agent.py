@@ -58,6 +58,11 @@ _PARENT_BODY_RE = re.compile(r"<parent>(.*?)</parent>", re.DOTALL)
 _PIPELINE_BODY_RE = re.compile(r"<pipeline>(.*?)</pipeline>", re.DOTALL)
 _BACKTRACK_RE = re.compile(r"<backtrack\s*/?>")
 _OP_CALL_RE = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)\s*(\((.*)\))?$", re.DOTALL)
+_NATIVE_CALL = r"[A-Za-z_][A-Za-z_0-9]*\s*\((?:[^()]|\([^()]*\))*\)"
+_NATIVE_EXECUTE_RE = re.compile(
+    rf"(?ms)^[ \t]*(?P<chain>{_NATIVE_CALL}(?:\s*-->\s*{_NATIVE_CALL})*)"
+    r"\s*</execute>"
+)
 
 
 @dataclass
@@ -105,6 +110,19 @@ def parse_response(text: str) -> ParsedAction:
             ))
     if _BACKTRACK_RE.search(text):
         found.append(("backtrack", None, None))
+    if not found:
+        # The released checkpoint may emit its concrete chain directly and
+        # terminate it with </execute>, without an opening action tag.
+        native = _NATIVE_EXECUTE_RE.search(text)
+        if native:
+            found.append(("expand", native.group("chain").strip(), None))
+            if not plan:
+                start = text.rfind("<think>", 0, native.start())
+                if start >= 0:
+                    native_think = text[start + len("<think>"):native.start()].strip()
+                    if native_think:
+                        think = native_think
+                        plan = native_think
     if len(found) != 1:
         return ParsedAction("noop", think=think, plan=plan)
     kind, body, parent = found[0]
@@ -472,6 +490,12 @@ class TreeAgent:
                 obs_text=result.obs.text if result and result.success and result.obs else "",
                 error=failure,
                 turn_left=turns_left,
+                remaining_required_ops=sorted(
+                    set(mandatory_ops_for_context(self.ctx))
+                    - {
+                        step.op for step in cursor.accumulated_steps
+                    }
+                ),
             )
             if failure:
                 self.n_errors += 1

@@ -140,6 +140,7 @@ run_eval() {
 
   local cmd=(
     python scripts/evaluate_baseline.py
+    --final_hpo
     --baseline "${baseline}"
     --data_names "${TASKS}"
     --data_dir "${DATA_DIR}"

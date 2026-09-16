@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import yaml
+import numpy as np
 import pandas as pd
 
 
@@ -620,9 +621,9 @@ class RecData(BaseData):
           * If ``interaction_frozen.parquet`` exists, it replaces the
             current ``interaction_df`` (these are the rows with the
             std-test holdout already removed).
-          * ``std_test.parquet`` contains held-out positives **plus** fixed
-            sampled negatives, already materialized with full columns by
-            ``scripts/build_std_test.py``. Those rows are appended with
+          * ``std_test.parquet`` contains held-out observed feedback or
+            positives plus fixed sampled negatives, depending on the task,
+            produced by ``scripts/build_std_test.py``. Rows are appended with
             ``__split__`` set to ``"std_test"`` so train-only ops leave
             them untouched.
 
@@ -665,7 +666,7 @@ class RecData(BaseData):
             n_pos = int((std_df[target_col] == pos_lbl).sum())
             n_neg = n_total - n_pos
             print(
-                f"  [std_test] loaded {n_pos} held-out interactions + {n_neg} negatives"
+                f"  [std_test] loaded {n_pos} positive rows + {n_neg} negative rows"
             )
         else:
             print(f"  [std_test] loaded {n_total} held-out rows")
@@ -899,6 +900,26 @@ class TabularData(BaseData):
             self.train_df = pd.read_parquet(frozen_path)
 
         std_df = pd.read_parquet(std_test_path).copy()
+
+        target_col = getattr(self, "target_col", None)
+        if target_col:
+            def labeled_rows(df, split_name):
+                if target_col not in df.columns:
+                    raise ValueError(
+                        f"{split_name} is missing target column {target_col!r}"
+                    )
+                numeric_target = pd.to_numeric(df[target_col], errors="coerce")
+                valid = numeric_target.notna() & np.isfinite(numeric_target)
+                dropped = int((~valid).sum())
+                if dropped:
+                    print(
+                        f"  [std_test] dropped {dropped} {split_name} rows "
+                        f"without a finite {target_col} label"
+                    )
+                return df.loc[valid].reset_index(drop=True)
+
+            self.train_df = labeled_rows(self.train_df, "frozen-train")
+            std_df = labeled_rows(std_df, "held-out")
 
         base = self.train_df.copy()
         if "__split__" not in base.columns:

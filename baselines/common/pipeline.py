@@ -426,8 +426,36 @@ def validate_step_params(
         errors.append(f"{op_name} has unknown params: {unknown}")
     errors.extend(_param_space_value_errors(op_name, params))
     if ctx is not None:
+        errors.extend(_target_leakage_errors(op_name, params, ctx))
         errors.extend(_rec_id_protection_errors(op_name, params, ctx))
     return errors
+
+
+_FEATURE_INPUT_PARAMS = {
+    "CreateFeature": ("source_cols",),
+    "CreatePolynomialFeature": ("cols",),
+    "CrossFeature": ("cols",),
+    "AggregateGroupFeature": ("group_cols", "agg_cols"),
+    "ReduceDimension": ("cols",),
+}
+
+
+def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
+    # Derived features must never directly consume the supervised target.
+    target = ctx.target_col
+    if not target:
+        return []
+    leaked_params = [
+        key
+        for key in _FEATURE_INPUT_PARAMS.get(op_name, ())
+        if target in set(_as_list((params or {}).get(key)))
+    ]
+    if not leaked_params:
+        return []
+    return [
+        f"{op_name} cannot use target column {target!r} as a feature input "
+        f"in params {leaked_params}"
+    ]
 
 
 def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
@@ -487,7 +515,14 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         else:
             if not ctx.aux_dfs or ctx.id_col is None:
                 return None
-            aux = rng.choice(ctx.aux_dfs)
+            joinable_aux = [
+                name for name in ctx.aux_dfs
+                if ctx.tables.get(name)
+                and ctx.tables[name].join_keys_to_primary
+            ]
+            if not joinable_aux:
+                return None
+            aux = rng.choice(joinable_aux)
             p["aux_df"] = f"${aux}"
             join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
             p["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
@@ -859,7 +894,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 def default_target_for(op_name: str, task_type: str) -> str:
     if valid_targets_for(op_name) == ("interaction",):
         return "interaction"
-    if task_type == "tabular":
+    if task_type in ("tabular", "graph"):
         return "both"
     return "interaction"
 
@@ -1021,7 +1056,7 @@ def repair(
     if task_type == "rec":
         rng = _random.Random()
         existing = {step.op for step in pipeline.steps}
-        required = ["CreateSequence", "SampleNegative"]
+        required = ["CreateSequence"]
         for op_name in required:
             if op_name not in existing:
                 step = make_step(op_name, ctx, rng)
@@ -1405,7 +1440,7 @@ def check_pipeline(
             if isinstance(node, dict) and node.get("op") in CATALOG
         }
         required = (
-            {"CreateSequence", "SampleNegative"}
+            {"CreateSequence"}
             if ctx.task_type == "rec"
             else {"LabelEncode", "HandleMV"}
         )
@@ -1524,6 +1559,7 @@ class Evaluator:
         verbose: bool = False,
         scoring_method: str = "full_train",
         budget: Budget | None = None,
+        seed: int | None = None,
     ) -> None:
         self.data_name = data_name
         self.metric_key = metric_key
@@ -1533,6 +1569,7 @@ class Evaluator:
         self.verbose = verbose
         self.scoring_method = scoring_method
         self.budget = budget
+        self.seed = seed
         if task_dir is None:
             root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
             task_dir = os.path.join(root, "dppbench", "tasks", data_name)
@@ -1553,6 +1590,7 @@ class Evaluator:
                 model_name=self.model_name,
                 scoring_method=self.scoring_method,
                 budget=self.budget,
+                seed=self.seed,
             )
         return self._delegate
 

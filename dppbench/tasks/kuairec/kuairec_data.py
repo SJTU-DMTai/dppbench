@@ -236,6 +236,10 @@ class KuairecData(RecData):
             },
         )
         df = df.rename(columns={"video_id": "item_id"})
+        # ``play_duration`` is observed only after the recommendation and is
+        # used to derive ``watch_ratio``. Keeping it as a model input would
+        # therefore leak the target.
+        df = df.drop(columns=["play_duration"], errors="ignore")
         return df
 
     def _load_users(self):
@@ -287,7 +291,6 @@ class KuairecData(RecData):
         self.register_col_types({
             "user_id": self.CATEGORICAL,
             "item_id": self.CATEGORICAL,
-            "play_duration": self.NUMERIC,
             "video_duration": self.NUMERIC,
             "time": self.TEXT,
             "date": self.TIMESTAMP,

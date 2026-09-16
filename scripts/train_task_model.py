@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import yaml
 import pandas as pd
-from scripts.build_std_test import REC_SPLIT_METHOD, rec_cold_start_user_filter
+from scripts.build_std_test import rec_split_method, rec_cold_start_user_filter
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "dppbench", "tasks")
 
@@ -221,7 +221,7 @@ def _ensure_std_test(args, cfg):
                 f"label_rule changed for {args.data_name}; "
                 "rebuilding standard test data"
             )
-        elif meta.get("split_method") != REC_SPLIT_METHOD:
+        elif meta.get("split_method") != rec_split_method(args.data_name):
             rebuild_reason = (
                 f"std-test split protocol changed for {args.data_name}; "
                 "rebuilding standard test data"

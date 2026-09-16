@@ -175,28 +175,6 @@ class SAGA:
                   f"id={ctx.id_col}  aux={ctx.aux_dfs}")
             print("=" * 60)
 
-        if ctx.task_type == "graph":
-            duration = time.time() - t0
-            error = "unsupported_task_type=graph: SAGA graph search is not implemented"
-            if self.verbose:
-                print(f"[SAGA] {error}")
-            return {
-                "best_pipeline_yaml": None,
-                "best_pipeline_path": None,
-                "best_fitness": None,
-                "best_metrics": {},
-                "eval_error": error,
-                "is_legal": False,
-                "final_pipeline_ops": [],
-                "top_k": [],
-                "n_unique_evaluations": evaluator.n_unique_evaluations,
-                "logical_history": [],
-                "duration_seconds": duration,
-                "output_dir": self.output_dir,
-                "unsupported_task_type": "graph",
-                "error": error,
-            }
-
         # ---- Logical search ----
         logical = LogicalSearch(
             evaluator=evaluator,

@@ -11,7 +11,7 @@ dag:
     params:
       method: key
       aux_df: $station_meta
-      key_col: PM2.5
+      key_col: station
   - id: o2
     op: LabelEncode
     prev: [o1]

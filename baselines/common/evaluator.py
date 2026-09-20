@@ -44,7 +44,8 @@ class PipelineEvaluator:
     """
 
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
-                 metric_key: str = "auc", verbose: bool = False,
+                #  metric_key: str = "auc", verbose: bool = False,
+                 metric_key: str | None = None, verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
                  scoring_method: str = "full_train", budget: Budget | None = None,
                  seed: int | None = None, model_config: dict | None = None):
@@ -66,6 +67,8 @@ class PipelineEvaluator:
             seed=seed,
             model_config=model_config,
         )
+        if self.metric_key is None:
+            self.metric_key = self._executor.get_model_config().get("train", {}).get("metrics", ["auc"])[0]
         self._cache: dict[str, EvaluationResult] = {}
         self._data_context = None
 
@@ -77,6 +80,9 @@ class PipelineEvaluator:
                 data,
                 self.task_type,
             )
+            # Context contains schema metadata only. Training loads its own
+            # instance, so retaining this raw dataset doubles resident data.
+            self._executor.clear_data_cache()
         return self._data_context
 
     @property
@@ -162,7 +168,17 @@ class PipelineEvaluator:
         success = bool(result.get("success"))
         metrics = result.get("metrics") or {}
         if success:
-            fitness = float(metrics.get(self._metric_key_for_method(method), metrics.get(self.metric_key, metrics.get("auc", 0.0))))
+            # fitness = float(metrics.get(self._metric_key_for_method(method), metrics.get(self.metric_key, metrics.get("auc", 0.0))))
+            metric = self._metric_key_for_method(method)
+            value = metrics.get(metric)
+            if value is None or not math.isfinite(float(value)):
+                success = False
+                result["error"] = f"Missing or non-finite evaluation metric {metric!r}: {value!r}"
+                fitness = -math.inf
+            else:
+                fitness = float(value)
+                if metric in {"rmse", "mse", "mae", "logloss"}:
+                    fitness = -fitness
         else:
             fitness = -math.inf
 
@@ -181,6 +197,7 @@ class PipelineEvaluator:
             else:
                 err_short = (result.get("error") or "")[:200].replace("\n", " ")
                 print(f"  [eval:{label}] FAILED ({dur:.1f}s)  steps={len(pipeline)}  err={err_short}")
+                print(result.get("error") or "")
         return ev
 
     def _display_method(self, method: str) -> str:

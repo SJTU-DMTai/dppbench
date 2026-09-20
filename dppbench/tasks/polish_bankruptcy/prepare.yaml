@@ -9,9 +9,9 @@ dag:
     op: JoinTable
     prev: [s0, s1]
     params:
-      method: key
+      method: agg
       aux_df: $year1
-      key_col: Attr1
+      key_col: _join_key
   - id: o2
     op: LabelEncode
     prev: [o1]

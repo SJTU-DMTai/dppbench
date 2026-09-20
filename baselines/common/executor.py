@@ -6,6 +6,7 @@ import tempfile
 import traceback
 import shutil
 import copy
+import gc
 import pandas as pd
 
 from baselines.common.data_loader import DATASET_REGISTRY, TaskDataLoader
@@ -131,6 +132,7 @@ class TrainingExecutor:
         return output_path
 
     def cleanup(self):
+        self.clear_data_cache()
         if os.path.isdir(self._work_dir):
             shutil.rmtree(self._work_dir, ignore_errors=True)
 
@@ -182,6 +184,10 @@ class TrainingExecutor:
         self._data_loader.clear_cache()
 
     def run_training(self):
+        # Search sampling wraps bound load methods in closures. Collect the
+        # previous candidate's unreachable data/model cycles before loading
+        # another full dataset (also applies to final HPO trials).
+        gc.collect()
         if self._task_type == "tabular":
             return self._run_tabular_training()
         elif self._task_type == "graph":
@@ -268,7 +274,9 @@ class TrainingExecutor:
             result["train_shape"] = processed_df.shape
             result["n_features"] = int(max(0, processed_df.shape[1] - (1 if target_col in processed_df.columns else 0)))
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            # result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            result["success"] = False
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
 
@@ -676,6 +684,7 @@ class TrainingExecutor:
                 result["top_features"] = []
 
         except Exception as e:
+            result["success"] = False
             result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
@@ -735,7 +744,11 @@ class TrainingExecutor:
                 if k not in ("task", "epochs", "lr", "weight_decay", "seed")
             }
             model = MODEL_MAP[model_name](in_dim=graph["x"].shape[1], **ctor_kwargs)
-            graph_result = train_graph(model, graph, model_params, train_cfg, device=self.device)
+            # graph_result = train_graph(model, graph, model_params, train_cfg, device=self.device)
+            graph_result = train_graph(
+                model, graph, model_params, train_cfg, device=self.device,
+                evaluate_test=self._evaluate_std_test,
+            )
 
             result["success"] = True
             raw_metrics = (
@@ -753,14 +766,16 @@ class TrainingExecutor:
                 for key, value in raw_metrics.items():
                     if key.startswith("std_test_"):
                         result["metrics"][key] = value
-                    elif not key.startswith("val_"):
+                    # elif not key.startswith("val_"):
                         if key == "std_test_n_nodes":
                             result["metrics"]["std_test_n_rows"] = value
+                    elif not key.startswith("val_"):
                         result["metrics"][f"test_{key}"] = value
             result["train_shape"] = (int(graph["x"].shape[0]), int(graph["x"].shape[1]))
             result["n_features"] = int(graph["x"].shape[1])
 
         except Exception as e:
+            result["success"] = False
             result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
@@ -809,7 +824,9 @@ class TrainingExecutor:
             result["success"] = True
             result["metrics"] = self._rec_validation_metrics(history, train_cfg)
             if not result["metrics"]:
-                result["metrics"] = dict(test_results)
+                # result["metrics"] = dict(test_results)
+                raise ValueError("Missing validation metrics; test metrics cannot replace validation fitness")
+
 
             std_test_df = splits.get("test")
             if self._evaluate_std_test and std_test_df is not None and len(std_test_df) > 0:
@@ -829,12 +846,14 @@ class TrainingExecutor:
                     for k, v in std_result.items():
                         result["metrics"][f"std_test_{k}"] = v
                 except Exception as eval_err:
-                    print(f"  [std_test] eval failed: {eval_err}")
+                    # print(f"  [std_test] eval failed: {eval_err}")
+                    raise RuntimeError(f"Standard-test evaluation failed: {eval_err}") from eval_err
 
             result["train_shape"] = (len(splits["train"]), len(feature_columns))
             result["n_features"] = len(feature_columns)
 
         except Exception as e:
+            result["success"] = False
             result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
@@ -857,10 +876,23 @@ class TrainingExecutor:
             "rmse": False,
             "mae": False,
         }
+        # Report all metrics from the actual retained checkpoint, not a
+        # different independently optimal epoch for every metric.
+        epoch = -1
+        monitor = train_cfg.get("early_stopping_monitor")
+        if monitor and train_cfg.get("early_stopping_patience", 0) > 0:
+            values = history.get(f"val_{monitor}", [])
+            candidates = [(i, float(v)) for i, v in enumerate(values) if pd.notna(v)]
+            if candidates:
+                choose = max if higher_is_better.get(monitor, True) else min
+                epoch = choose(candidates, key=lambda pair: pair[1])[0]
+
         for name in train_cfg.get("metrics", ["auc"]):
             values = history.get(f"val_{name}", [])
-            clean = [float(v) for v in values if pd.notna(v)]
-            if not clean:
+            # clean = [float(v) for v in values if pd.notna(v)]
+            # if not clean:
+            if not values:
                 continue
-            metrics[name] = max(clean) if higher_is_better.get(name, True) else min(clean)
+            # metrics[name] = max(clean) if higher_is_better.get(name, True) else min(clean)
+            metrics[name] = float(values[epoch])
         return metrics

@@ -73,6 +73,7 @@ class LogicalSearch:
         # 1. Initial population
         population: list[GAIndividual] = []
         attempts = 0
+        failures = []
         while len(population) < self.population_size and attempts < self.population_size * 5:
             attempts += 1
             pipe = random_pipeline(
@@ -85,9 +86,13 @@ class LogicalSearch:
             ind = self._evaluate(pipe)
             if ind.fitness > -math.inf:
                 population.append(ind)
+            else:
+                failures.append(str(ind.metrics))
         if not population:
             raise RuntimeError(
-                "Could not generate any successful pipeline during initialisation."
+                # "Could not generate any successful pipeline during initialisation."
+                "Could not generate any successful pipeline during initialisation. "
+                + " | ".join(dict.fromkeys(failures))
             )
         if self.verbose:
             print(
@@ -143,7 +148,9 @@ class LogicalSearch:
         if not report.valid:
             return GAIndividual(pipeline=pipeline, fitness=-math.inf, metrics={"legal_errors": report.errors})
         ev: EvaluationResult = self.evaluator.evaluate(pipeline)
-        return GAIndividual(pipeline=pipeline, fitness=ev.fitness, metrics=ev.metrics)
+        # return GAIndividual(pipeline=pipeline, fitness=ev.fitness, metrics=ev.metrics)
+        return GAIndividual(pipeline=pipeline, fitness=ev.fitness,
+                                metrics={**ev.metrics, **({"error": ev.error} if ev.error else {})})
 
     def _record_generation(self, gen: int, population: list[GAIndividual]) -> None:
         fits = [p.fitness for p in population if p.fitness > -math.inf]

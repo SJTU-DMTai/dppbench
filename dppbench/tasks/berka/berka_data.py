@@ -146,10 +146,10 @@ class BerkaData(TabularData):
         if not os.path.exists(path):
             return None
         try:
-            return pd.read_csv(path, sep=";", quotechar='"', encoding="latin-1")
+            return pd.read_csv(path, sep=";", quotechar='"', encoding="latin-1", low_memory=False,)
         except UnicodeDecodeError:
             return pd.read_csv(path, sep=";", quotechar='"', encoding="utf-8",
-                               errors="replace")
+                               errors="replace", low_memory=False,)
 
     # ------------------------------------------------------------------
     # Public API

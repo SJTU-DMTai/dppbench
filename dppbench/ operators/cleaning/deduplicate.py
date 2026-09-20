@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from ..base_op import RecOp, TabularOp
 
 
@@ -80,4 +81,18 @@ dag:
         pd.DataFrame
             DataFrame with duplicates removed and index reset.
         """
-        return df.drop_duplicates(subset=self.subset, keep=self.keep).reset_index(drop=True)
+        # return df.drop_duplicates(subset=self.subset, keep=self.keep).reset_index(drop=True)
+        # Equality of list-valued cells is equality of the ordered sequence.
+        # Use immutable keys only for comparison; return the original cells.
+        cols = list(df.columns) if self.subset is None else (
+            [self.subset] if isinstance(self.subset, str) else self.subset
+        )
+        keys = df[cols].copy()
+        def key(value):
+            if isinstance(value, (list, tuple, np.ndarray)):
+                return tuple(key(v) for v in value)
+            return value
+        for col in cols:
+            if keys[col].dtype == object:
+                keys[col] = keys[col].map(key)
+        return df.loc[~keys.duplicated(keep=self.keep)].reset_index(drop=True)

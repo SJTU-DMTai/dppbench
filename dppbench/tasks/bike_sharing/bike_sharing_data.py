@@ -37,6 +37,8 @@ class BikeSharingData(TabularData):
         self.id_col = "instant"
         self.target_col = "cnt"
         self._sort_col = "_sort_idx"
+        # hour.csv and day.csv have independently numbered `instant` rows.
+        self.auxiliary_join_keys = {"day": ["dteday"]}
 
     def _download_if_missing(self):
         os.makedirs(self.data_dir, exist_ok=True)

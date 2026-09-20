@@ -85,7 +85,8 @@ dag:
             # std-test candidates should be scored against training history
             # only; they must not leak held-out positives into other candidates.
             df["__dppbench_seq_rank__"] = (
-                df["__split__"].astype(str).eq("std_test").astype(int)
+                # df["__split__"].astype(str).eq("std_test").astype(int)
+                df["__split__"].astype(str).ne("train").astype(int)
             )
             sort_cols = [self.user_col]
             if self.time_col in df.columns:
@@ -109,7 +110,8 @@ dag:
                 user_hist[uid] = []
             else:
                 sequences[i] = hist[-self.max_len:]
-            if not (has_split and df.at[i, "__split__"] == "std_test"):
+            # if not (has_split and df.at[i, "__split__"] == "std_test"):
+            if not (has_split and df.at[i, "__split__"] != "train"):
                 user_hist[uid].append(elements[i])
 
         df[self.seq_col] = sequences

@@ -15,6 +15,9 @@ class TableContext:
     dtypes: dict[str, str] = field(default_factory=dict)
     join_keys_to_primary: list[dict[str, str]] = field(default_factory=list)
     configured_target_col: str | None = None
+    semantic_types: dict[str, str] = field(default_factory=dict)
+    # Cardinality of candidate right-hand keys, using JoinTable's string keys.
+    join_key_unique: dict[str, bool] = field(default_factory=dict)
 
     @property
     def columns(self) -> list[str]:
@@ -30,19 +33,27 @@ class TableContext:
 
     @property
     def numeric_cols(self) -> list[str]:
-        return [c for c, dtype in self.dtypes.items() if _is_numeric_dtype(dtype)]
+        # return [c for c, dtype in self.dtypes.items() if _is_numeric_dtype(dtype)]
+        return [c for c, dtype in self.dtypes.items()
+                if self.semantic_types.get(c) == "numeric"
+                or (c not in self.semantic_types and _is_numeric_dtype(dtype))]
 
     @property
     def categorical_cols(self) -> list[str]:
-        return [c for c in self.columns if c not in set(self.numeric_cols)]
+        excluded = set(self.numeric_cols + self.list_cols + self.text_cols)
+        excluded.update(c for c in self.columns if self.semantic_types.get(c) == "timestamp")
+        # return [c for c in self.columns if c not in set(self.numeric_cols)]
+        return [c for c in self.columns if c not in excluded]
 
     @property
     def list_cols(self) -> list[str]:
-        return []
+        # return []
+        return [c for c in self.columns if self.semantic_types.get(c) == "categorical_list"]
 
     @property
     def text_cols(self) -> list[str]:
-        return []
+        # return []
+        return [c for c in self.columns if self.semantic_types.get(c) == "text"]
 
     @property
     def target_col(self) -> str | None:
@@ -105,11 +116,13 @@ class DataContext:
 
     @property
     def list_cols(self) -> list[str]:
-        return []
+        # return []
+        return _dedupe(c for t in self.tables.values() for c in t.list_cols)
 
     @property
     def text_cols(self) -> list[str]:
-        return []
+        # return []
+        return _dedupe(c for t in self.tables.values() for c in t.text_cols)
 
     @property
     def target_col(self) -> str | None:
@@ -200,6 +213,7 @@ def _profile_table(
     *,
     join_keys_to_primary: list[dict[str, str]] | None = None,
     target_col: str | None = None,
+    semantic_types: dict[str, str] | None = None,
 ) -> TableContext:
     if df is None:
         return TableContext(name=name, role=role)
@@ -211,6 +225,15 @@ def _profile_table(
         dtypes={c: str(df[c].dtype) for c in columns},
         join_keys_to_primary=join_keys_to_primary or [],
         configured_target_col=target_col,
+        semantic_types=dict(semantic_types or {}),
+        join_key_unique={
+            key["secondary"]: bool(
+                df[key["secondary"]].dropna().astype(str).is_unique
+                and df[key["secondary"]].isna().sum() <= 1
+            )
+            for key in (join_keys_to_primary or [])
+            if key["secondary"] in df.columns
+        },
     )
 
 
@@ -242,7 +265,9 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
     user_col = data._user_id_col
     item_col = data._item_id_col
     tables: dict[str, TableContext] = {
-        "interaction": _profile_table("interaction", "primary", interaction_df)
+        # "interaction": _profile_table("interaction", "primary", interaction_df)
+        "interaction": _profile_table("interaction", "primary", interaction_df,
+                                      semantic_types=data.col_types)
     }
     secondary_tables = []
     if data.user_df is not None:
@@ -251,6 +276,7 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
             "user",
             "secondary",
             data.user_df,
+            semantic_types=data.col_types,
             join_keys_to_primary=[{"primary": user_col, "secondary": user_col}],
         )
     if data.item_df is not None:
@@ -259,6 +285,7 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
             "item",
             "secondary",
             data.item_df,
+            semantic_types=data.col_types,
             join_keys_to_primary=[{"primary": item_col, "secondary": item_col}],
         )
     return DataContext(
@@ -290,7 +317,11 @@ def _infer_tabular_context(data_name: str, data) -> DataContext:
             name,
             "secondary",
             df,
-            join_keys_to_primary=_same_name_join_keys(train_df, df, preferred_keys),
+            # join_keys_to_primary=_same_name_join_keys(train_df, df, preferred_keys),
+            join_keys_to_primary=_same_name_join_keys(
+                train_df, df,
+                (getattr(data, "auxiliary_join_keys", {}) or {}).get(name, preferred_keys),
+            ),
         )
     return DataContext(
         task_type="tabular",

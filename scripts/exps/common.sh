@@ -6,14 +6,14 @@ EXPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/dengjiale/dppbench/output/paper_exps}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_fixmix}"
 GPU_ID="${GPU_ID:--1}"
 CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
 QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 MAX_PIPELINE_LEN="${MAX_PIPELINE_LEN:-10}"
 MAX_EVALUATIONS="${MAX_EVALUATIONS:-1000}"
-MAX_MEMORY_MB="${MAX_MEMORY_MB:-65536}"
+MAX_MEMORY_MB="${MAX_MEMORY_MB:-71680}"
 MAX_GPU_MEMORY_MB="${MAX_GPU_MEMORY_MB:-81920}"
 MAX_LLM_CALLS="${MAX_LLM_CALLS:-100}"
 
@@ -105,20 +105,24 @@ parse_common_args() {
 
 parse_common_args "$@"
 
-DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
+# DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
+DEFAULT_TASKS="berka"
+# DEFAULT_TASKS="berka,default_credit,fraud_detection,home_credit,polish_bankruptcy"
 TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
 # DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
 
 # baselines not based on LLMs
-DEFAULT_BASELINES="SAGA AutoPrep Learn2Clean AlphaClean Random DiffPrep HAIPipe"
+# DEFAULT_BASELINES="SAGA AutoPrep Learn2Clean AlphaClean Random DiffPrep HAIPipe DAGPipe"
+DEFAULT_BASELINES="SAGA"
 
 # baselines based on LLMs
 # DEFAULT_BASELINES="BAT DeepPrep CtxPipe FlowPipe"
 
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
-SEEDS="${SEEDS:-42 43 44}"
+# SEEDS="${SEEDS:-42 43 44}"
+SEEDS="${SEEDS:-42}"
 
 add_optional_arg() {
   local -n target_cmd="$1"
@@ -186,9 +190,16 @@ for root, _, files in os.walk(source_dir):
         if not name.endswith(".csv"):
             continue
         path = os.path.join(root, name)
+        if os.path.realpath(path) == os.path.realpath(output_csv):
+            continue
         try:
             with open(path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
+                if not {"task", "baseline", "model"}.issubset(reader.fieldnames or []):
+                    continue
+                # Do not recursively re-aggregate an earlier summary.
+                if "source_csv" in reader.fieldnames:
+                    continue
                 for row in reader:
                     rows.append({"source_csv": path, **{c: row.get(c, "") for c in columns}})
         except Exception as exc:

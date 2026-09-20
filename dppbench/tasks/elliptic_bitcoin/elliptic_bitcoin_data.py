@@ -64,6 +64,9 @@ class EllipticBitcoinData(TabularData):
         0: 0,
     }
 
+    # These are graph metadata, never candidate predictor columns.
+    required_graph_columns = ("txId", "time_step", "class")
+
     def __init__(self, data_dir=None):
         super().__init__(name="EllipticBitcoin")
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "data")
@@ -194,12 +197,19 @@ class EllipticBitcoinData(TabularData):
         df["class"] = labels.fillna(-1).astype(np.int64)
         return df
 
-    def load_std_test_frozen(self):
-        loaded = super().load_std_test_frozen()
-        if loaded and self.train_df is not None:
-            self._normalize_tx_id_column(self.train_df, "txId")
-            self._attach_class_labels(self.train_df)
-        return loaded
+    # def load_std_test_frozen(self):
+    #     loaded = super().load_std_test_frozen()
+    #     if loaded and self.train_df is not None:
+    #         self._normalize_tx_id_column(self.train_df, "txId")
+    #         self._attach_class_labels(self.train_df)
+    #     return loaded
+    def _normalize_frozen_frame(self, df):
+        # Legacy frozen training files contain only features. Restore labels
+        # from the node-label table before the generic finite-label check;
+        # unknown nodes remain -1 and are excluded by graph loss masks.
+        df = df.copy()
+        self._normalize_tx_id_column(df, "txId")
+        return self._attach_class_labels(df)
 
     # ------------------------------------------------------------------
     # load
@@ -270,7 +280,8 @@ class EllipticBitcoinData(TabularData):
 
         # Feature matrix.
         feat_cols = [c for c in df.columns if c.startswith("feat_")]
-        x = df[feat_cols].to_numpy(dtype=np.float32)
+        # x = df[feat_cols].to_numpy(dtype=np.float32)
+        x = df[feat_cols].to_numpy(dtype=np.float64)
 
         # Labels: -1 unknown, 1 illicit, 0 licit.
         y_raw = pd.to_numeric(df["class"], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
@@ -289,6 +300,9 @@ class EllipticBitcoinData(TabularData):
             train_mask = train_mask & ~std_test_mask
             val_mask = val_mask & ~std_test_mask
             test_mask = test_mask & ~std_test_mask
+
+        from ...graph_input import prepare_graph_features
+        x = prepare_graph_features(x, train_mask, feat_cols)
 
         self.graph = {
             "x": x,

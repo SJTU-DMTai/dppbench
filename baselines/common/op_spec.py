@@ -117,18 +117,22 @@ _add("HandleMV", OpCategory.CLEANING,
 _add("HandleOutlier", OpCategory.CLEANING,
      default_params={"method": "iqr", "action": "delete", "repair_method": "clip"},
      param_space={
-         "method": ["iqr", "zscore", "isolation_forest"],
+     #     "method": ["iqr", "zscore", "isolation_forest"],
+          "method": ["iqr", "zscore"],
          "threshold": [2.0, 3.0, 4.0],
          "action": ["delete", "repair"],
-         "repair_method": ["clip", "median", "set_missing", "winsorize"],
+     #     "repair_method": ["clip", "median", "set_missing", "winsorize"],
+          "repair_method": ["clip", "set_missing"],
      },
      valid_targets=("train",), needs_context=True)
 _add("HandleError", OpCategory.CLEANING,
      default_params={"rule": "numeric", "action": "delete"},
      param_space={
-         "rule": ["numeric", "positive", "in_range", "regex", "not_in"],
+     #     "rule": ["numeric", "positive", "in_range", "regex", "not_in"],
+          "rule": ["numeric", "positive", "in_range", "not_in"],
          "action": ["delete", "repair"],
-         "repair_method": ["set_missing", "fill_constant", "clip", "median", "mode"],
+     #     "repair_method": ["set_missing", "fill_constant", "clip", "median", "mode"],
+          "repair_method": ["set_missing", "clip"],
      },
      valid_targets=("train",), needs_context=True)
 _add("HandleNonIID", OpCategory.CLEANING,
@@ -183,7 +187,8 @@ _add("Undersample", OpCategory.PREPROCESSING,
      valid_targets=("train",), needs_context=True)
 _add("Oversample", OpCategory.PREPROCESSING,
      default_params={"method": "random"},
-     param_space={"method": ["random", "smote", "adasyn", "smote_nc"]},
+     # param_space={"method": ["random", "smote", "adasyn", "smote_nc"]},
+     param_space={"method": ["random", "smote", "adasyn"]},
      valid_targets=("train",), needs_context=True)
 _add("AugmentMixup", OpCategory.PREPROCESSING, valid_targets=("train",), needs_context=True)
 _add("AugmentNoise", OpCategory.PREPROCESSING,

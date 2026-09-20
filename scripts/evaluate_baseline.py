@@ -527,6 +527,19 @@ def _run_baseline_and_eval(
             output_dir=runner_output_dir,
         )
     eval_t0 = time.time()
+
+    # 验证
+    import pandas as pd
+    std_dir = _std_test_dir(task_name, data_dir=args.data_dir)
+    tr = pd.read_parquet(os.path.join(std_dir, "train_frozen.parquet"))
+    st = pd.read_parquet(os.path.join(std_dir, "std_test.parquet"))
+    ov = set(tr["account_id"].dropna()) & set(st["account_id"].dropna())
+    print(f"[LEAK CHECK] train={len(tr)} std={len(st)} account_overlap={len(ov)}")
+    for acc in list(ov)[:5]:
+        print(" ", acc,
+            "train labels:", sorted(tr.loc[tr.account_id == acc, "target"].unique().tolist()),
+            "std labels:",   sorted(st.loc[st.account_id == acc, "target"].unique().tolist()))
+
     ev = evaluator.evaluate(pipeline, scoring_method="full_train")
     eval_time = time.time() - eval_t0
     evaluator._executor.cleanup()
@@ -553,7 +566,8 @@ def _run_baseline_and_eval(
     if std_test_primary is None:
         # Fall back to any non-bookkeeping metric.
         for k, v in std_test_metrics.items():
-            if k not in ("inference_seconds", "n_rows"):
+            # if k not in ("inference_seconds", "n_rows"):
+            if k not in ("inference_seconds", "n_rows", "n_nodes"):
                 std_test_primary = v
                 std_test_primary_name = k
                 break
@@ -562,6 +576,8 @@ def _run_baseline_and_eval(
             f"non-finite std-test metric {std_test_primary_name}="
             f"{std_test_primary!r}"
         )
+    if std_test_primary is None and std_test_error is None:
+        std_test_error = ev.error or "Frozen standard-test evaluation produced no metric"
     if std_test_error is not None and evaluator.task_type == "graph":
         std_test_primary_name = "unsupported_graph_std_test"
 
@@ -593,6 +609,8 @@ def _run_baseline_and_eval(
         "final_hpo_trials": len(hpo_summary.get("trials", [])),
         "final_val_fitness": float(ev.fitness) if ev.success else None,
         "val_fitness": float(ev.fitness) if ev.success else None,
+        "val_metric_name": evaluator.metric_key,
+        "val_metric": metrics.get(evaluator.metric_key) if ev.success else None,
         "std_test_auc": float(std_test_auc) if std_test_auc is not None else None,
         "std_test_metric_name": std_test_primary_name,
         "std_test_metric": (
@@ -672,6 +690,7 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "task", "baseline", "model", "output_dir", "max_pipeline_len",
         "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",
         "final_val_fitness", "val_fitness", "std_test_metric_name",
+        "val_metric_name", "val_metric",
         "std_test_metric", "std_test_auc", "std_test_inference_seconds",
         "std_test_n_rows", "baseline_time_kind",
         "baseline_search_inference_seconds", "baseline_training_seconds",
@@ -680,9 +699,16 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
         "baseline_eval_error", "std_test_error", "budget", "error",
     ]
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    # add
+    file_exists = os.path.exists(path) and os.path.getsize(path) > 0
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
+
+        if not file_exists:
+            writer.writeheader()
+
+        # writer.writeheader()
         for r in rows:
             out = dict(r)
             if isinstance(out.get("ops"), list):
@@ -756,7 +782,8 @@ def main():
                 task_name, args.baseline, args, out_root, budget=budget
             ))
         except Exception as e:
-            tb = traceback.format_exc(limit=2)
+            # tb = traceback.format_exc(limit=2)
+            tb = traceback.format_exc()
             if not args.quiet:
                 print(tb)
             row.update({
@@ -785,6 +812,10 @@ def main():
             })
         rows.append(row)
         _print_json({"run_result": _row_console_summary(row)})
+        # Release unreachable evaluator/loader cycles before the next task's
+        # budget starts; do not carry a previous dataset's live allocations.
+        import gc
+        gc.collect()
 
     _write_csv(rows, csv_path)
     print("\n" + "=" * 60)

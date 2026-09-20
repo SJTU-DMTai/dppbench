@@ -457,6 +457,12 @@ def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list
         f"in params {leaked_params}"
     ]
 
+def _selection_protected_cols(ctx: DataContext) -> list[str]:
+    if ctx.task_type == "rec":
+        return _rec_protected_cols(ctx)
+    if ctx.task_type == "graph":
+        return list(dict.fromkeys(c for c in (ctx.id_col, ctx.time_col, ctx.target_col) if c))
+    return [ctx.target_col] if ctx.target_col else []
 
 def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
     if ctx.task_type != "rec":
@@ -513,7 +519,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             p["method"] = "rec"
             return p
         else:
-            if not ctx.aux_dfs or ctx.id_col is None:
+            # if not ctx.aux_dfs or ctx.id_col is None:
+            if not ctx.aux_dfs:
                 return None
             joinable_aux = [
                 name for name in ctx.aux_dfs
@@ -526,7 +533,12 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             p["aux_df"] = f"${aux}"
             join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
             p["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
-            p["method"] = "key"
+            # p["method"] = "key"
+            table = ctx.tables[aux]
+            # Lookup only when the right key is known to be unique. Repeated
+            # histories must be aggregated before joining the primary rows.
+            p["method"] = "key" if table.join_key_unique.get(p["key_col"], False) else "agg"
+            p["how"] = "left"
             if rng.random() < 0.5:
                 p["prefix"] = aux.upper()[:8]
                 p["max_cols"] = 20
@@ -606,7 +618,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         method = rng.choice(["variance", "univariate", "model"])
         p["target_col"] = ctx.target_col
         p["method"] = method
-        p["exclude_cols"] = _rec_protected_cols(ctx) if ctx.task_type == "rec" else [ctx.target_col]
+        p["exclude_cols"] = _selection_protected_cols(ctx)
+        # p["exclude_cols"] = _rec_protected_cols(ctx) if ctx.task_type == "rec" else [ctx.target_col]
         if method == "univariate":
             p["k"] = max(5, min(50, len(numeric_cols)))
         elif method == "model":
@@ -1248,7 +1261,8 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
         space.setdefault("cols", all_cols)
 
     if name == "SelectFeature":
-        protected = _rec_protected_cols(ctx) if ctx.task_type == "rec" else ([ctx.target_col] if ctx.target_col else [])
+        protected = _selection_protected_cols(ctx)
+        # protected = _rec_protected_cols(ctx) if ctx.task_type == "rec" else ([ctx.target_col] if ctx.target_col else [])
         if protected:
             space.setdefault("exclude_cols", protected)
     if name in {"SelectFeature", "TargetEncode", "Oversample", "Undersample", "SampleNegative"} and ctx.target_col:

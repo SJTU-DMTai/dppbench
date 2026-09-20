@@ -118,14 +118,19 @@ class BaseModel(nn.Module):
             avg_loss = loss_epoch / n_samples
             history["loss"].append(avg_loss)
 
+            if do_val:
+                val_result = self.evaluate(val_x, val_y, batch_size)
+                for k, v in val_result.items():
+                    history.setdefault(f"val_{k}", []).append(v)
+
             if verbose > 0:
                 elapsed = int(time.time() - start)
                 msg = f"Epoch {epoch + 1}/{epochs} - {elapsed}s - loss: {avg_loss:.4f}"
-                if do_val:
-                    val_result = self.evaluate(val_x, val_y, batch_size)
-                    for k, v in val_result.items():
-                        # msg += f" - val_{k}: {v:.4f}"
-                        history.setdefault(f"val_{k}", []).append(v)
+                # if do_val:
+                #     val_result = self.evaluate(val_x, val_y, batch_size)
+                #     for k, v in val_result.items():
+                #         # msg += f" - val_{k}: {v:.4f}"
+                #         history.setdefault(f"val_{k}", []).append(v)
                 print(msg)
 
             if use_es:
@@ -186,11 +191,15 @@ class BaseModel(nn.Module):
     def train_and_evaluate(self, train_df, test_df, feature_columns, cfg, evaluate_test=True):
         """Train the model on ``train_df`` and evaluate on ``test_df``.
 
-        Validation rows are sliced out of ``train_df`` here (rather than via
-        a preprocessing operator) so baselines cannot reshape the train/val
-        split. ``train.val_ratio`` (default ``0.1``) and ``train.seed``
-        (default ``42``) in the model config control the slice; for rec
-        tasks we use a stratified split on the binary label when available.
+        # Validation rows are sliced out of ``train_df`` here (rather than via
+        # a preprocessing operator) so baselines cannot reshape the train/val
+        # split. ``train.val_ratio`` (default ``0.1``) and ``train.seed``
+        # (default ``42``) in the model config control the slice; for rec
+        # tasks we use a stratified split on the binary label when available.
+
+        Consume the train/validation marker fixed before preprocessing.
+        Direct callers without markers retain the legacy stratified split
+        controlled by ``train.val_ratio`` and ``train.seed``.
         """
         from sklearn.model_selection import train_test_split
 
@@ -207,9 +216,19 @@ class BaseModel(nn.Module):
             if tgt.nunique() > 1 and tgt.nunique() <= 50:
                 stratify = tgt
 
-        train_split, val_split = train_test_split(
-            train_df, test_size=val_ratio, random_state=seed, stratify=stratify,
-        )
+        if "__split__" in train_df:
+            train_split = train_df.loc[train_df["__split__"] == "train"].drop(columns="__split__")
+            val_split = train_df.loc[train_df["__split__"] == "val"].drop(columns="__split__")
+            if train_split.empty or val_split.empty:
+                raise ValueError("Preprocessing removed the fixed train/validation partition")
+        else:
+            train_split, val_split = train_test_split(
+                train_df, test_size=val_ratio, random_state=seed, stratify=stratify,
+            )
+
+        # train_split, val_split = train_test_split(
+        #     train_df, test_size=val_ratio, random_state=seed, stratify=stratify,
+        # )
         train_split = train_split.reset_index(drop=True)
         val_split = val_split.reset_index(drop=True)
 

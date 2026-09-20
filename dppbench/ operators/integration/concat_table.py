@@ -21,6 +21,8 @@ class ConcatTable(TabularOp):
         if axis not in ("vertical", "horizontal"):
             raise ValueError("axis must be 'vertical' or 'horizontal'")
         self.axis = axis
+        # Additional training cohorts must never be appended to holdouts.
+        self.APPLIES_TO_STD_TEST = axis != "vertical"
         self.dedup = bool(dedup)
         self.fill_missing = bool(fill_missing)
 

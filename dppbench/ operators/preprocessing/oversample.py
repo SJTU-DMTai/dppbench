@@ -94,10 +94,24 @@ dag:
                 random_state=self.RANDOM_STATE,
                 n_neighbors=self.n_neighbors,
             )
+        # xr, yr = sampler.fit_resample(x, y)
+        # out = pd.DataFrame(xr, columns=feat_cols)
+        # out[self.target_col] = yr
+        # return out[df.columns.tolist()].reset_index(drop=True)
         xr, yr = sampler.fit_resample(x, y)
-        out = pd.DataFrame(xr, columns=feat_cols)
-        out[self.target_col] = yr
-        return out[df.columns.tolist()].reset_index(drop=True)
+        return self._assemble_resampled(
+            xr,
+            yr,
+            feat_cols,
+            df.columns.tolist(),
+        )
+
+    def _assemble_resampled(self, xr, yr, feat_cols, original_columns):
+        """Build the complete frame without repeated high-dimensional inserts."""
+        features = pd.DataFrame(np.asarray(xr), columns=feat_cols)
+        target = pd.Series(np.asarray(yr).reshape(-1), name=self.target_col)
+        out = pd.concat([features, target], axis=1, copy=False)
+        return (out.loc[:, original_columns].reset_index(drop=True).copy())
 
     def transform(self, df):
         if self.target_col not in df.columns:

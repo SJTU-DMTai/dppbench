@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import warnings
 from ..base_op import TabularOp
 
 
@@ -66,6 +67,7 @@ dag:
         return description.strip()
 
     def _random(self, df):
+        df = df.reset_index(drop=True)
         rng = np.random.RandomState(self.RANDOM_STATE)
         groups = list(df.groupby(self.target_col))
         if not groups:
@@ -94,24 +96,25 @@ dag:
                 random_state=self.RANDOM_STATE,
                 n_neighbors=self.n_neighbors,
             )
-        # xr, yr = sampler.fit_resample(x, y)
-        # out = pd.DataFrame(xr, columns=feat_cols)
-        # out[self.target_col] = yr
-        # return out[df.columns.tolist()].reset_index(drop=True)
-        xr, yr = sampler.fit_resample(x, y)
-        return self._assemble_resampled(
-            xr,
-            yr,
-            feat_cols,
-            df.columns.tolist(),
-        )
+        # imbalanced-learn releases compatible with Python 3.9 may call the
+        # sklearn 1.6 transitional private API. This warning is upstream and
+        # does not indicate invalid samples; keep all other warnings visible.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`BaseEstimator\._validate_data` is deprecated.*",
+                category=FutureWarning,
+                module=r"sklearn\.base",
+            )
+            xr, yr = sampler.fit_resample(x, y)
+        return self._assemble_resampled(xr, yr, feat_cols, df.columns)
 
     def _assemble_resampled(self, xr, yr, feat_cols, original_columns):
         """Build the complete frame without repeated high-dimensional inserts."""
         features = pd.DataFrame(np.asarray(xr), columns=feat_cols)
-        target = pd.Series(np.asarray(yr).reshape(-1), name=self.target_col)
+        target = pd.Series(np.asarray(yr), name=self.target_col)
         out = pd.concat([features, target], axis=1, copy=False)
-        return (out.loc[:, original_columns].reset_index(drop=True).copy())
+        return out.loc[:, list(original_columns)].reset_index(drop=True).copy()
 
     def transform(self, df):
         if self.target_col not in df.columns:

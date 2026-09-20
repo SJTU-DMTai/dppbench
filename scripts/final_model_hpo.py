@@ -162,7 +162,7 @@ def candidate_configs(model_name):
     raise ValueError(f"No final HPO space is defined for model {model_name!r}")
 
 
-def tune_final_model(pipeline, *, output_dir, **kwargs):
+def tune_final_model(pipeline, *, output_dir, evaluator_class=PipelineEvaluator, **kwargs):
     started = time.monotonic()
     trials = []
     best = None
@@ -171,7 +171,7 @@ def tune_final_model(pipeline, *, output_dir, **kwargs):
     path = Path(output_dir) / "final_hpo.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     for params in candidate_configs(kwargs["model_name"]):
-        evaluator = PipelineEvaluator(**kwargs, model_config=params)
+        evaluator = evaluator_class(**kwargs, model_config=params)
         try:
             evaluator.set_evaluate_std_test(False)
             cfg = evaluator._executor.get_model_config()
@@ -208,4 +208,4 @@ def tune_final_model(pipeline, *, output_dir, **kwargs):
         raise RuntimeError(f"All final HPO trials failed; see {path}")
     # Use a fresh model for final frozen-test evaluation. The standard test
     # was never evaluated by any candidate trial.
-    return PipelineEvaluator(**kwargs, model_config=best), summary
+    return evaluator_class(**kwargs, model_config=best), summary

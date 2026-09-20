@@ -95,6 +95,9 @@ class BikeSharingData(TabularData):
         return self.train_df, self.test_df
 
     def split(self, val_ratio=0.2, seed=42):
+        prepared = self._prepared_splits()
+        if prepared is not None:
+            return prepared
         df = self.train_df
 
         # Peel std-test rows (carried via __split__) before chronological split

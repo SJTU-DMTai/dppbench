@@ -191,6 +191,9 @@ class CitibikeJcHourlyData(TabularData):
         return out.sort_values(["start_station_id", "_hour_idx"], kind="mergesort").reset_index(drop=True)
 
     def split(self, val_ratio=0.2, seed=42):
+        prepared = self._prepared_splits()
+        if prepared is not None:
+            return prepared
         df = self.train_df
 
         std_test = None

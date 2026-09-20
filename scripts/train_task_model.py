@@ -286,6 +286,7 @@ def _train_tabular(args, cfg, pre_process_yaml, device="cpu"):
 
     data_cls = _load_tabular_class(args.data_name)
     data = data_cls(data_dir=_task_data_dir(args.data_name, args.data_dir))
+    data.set_model_config(cfg)
     data.load_data()
     print(f"Loaded train: {data.train_df.shape}, "
           f"test: {data.test_df.shape if data.test_df is not None else None}")

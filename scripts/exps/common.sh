@@ -106,8 +106,8 @@ parse_common_args() {
 parse_common_args "$@"
 
 # DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
-DEFAULT_TASKS="berka"
-# DEFAULT_TASKS="berka,default_credit,fraud_detection,home_credit,polish_bankruptcy"
+# DEFAULT_TASKS="berka"
+DEFAULT_TASKS="default_credit,fraud_detection,home_credit,polish_bankruptcy"
 TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
 # DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"

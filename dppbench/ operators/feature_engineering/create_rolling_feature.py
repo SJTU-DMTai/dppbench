@@ -96,5 +96,5 @@ dag:
                 df[f"{self.target_col}_roll_{self.aggs[0]}_{window}"] = result
             else:
                 for agg in self.aggs:
-                    df[f"{self.target_col}_roll_{agg}_{window}"] = result[agg].values
+                    df[f"{self.target_col}_roll_{agg}_{window}"] = result[agg]
         return df

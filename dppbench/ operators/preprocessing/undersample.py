@@ -69,6 +69,7 @@ dag:
         return x[cols].fillna(0.0).values, y
 
     def _random(self, df):
+        df = df.reset_index(drop=True)
         rng = np.random.RandomState(self.RANDOM_STATE)
         groups = list(df.groupby(self.target_col))
         if not groups:

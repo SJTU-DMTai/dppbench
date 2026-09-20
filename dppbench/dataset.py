@@ -94,7 +94,6 @@ class BaseData:
             if op.cols and target in op.cols:
                 raise ValueError("ReduceDimension cannot project the supervised target")
             op.target_col = target
-
         if op_name != "AggregateGroupFeature":
             return
         if target in op.group_cols or (op.agg_cols is not None and target in op.agg_cols):
@@ -104,7 +103,6 @@ class BaseData:
 
     @staticmethod
     def _require_training_rows(df, op_name):
-        # train = df[df["__split__"] != "std_test"] if "__split__" in df.columns else df
         train = df[df["__split__"] == "train"] if "__split__" in df.columns else df
         if train.empty:
             raise ValueError(
@@ -706,8 +704,6 @@ class RecData(BaseData):
             return False
 
         frozen_path = os.path.join(std_dir, "interaction_frozen.parquet")
-        # if os.path.exists(frozen_path):
-        #     self.interaction_df = pd.read_parquet(frozen_path)
         if not os.path.exists(frozen_path):
             raise FileNotFoundError(f"Frozen test requires disjoint training artifact: {frozen_path}")
         self.interaction_df = pd.read_parquet(frozen_path)
@@ -812,8 +808,6 @@ class RecData(BaseData):
                 group = df[df["__split__"] == split_name]
                 if len(group) == 0:
                     continue
-                # if split_name == "std_test" and not applies_to_std_test:
-                #     deferred_std_test = group.copy()
                 if split_name != "train" and not applies_to_std_test:
                     if split_name != "std_test":
                         parts.append(group.copy())
@@ -878,9 +872,6 @@ class RecData(BaseData):
         ], ignore_index=True)
         self._validation_prepared = True
 
-    # def run_pre_process(self, yaml_path):
-    #     if not self._has_std_test:
-    #         self.load_std_test_frozen()
     def run_pre_process(self, yaml_path):
         if not self._has_std_test:
             self.load_std_test_frozen()
@@ -897,13 +888,7 @@ class RecData(BaseData):
     def split(self):
         """Return ``{"train": ..., "test": ...}``.
 
-        # ``test`` corresponds to the std-test holdout (each user's last
-        # interaction; produced by ``scripts/build_std_test.py``). Validation
-        # slicing is performed inside the downstream model's ``fit``/
-        # ``train_and_evaluate`` so baselines cannot tamper with the split via
-        # preprocessing operators.
-
-        test`` corresponds to the frozen holdout produced by
+        ``test`` corresponds to the frozen holdout produced by
         ``scripts/build_std_test.py``. Train/validation membership is fixed
         before preprocessing and retained for ``train_and_evaluate``.
         """
@@ -912,7 +897,6 @@ class RecData(BaseData):
         if "__split__" in df.columns:
             test = df[df["__split__"] == "std_test"].drop(columns="__split__").reset_index(drop=True)
             # Keep the fixed train/val marker until the model consumes it.
-            # train = df[df["__split__"] != "std_test"].drop(columns="__split__").reset_index(drop=True)
             train = df[df["__split__"].isin(["train", "val"])].reset_index(drop=True)
         else:
             test = df.iloc[0:0].copy()
@@ -1010,8 +994,6 @@ class TabularData(BaseData):
             return False
 
         frozen_path = os.path.join(std_dir, "train_frozen.parquet")
-        # if os.path.exists(frozen_path):
-        #     self.train_df = pd.read_parquet(frozen_path)
         if not os.path.exists(frozen_path):
             raise FileNotFoundError(f"Frozen test requires disjoint training artifact: {frozen_path}")
         self.train_df = pd.read_parquet(frozen_path)
@@ -1102,12 +1084,7 @@ class TabularData(BaseData):
                 if missing:
                     raise ValueError(f"SelectFeature input is missing graph metadata: {missing}")
                 op.exclude_cols = list(dict.fromkeys([*op.exclude_cols, *required]))
-
         applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
-        # if (
-        #     "__split__" in df.columns
-        #     and (df["__split__"] == "std_test").any()
-        # ):
         if "__split__" in df.columns:
             if getattr(op, "FIT_ON_TRAIN_ONLY", False):
                 parts = []
@@ -1115,7 +1092,6 @@ class TabularData(BaseData):
                     group = df[df["__split__"] == split_name]
                     if len(group) == 0:
                         continue
-                    # if split_name == "std_test" and not applies_to_std_test:
                     if split_name != "train" and not applies_to_std_test:
                         parts.append(group.copy())
                         continue
@@ -1125,30 +1101,6 @@ class TabularData(BaseData):
                     parts.append(trans)
                 new_df = pd.concat(parts, ignore_index=True)
             elif applies_to_std_test:
-                # marker = df["__split__"].copy()
-                # body = df.drop(columns="__split__")
-                # new_body = op.transform(body)
-                # if len(new_body) == len(marker):
-                #     new_body = new_body.copy()
-                #     new_body["__split__"] = marker.values
-                #     new_df = new_body
-                # else:
-                #     print(
-                #         f"  [std_test] op {op_name} changed row count "
-                #         f"({len(body)} -> {len(new_body)}); falling back "
-                #         f"to splitwise transform to preserve std-test."
-                #     )
-                #     parts = []
-                #     for split_name in ["train", "val", "test", "std_test"]:
-                #         group = df[df["__split__"] == split_name]
-                #         if len(group) == 0:
-                #             continue
-                #         g_body = group.drop(columns="__split__")
-                #         trans = op.transform(g_body).copy()
-                #         trans["__split__"] = split_name
-                #         parts.append(trans)
-                #     new_df = pd.concat(parts, ignore_index=True)
-
                 # Equal row counts do not imply equal order (SortRows and
                 # groupby/merge can reorder). Transform each partition once
                 # and attach its marker to the actual output rows.
@@ -1162,8 +1114,6 @@ class TabularData(BaseData):
                     parts.append(trans)
                 new_df = pd.concat(parts, ignore_index=True)
             else:
-                # std_part = df[df["__split__"] == "std_test"].copy()
-                # other_part = df[df["__split__"] != "std_test"]
                 std_part = df[df["__split__"] != "train"].copy()
                 other_part = df[df["__split__"] == "train"]
                 other_body = other_part.drop(columns="__split__")
@@ -1173,7 +1123,6 @@ class TabularData(BaseData):
                 new_df = pd.concat([new_other, std_part], ignore_index=True)
         else:
             new_df = op.transform(df)
-
         if "__split__" in df.columns:
             self._require_training_rows(new_df, op_name)
         return new_df
@@ -1181,6 +1130,7 @@ class TabularData(BaseData):
     def run_pre_process(self, yaml_path):
         if not self._has_std_test:
             self.load_std_test_frozen()
+        self._prepare_validation()
         with open(yaml_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         if self._relation_dag_spec(config) is None:
@@ -1232,6 +1182,24 @@ class TabularData(BaseData):
                 raise ValueError(f"Preprocessing removed the entire {name} partition")
             if name != "std_test" or not part.empty:
                 out[name] = part
+
+        # A preprocessing operator must not be able to silently recreate a
+        # frozen row in another partition.  This is intentionally checked on
+        # the task's declared row identifier only; repeated user/entity keys
+        # are valid for relational and recommendation data.
+        id_col = getattr(self, "id_col", None)
+        if id_col and id_col in df.columns:
+            ids = {
+                name: set(df.loc[df["__split__"] == name, id_col].dropna().tolist())
+                for name in ("train", "val", "std_test")
+            }
+            for left, right in (("train", "val"), ("train", "std_test"), ("val", "std_test")):
+                overlap = ids[left] & ids[right]
+                if overlap:
+                    raise ValueError(
+                        f"Preprocessing created cross-partition {id_col!r} overlap "
+                        f"between {left} and {right}: {len(overlap)} ids"
+                    )
         return out
 
     def _prepare_validation(self):

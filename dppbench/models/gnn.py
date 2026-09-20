@@ -226,7 +226,6 @@ def _best_f1_threshold(logits, y, mask):
     return float(thresholds[best_idx])
 
 
-# def train_graph(model, graph, model_params, train_cfg, device=None):
 def train_graph(model, graph, model_params, train_cfg, device=None, evaluate_test=True):
     """Full-batch transductive training loop.
 
@@ -240,7 +239,6 @@ def train_graph(model, graph, model_params, train_cfg, device=None, evaluate_tes
     """
     from ..graph_input import validate_graph_training
     validate_graph_training(graph, train_cfg.get("metrics", ["auc"]))
-
     seed = int(model_params.get("seed", 42))
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -334,7 +332,6 @@ def train_graph(model, graph, model_params, train_cfg, device=None, evaluate_tes
         if "f1" in metrics:
             test_result["f1_threshold"] = threshold
         std_test_mask_np = graph.get("std_test_mask")
-        # if std_test_mask_np is not None and np.asarray(std_test_mask_np).any():
         if evaluate_test and std_test_mask_np is not None and np.asarray(std_test_mask_np).any():
             std_test_mask = torch.from_numpy(np.asarray(std_test_mask_np)).bool().to(device)
             std_result = _eval_metrics(
@@ -343,6 +340,6 @@ def train_graph(model, graph, model_params, train_cfg, device=None, evaluate_tes
             test_result["std_test_n_nodes"] = int(std_test_mask.sum().item())
             for key, value in std_result.items():
                 test_result[f"std_test_{key}"] = value
-    print("Test:" if evaluate_test else "Validation:", {k: f"{v:.4f}" for k, v in test_result.items()})
-    # print("Test:", {k: f"{v:.4f}" for k, v in test_result.items()})
+    print("Test:" if evaluate_test else "Validation:",
+          {k: f"{v:.4f}" for k, v in test_result.items()})
     return test_result

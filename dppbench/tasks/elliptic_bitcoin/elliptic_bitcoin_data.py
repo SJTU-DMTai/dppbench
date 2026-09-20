@@ -197,12 +197,6 @@ class EllipticBitcoinData(TabularData):
         df["class"] = labels.fillna(-1).astype(np.int64)
         return df
 
-    # def load_std_test_frozen(self):
-    #     loaded = super().load_std_test_frozen()
-    #     if loaded and self.train_df is not None:
-    #         self._normalize_tx_id_column(self.train_df, "txId")
-    #         self._attach_class_labels(self.train_df)
-    #     return loaded
     def _normalize_frozen_frame(self, df):
         # Legacy frozen training files contain only features. Restore labels
         # from the node-label table before the generic finite-label check;
@@ -250,6 +244,20 @@ class EllipticBitcoinData(TabularData):
     # ------------------------------------------------------------------
     # graph build (post pre-process)
     # ------------------------------------------------------------------
+    def _prepare_validation(self):
+        # Freeze the same supervised masks used by build_graph BEFORE fitted
+        # preprocessing. Unknown nodes stay in the graph but never fit an op.
+        df = self.train_df.copy()
+        ts = pd.to_numeric(df["time_step"], errors="raise")
+        labeled = pd.to_numeric(df["class"], errors="coerce").ge(0)
+        held_out = (df["__split__"].eq("std_test") if "__split__" in df
+                    else pd.Series(False, index=df.index))
+        df["__split__"] = "test"
+        df.loc[labeled & ts.le(34), "__split__"] = "train"
+        df.loc[labeled & ts.between(35, 39), "__split__"] = "val"
+        df.loc[held_out, "__split__"] = "std_test"
+        self.train_df = df
+
     def build_graph(self):
         if self.train_df is None:
             raise RuntimeError("call load_data() and run_pre_process() before build_graph()")
@@ -280,7 +288,6 @@ class EllipticBitcoinData(TabularData):
 
         # Feature matrix.
         feat_cols = [c for c in df.columns if c.startswith("feat_")]
-        # x = df[feat_cols].to_numpy(dtype=np.float32)
         x = df[feat_cols].to_numpy(dtype=np.float64)
 
         # Labels: -1 unknown, 1 illicit, 0 licit.

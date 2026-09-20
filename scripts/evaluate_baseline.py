@@ -82,6 +82,15 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
+    "DagPipe": {
+        "cls_path": "baselines.DagPipe.dagpipe.DagPipe",
+        "pipeline_cls": "baselines.DagPipe.pipeline.DagPipePipeline",
+        "evaluator_cls": "baselines.DagPipe.evaluator.DagPipeEvaluator",
+        "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
     "SAGA": {
         "cls_path": "baselines.SAGA.saga.SAGA",
         "supports_eval_full": False,
@@ -258,7 +267,7 @@ def parse_args():
         "--baseline", type=str, default="SAGA",
         help=(
             "Baseline name. Must be a key of BASELINE_CONFIGS defined in "
-            "this script (default: SAGA)."
+            "this script (default: SAGA). Available: " + ", ".join(BASELINE_CONFIGS)
         ),
     )
     parser.add_argument(
@@ -502,13 +511,15 @@ def _run_baseline_and_eval(
     from baselines.common.evaluator import PipelineEvaluator
     from baselines.common.pipeline import Pipeline
 
-    pipeline = Pipeline.from_yaml(pipeline_yaml)
+    pipeline_class = _load_class(conf["pipeline_cls"]) if conf.get("pipeline_cls") else Pipeline
+    evaluator_class = _load_class(conf["evaluator_cls"]) if conf.get("evaluator_cls") else PipelineEvaluator
+    pipeline = pipeline_class.from_yaml(pipeline_yaml)
     if max_pipeline_len is not None and len(pipeline) > max_pipeline_len:
         raise RuntimeError(
             f"{baseline_name} produced pipeline length {len(pipeline)} "
             f"> max_pipeline_len={max_pipeline_len}"
         )
-    evaluator = PipelineEvaluator(
+    evaluator = evaluator_class(
         task_dir=task_dir, data_name=task_name,
         data_dir=task_data_dir, verbose=not args.quiet,
         device=args.device,
@@ -522,24 +533,12 @@ def _run_baseline_and_eval(
         evaluator._executor.cleanup()
         evaluator, hpo_summary = tune_final_model(
             pipeline, task_dir=task_dir, data_name=task_name,
+            evaluator_class=evaluator_class,
             data_dir=task_data_dir, device=args.device, model_name=model_name,
             seed=args.seed, verbose=not args.quiet,
             output_dir=runner_output_dir,
         )
     eval_t0 = time.time()
-
-    # 验证
-    import pandas as pd
-    std_dir = _std_test_dir(task_name, data_dir=args.data_dir)
-    tr = pd.read_parquet(os.path.join(std_dir, "train_frozen.parquet"))
-    st = pd.read_parquet(os.path.join(std_dir, "std_test.parquet"))
-    ov = set(tr["account_id"].dropna()) & set(st["account_id"].dropna())
-    print(f"[LEAK CHECK] train={len(tr)} std={len(st)} account_overlap={len(ov)}")
-    for acc in list(ov)[:5]:
-        print(" ", acc,
-            "train labels:", sorted(tr.loc[tr.account_id == acc, "target"].unique().tolist()),
-            "std labels:",   sorted(st.loc[st.account_id == acc, "target"].unique().tolist()))
-
     ev = evaluator.evaluate(pipeline, scoring_method="full_train")
     eval_time = time.time() - eval_t0
     evaluator._executor.cleanup()
@@ -566,7 +565,6 @@ def _run_baseline_and_eval(
     if std_test_primary is None:
         # Fall back to any non-bookkeeping metric.
         for k, v in std_test_metrics.items():
-            # if k not in ("inference_seconds", "n_rows"):
             if k not in ("inference_seconds", "n_rows", "n_nodes"):
                 std_test_primary = v
                 std_test_primary_name = k
@@ -699,16 +697,9 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
         "baseline_eval_error", "std_test_error", "budget", "error",
     ]
-    # add
-    file_exists = os.path.exists(path) and os.path.getsize(path) > 0
-
-    with open(path, "a", newline="", encoding="utf-8") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
-
-        if not file_exists:
-            writer.writeheader()
-
-        # writer.writeheader()
+        writer.writeheader()
         for r in rows:
             out = dict(r)
             if isinstance(out.get("ops"), list):
@@ -782,7 +773,6 @@ def main():
                 task_name, args.baseline, args, out_root, budget=budget
             ))
         except Exception as e:
-            # tb = traceback.format_exc(limit=2)
             tb = traceback.format_exc()
             if not args.quiet:
                 print(tb)

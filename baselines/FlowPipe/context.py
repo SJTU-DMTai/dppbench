@@ -8,6 +8,7 @@ import pandas as pd
 import torch
 
 from baselines.common.op_spec import OpCategory
+from baselines.common.llm_quantization import fp8_quantization_config
 
 
 class SemanticContextLoader:
@@ -20,7 +21,7 @@ class SemanticContextLoader:
 
     def __init__(
         self, cache_dir: str, model_name: str, ctx_dim: int = 4096,
-        llama_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt",
+        llama_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.model_name = str(model_name)
@@ -110,13 +111,14 @@ class SemanticContextLoader:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         torch_device = torch.device(device)
-        dtype = torch.float16 if torch_device.type == "cuda" else torch.float32
         tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, local_files_only=True, torch_dtype=dtype,
-        ).to(torch_device)
+            model_path, local_files_only=True, torch_dtype=torch.bfloat16,
+            device_map=str(torch_device),
+            quantization_config=fp8_quantization_config(torch_device),
+        )
         model.eval()
         prompt = self.build_prompt(data_name, frame, ctx)
         tokens = tokenizer(

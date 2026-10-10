@@ -9,7 +9,7 @@ from baselines.common.op_spec import (
     operators_by_category,
     valid_targets_for,
 )
-from baselines.common.pipeline import get_category_order
+from baselines.common.pipeline import get_category_order, get_operator_param_names
 from baselines.common.data_ctx import DataContext
 from baselines.common.utils import get_available_ops
 from .operator_adapter import ORIGINAL_OPERATOR_ALIASES
@@ -84,6 +84,9 @@ def format_op_descriptions(task_type: str) -> str:
                 f"targets=[{targets}] required=[{required}] defaults=[{defaults}] "
                 f"param_space={_param_space_text(spec)}"
             )
+            accepted = get_operator_param_names(spec.op_name)
+            if accepted is not None:
+                lines.append(f"  accepted_keywords={sorted(accepted)}; defaults={spec.default_params}")
             if desc:
                 lines.append(f"  description: {desc}")
         lines.append("")

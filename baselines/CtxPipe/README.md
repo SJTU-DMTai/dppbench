@@ -13,7 +13,7 @@ policies. The logical-pipeline `DQN` remains separate.
 |---|---|
 | Component policies | Four independent `RnnDQN` models, one per merged operator category |
 | Logical-order policy | One `DQN` selecting one of the 24 permutations of four categories |
-| Context | Local GTE-large, 100-row CSV sample, 512-token truncation, attention-mask average pooling, 1024 dimensions |
+| Context | Local Qwen3-8B, 100-row CSV sample, 512-token truncation, attention-mask average pooling, 4096 dimensions |
 | State | 100 columns x 33 statistics, four primitive-sequence slots, predictor id, logical-pipeline id |
 | Networks | Upstream MLP/LSTM dimensions and LeakyReLU/Tanh activations |
 | Exploration | Exponential epsilon schedule from 1.0 to 0.2 with decay 2000 |
@@ -23,10 +23,10 @@ policies. The logical-pipeline `DQN` remains separate.
 The default encoder is loaded locally from:
 
 ```text
-/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large
+/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
 ```
 
-The encoder deterministically samples up to 100 rows and caches the 1024-value
+The encoder deterministically samples up to 100 rows and caches the 4096-value
 embedding by the sampled CSV content hash under:
 
 ```text
@@ -36,7 +36,7 @@ embedding by the sampled CSV content hash under:
 This keeps different tasks and transformed table states separate. Context is
 requested once for replay storage and again on a greedy action, matching the
 upstream action path; repeated requests for identical table content are served
-from memory or disk without running GTE-large again. Random actions do not make
+from memory or disk without running Qwen3-8B again. Random actions do not make
 the second request.
 
 ## DPPBench adaptation boundary

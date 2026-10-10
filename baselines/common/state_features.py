@@ -48,6 +48,24 @@ def _dtype_id(dtype) -> float:
     return 4.0
 
 
+def _hashable_value(value):
+    """Represent container cells for counting only; never mutate task data."""
+    if isinstance(value, np.ndarray):
+        return ('array', _hashable_value(value.tolist()))
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, tuple(_hashable_value(v) for v in value))
+    if isinstance(value, dict):
+        return ('dict', frozenset((_hashable_value(k), _hashable_value(v)) for k, v in value.items()))
+    return value
+
+
+def unique_value_count(series: pd.Series) -> int:
+    try:
+        return int(series.nunique())
+    except TypeError:
+        return int(series.map(_hashable_value).nunique())
+
+
 def dataframe_state_features(frame: pd.DataFrame) -> np.ndarray:
     """Encode at most 100 columns with the shared 33-value profile."""
     frame = pd.DataFrame(frame)
@@ -57,12 +75,13 @@ def dataframe_state_features(frame: pd.DataFrame) -> np.ndarray:
         series = frame[column]
         length = max(1, len(series))
         length_m, length_e = _frexp(len(series))
-        unique_m, unique_e = _frexp(series.nunique())
+        unique_count = unique_value_count(series)
+        unique_m, unique_e = _frexp(unique_count)
         row = [
             _dtype_id(series.dtype), length_m, length_e,
             _finite(series.isnull().sum() / length),
             1.0 if column in numeric_columns else 2.0,
-            unique_m, unique_e, _finite(series.nunique() / length),
+            unique_m, unique_e, _finite(unique_count / length),
         ]
         if column in numeric_columns:
             desc = series.describe()

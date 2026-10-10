@@ -47,12 +47,14 @@ class MCTSNode:
     column_functions: Optional[str] = None
     pipeline_steps: list[PipelineStep] = field(default_factory=list)
     revised_pipeline_steps: list[PipelineStep] = field(default_factory=list)
+    pipeline_text: Optional[str] = None
 
     # ---- EPO outputs (filled when node_type == END) ----
     final_pipeline_steps: list[PipelineStep] = field(default_factory=list)
     columns_match: Optional[bool] = None
     column_similarity: Optional[float] = None
     downstream_fitness: Optional[float] = None
+    downstream_error: Optional[str] = None
     downstream_metrics: dict = field(default_factory=dict)
     exec_error: Optional[str] = None
     reward_value: Optional[float] = None
@@ -101,6 +103,7 @@ class MCTSNode:
 
     def to_dict(self) -> dict:
         return {
+            "pipeline_text": self.pipeline_text,
             "node_type": self.node_type.value,
             "depth": self.depth,
             "Q": self.Q,
@@ -113,6 +116,7 @@ class MCTSNode:
             "columns_match": self.columns_match,
             "column_similarity": self.column_similarity,
             "downstream_fitness": self.downstream_fitness,
+            "downstream_error": self.downstream_error,
             "downstream_metrics": self.downstream_metrics,
             "exec_error": self.exec_error,
             "reward_value": self.reward_value,

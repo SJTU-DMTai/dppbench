@@ -1,7 +1,6 @@
-# Use the released DeepPrep checkpoint directly. Set llm_model here or export
-# DEEPPREP_MODEL; a base Qwen/OpenAI model is not an equivalent replacement.
+# Use the released DeepPrep checkpoint directly.
 llm_backend: local
-llm_model: null
+llm_model: /mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B
 # api_key (default: null): Loaded from project apikeys.json; keep null.
 api_key: null
 # base_url (default: null): Loaded from project apikeys.json; keep null.
@@ -14,10 +13,10 @@ max_tokens: 2048
 # timeout (default: 600): LLM request timeout in seconds.
 timeout: 600
 # Hugging Face checkpoint loading settings.
-torch_dtype: auto
+torch_dtype: bfloat16
 device_map: auto
-# max_explore_turn (default: 5): Maximum tree-agent exploration turns.
-max_explore_turn: 5
+# Maximum tree-agent exploration turns, including error correction and answer.
+max_explore_turn: 6
 # max_chain_len (default: 6): Maximum operator chain length.
 max_chain_len: 6
 # max_depth (default: 8): Maximum search tree depth.
@@ -28,10 +27,10 @@ max_err_cnt: 5
 small_n: 0
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
 eval_full: true
-# Deprecated compatibility keys. Official-style inference does not feed
-# downstream model scores back to the DeepPrep policy.
-downstream_feedback: false
-downstream_eval_n: 0
+# DPPBench adaptation: sampled validation AUC feedback, fixed training parameters.
+# Disable downstream_feedback to restore schema-only inference.
+downstream_feedback: true
+downstream_eval_n: 10000
 max_solution_attempts: 1
 # seed (default: 42): Random seed for agent and evaluation.
 seed: 42

@@ -89,29 +89,8 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
-    "SPIO": {
-        "cls_path": "baselines.SPIO.spio.SPIO",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
-    "ReAct": {
-        "cls_path": "baselines.ReAct.react.ReAct",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_chain_len",
-        "kwargs": {},
-    },
-    "DataMaster": {
-        "cls_path": "baselines.DataMaster.data_master.DataMaster",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
         "max_len_arg": "max_chain_len",
@@ -302,9 +281,10 @@ def parse_args():
     parser.add_argument("--max_output_rows", type=int, default=None)
     parser.add_argument("--max_output_columns", type=int, default=None)
     parser.add_argument(
-        "--ctxpipe_gte_model_path", type=str,
-        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large",
-        help="Local GTE checkpoint used by CtxPipe.",
+        "--ctxpipe_model_path", "--ctxpipe_gte_model_path",
+        dest="ctxpipe_model_path", type=str,
+        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
+        help="Local Qwen3-8B checkpoint used as the CtxPipe context encoder.",
     )
     parser.add_argument(
         "--deepprep_model_path", type=str,
@@ -314,7 +294,7 @@ def parse_args():
     parser.add_argument(
         "--qwen3_model_path", type=str,
         default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
-        help="Local Qwen3-8B checkpoint used by BAT and FlowPipe.",
+        help="Shared local Qwen3-8B checkpoint used by BAT, CtxPipe, and FlowPipe.",
     )
     parser.add_argument(
         "--skip_build", action="store_true",
@@ -404,7 +384,7 @@ def _apply_baseline_model_paths(
 ) -> None:
     """Map experiment checkpoint arguments to each baseline's public API."""
     if baseline_name == "CtxPipe":
-        kwargs["gte_model_path"] = args.ctxpipe_gte_model_path
+        kwargs["gte_model_path"] = args.ctxpipe_model_path
     elif baseline_name == "DeepPrep":
         kwargs.update({
             "llm_backend": "local",

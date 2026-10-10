@@ -25,3 +25,4 @@ kaggle
 openai
 transformers
 accelerate
+torchao==0.13.0

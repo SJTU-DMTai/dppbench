@@ -1,15 +1,13 @@
 """Top-level BAT orchestrator.
 
-Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep` and
-:class:`baselines.DataMaster.data_master.DataMaster`:
+Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep`:
 
   1. Build a downstream evaluator (``BATEvaluator``) and a structural
      sandbox (re-using DeepPrep's :class:`Sandbox`).
   2. Reset the sandbox and infer the dataset's :class:`DataContext` via
      SAGA's helpers (so both tabular and rec datasets are supported).
   3. Run the MCTS solver over BAT's DPAS action set using the original
-     target-column reward. Downstream and LLM-judge terms are retained only
-     as explicitly enabled benchmark ablations.
+     combined target-column and sampled validation-AUC reward.
   4. Take the first of BAT's two ranked END candidates, attach DAG metadata,
      hard-validate it without repair, and run the final evaluation.
   5. Persist YAML pipeline, agent log, search tree, and best paths under
@@ -37,6 +35,7 @@ from .evaluator import BATEvaluator
 from .mcts import MCTSSolver
 from .reward import BATReward, BATRewardConfig
 from .sandbox import Sandbox
+from .llm_client import BATLLMClient
 
 
 CONFIG_KEYS = (
@@ -203,7 +202,9 @@ class BAT:
 
     # ------------------------------------------------------------------
     def _build_llm(self) -> LLMClient:
-        return LLMClient(
+        return BATLLMClient(
+            trace_path=os.path.join(self.output_dir, "llm_trace.jsonl"),
+            enable_thinking=False,
             backend=self.llm_backend,
             model=self.llm_model,
             api_key=self.api_key,
@@ -230,6 +231,7 @@ class BAT:
                 task_dir=self.task_dir,
                 data_name=self.data_name,
                 data_dir=self.data_dir,
+                metric_key="auc",
                 small_n=self.downstream_eval_n,
                 seed=self.seed,
                 verbose=False,
@@ -358,6 +360,7 @@ class BAT:
                         "n_end_nodes": len(mcts_res.end_nodes),
                         "n_best_paths": len(mcts_res.best_paths),
                         "llm_model": self.llm_model,
+                        "weight_quantization": "torchao_fp8_weight_only" if self.llm_backend == "local" else None,
                         "temperature": self.temperature,
                         "top_p": self.top_p,
                         "use_downstream": self.reward_cfg.use_downstream,

@@ -1,4 +1,4 @@
-"""DPPBench entry point for pretrained FlowPipe inference."""
+"""DPPBench FlowPipe adapter with task-specific policy training."""
 from __future__ import annotations
 
 import json
@@ -11,10 +11,12 @@ from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.state_features import primary_feature_frame
 from baselines.common.utils import get_data_ctx
+from baselines.common.budget import BudgetExceededError
 
 from .agent import GFNAgent
 from .context import SemanticContextLoader
 from .env import FlowPipeEnv
+from .trainer import FlowPipeTrainer
 
 
 CONFIG_KEYS = (
@@ -23,12 +25,13 @@ CONFIG_KEYS = (
     "reward_temperature", "inference_samples", "inference_mode",
     "inference_top_n", "max_steps", "small_n", "eval_full", "seed",
     "fast_train",
+    "train_epochs", "trajectories_per_epoch", "updates_per_epoch", "trajectory_batch_size",
 )
-DEFAULT_LLAMA_MODEL_PATH = "/mnt/sdb/dengjiale/dppbench/llm_ckpt"
+DEFAULT_LLAMA_MODEL_PATH = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B"
 
 
 class FlowPipe:
-    """Load an offline-trained C-GFlowNet and synthesize a target pipeline."""
+    """Train a fresh C-GFlowNet on the target task, then synthesize a pipeline."""
 
     def __init__(
         self, task_dir: str, data_name: str, data_dir: Optional[str] = None,
@@ -46,6 +49,8 @@ class FlowPipe:
         fast_train: Optional[bool] = None, output_dir: Optional[str] = None,
         verbose: bool = True, device: str = "cpu", model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        train_epochs: Optional[int] = None, trajectories_per_epoch: Optional[int] = None,
+        updates_per_epoch: Optional[int] = None, trajectory_batch_size: Optional[int] = None,
     ) -> None:
         cfg = load_baseline_config(config_path or default_config_path(__file__), CONFIG_KEYS)
         def value(key, explicit):
@@ -74,6 +79,12 @@ class FlowPipe:
         self.eval_full = bool(value("eval_full", eval_full))
         self.seed = int(value("seed", seed))
         self.fast_train = bool(value("fast_train", fast_train))
+        self.train_epochs = int(value('train_epochs', train_epochs))
+        self.trajectories_per_epoch = int(value('trajectories_per_epoch', trajectories_per_epoch))
+        self.updates_per_epoch = int(value('updates_per_epoch', updates_per_epoch))
+        self.trajectory_batch_size = int(value('trajectory_batch_size', trajectory_batch_size))
+        if min(self.train_epochs, self.trajectories_per_epoch, self.updates_per_epoch, self.trajectory_batch_size) <= 0:
+            raise ValueError('FlowPipe task-training settings must be positive')
         self.output_dir = os.path.abspath(output_dir or os.path.join("outputs", "FlowPipe", data_name))
         self.verbose, self.device, self.model_name = bool(verbose), device, model_name
         os.makedirs(self.output_dir, exist_ok=True)
@@ -119,11 +130,6 @@ class FlowPipe:
 
     def run(self) -> dict:
         started = time.time()
-        if not self.checkpoint_path or not os.path.isfile(self.checkpoint_path):
-            raise FileNotFoundError(
-                "FlowPipe requires an offline cross-task checkpoint; set "
-                f"checkpoint_path in config.yaml (current: {self.checkpoint_path or '<empty>'})."
-            )
         evaluator = self._build_evaluator()
         data = evaluator.load_data()
         if evaluator.task_type == "graph":
@@ -145,22 +151,54 @@ class FlowPipe:
             buffer_capacity=self.buffer_capacity, failure_weight=self.failure_weight,
             reward_temperature=self.reward_temperature, device=self.device,
         )
-        agent.load(self.checkpoint_path)
+        # Fresh task-specific policy; no cross-task checkpoint is loaded.
         agent.set_context(context)
+        agent.model.train()
+        trainer = FlowPipeTrainer(
+            agent, [(env, context)], output_dir=self.output_dir, combos_per_epoch=1,
+            trajectories_per_combo=self.trajectories_per_epoch,
+            updates_per_combo=self.updates_per_epoch,
+            trajectory_batch_size=self.trajectory_batch_size, seed=self.seed,
+        )
+        budget_error = None
+        try:
+            trainer.train(num_epochs=self.train_epochs)
+        except BudgetExceededError as exc:
+            budget_error = str(exc)
+        agent.save(os.path.join(self.output_dir, 'gfn.pt'))
+        self.checkpoint_path = os.path.join(self.output_dir, 'gfn.pt')
         agent.model.eval()
 
-        candidates = []
+        candidates = list(trainer.candidates)
         count = self.inference_samples if self.inference_mode == "sample" else self.inference_top_n
         for index in range(max(1, count)):
             env.reset()
             rank = None if self.inference_mode == "sample" else index
-            reward, trajectory = agent.sample_trajectory(env, greedy_rank=rank)
+            try:
+                reward, trajectory = agent.sample_trajectory(env, greedy_rank=rank)
+            except BudgetExceededError as exc:
+                budget_error = str(exc)
+                break
             candidates.append({
                 "reward": float(reward), "pipeline": env.current_pipeline(),
                 "actions": list(trajectory["actions"]), "errors": list(trajectory["errors"]),
                 "logic_pipeline_id": env.logic_id,
+                'success': trajectory.get('success', False),
+                'fitness': trajectory.get('fitness'), 'metrics': trajectory.get('metrics', {}),
+                'error_messages': trajectory.get('error_messages', []),
             })
-        best = max(candidates, key=lambda item: item["reward"])
+        if not candidates:
+            raise RuntimeError('FlowPipe task training produced no complete trajectory: ' + str(budget_error))
+        eligible = [item for item in candidates if item.get('success')
+                    and check_pipeline(item['pipeline'], ctx).valid]
+        if not eligible:
+            with open(os.path.join(self.output_dir, 'flowpipe_log.json'), 'w') as handle:
+                json.dump({'training_mode': 'per_task', 'policy_updates': trainer.policy_updates,
+                           'training_history': trainer.history, 'budget_error': budget_error,
+                           'candidates': [{k: v for k, v in item.items() if k != 'pipeline'} for item in candidates]},
+                          handle, indent=2, default=str)
+            raise RuntimeError('FlowPipe produced no legal, successfully evaluated candidate; see flowpipe_log.json')
+        best = max(eligible, key=lambda item: item["fitness"])
         pipeline: Pipeline = best["pipeline"]
         report = check_pipeline(pipeline, ctx)
         out_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -171,6 +209,10 @@ class FlowPipe:
             json.dump({
                 "official_commit": "265a4e91af6eaaf0a734619cb71e183c0788334f",
                 "checkpoint_path": self.checkpoint_path,
+                "training_mode": "per_task",
+                "training_history": trainer.history,
+                "policy_updates": trainer.policy_updates,
+                "budget_error": budget_error,
                 "llama_model_path": self.llama_model_path,
                 "llm_name": self.llm_name,
                 "inference_mode": self.inference_mode,
@@ -181,8 +223,8 @@ class FlowPipe:
         return {
             "best_pipeline_yaml": pipeline.to_yaml(),
             "best_pipeline_path": out_path,
-            "best_fitness": best["reward"],
-            "best_metrics": {},
+            "best_fitness": best["fitness"],
+            "best_metrics": best['metrics'],
             "final_pipeline_ops": [step.op for step in pipeline.steps],
             "is_legal": report.valid,
             "eval_error": None if report.valid else "; ".join(report.errors),
@@ -190,6 +232,8 @@ class FlowPipe:
             "duration_seconds": time.time() - started,
             "output_dir": self.output_dir,
             "checkpoint_path": self.checkpoint_path,
+            "task_checkpoint_path": os.path.join(self.output_dir, 'gfn.pt'),
+            "training_stats": {"policy_updates": trainer.policy_updates, "epochs_completed": len(trainer.history)},
             "context_cache_dir": self.context_cache_dir,
             "llama_model_path": self.llama_model_path,
         }

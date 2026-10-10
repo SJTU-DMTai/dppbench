@@ -1,8 +1,8 @@
 """Pipeline evaluator that drives downstream model training.
 
 Reuses ``baselines.common.executor.TrainingExecutor`` so that each baseline fitness
-signal is exactly the same metric that the rest of the project optimises
-(LightGBM AUC for tabular tasks, DIN AUC for recommendation tasks).
+signal follows the task's configured primary metric. Metrics that represent losses
+(RMSE, MSE, MAE, and logloss) are negated so every search still maximizes fitness.
 """
 from __future__ import annotations
 
@@ -44,14 +44,13 @@ class PipelineEvaluator:
     """
 
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
-                 metric_key: str = "auc", verbose: bool = False,
+                 metric_key: str | None = None, verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
                  scoring_method: str = "full_train", budget: Budget | None = None,
                  seed: int | None = None, model_config: dict | None = None):
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
-        self.metric_key = metric_key
         self.verbose = verbose
         self.device = device
         self.model_name = model_name
@@ -65,6 +64,19 @@ class PipelineEvaluator:
             model_name=model_name,
             seed=seed,
             model_config=model_config,
+        )
+        configured_metrics = (
+            self._executor.get_model_config().get("train", {}).get("metrics")
+            or []
+        )
+        self.metric_key = (
+            metric_key
+            if metric_key in configured_metrics
+            else (
+                configured_metrics[0]
+                if configured_metrics
+                else metric_key or "auc"
+            )
         )
         self._cache: dict[str, EvaluationResult] = {}
         self._data_context = None
@@ -162,7 +174,18 @@ class PipelineEvaluator:
         success = bool(result.get("success"))
         metrics = result.get("metrics") or {}
         if success:
-            fitness = float(metrics.get(self._metric_key_for_method(method), metrics.get(self.metric_key, metrics.get("auc", 0.0))))
+            metric_key = self._metric_key_for_method(method)
+            if metric_key not in metrics:
+                raise ValueError(
+                    f"configured fitness metric {metric_key!r} is missing; "
+                    f"available metrics: {sorted(metrics)}"
+                )
+            metric_value = float(metrics[metric_key])
+            fitness = (
+                -metric_value
+                if metric_key in {"rmse", "mse", "mae", "logloss"}
+                else metric_value
+            )
         else:
             fitness = -math.inf
 

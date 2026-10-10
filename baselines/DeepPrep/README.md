@@ -14,10 +14,17 @@ out of scope; `rl_trainer.py` remains a non-functional placeholder.
 | Tree edge | One successfully executed operator instance |
 | Parent selection | Full root-to-node path including parameters |
 | Backtracking | Non-local parent selection in `<expand>` |
-| Termination | `<answer>` plus target-schema and `check_pipeline()` validation |
-| Search feedback | Schema, samples, state changes, and execution errors only |
-| Downstream metric | Final DPPBench evaluation only; never fed to the model |
+| Termination | Budget-limited candidate comparison in AUC mode; validated answer in schema-only mode |
+| Search feedback | Schema, execution/training errors, and sampled validation AUC |
+| Downstream metric | Fixed-parameter training on up to 10,000 sampled rows; no HPO or standard-test scoring during search |
 | Finalization | DAG metadata assignment and hard validation; no semantic repair |
+
+The default AUC-feedback mode is a DPPBench adaptation, not schema-only paper
+inference. It reuses the shared search evaluator, caches candidate scores, and
+selects the highest validation AUC within the existing search/evaluation budget.
+LLM observation sampling (`small_n`) is independent of `downstream_eval_n`.
+Set `downstream_feedback: false` to restore schema-only search. Frozen standard
+test replay and final reporting remain separate from the search objective.
 
 DPPBench necessarily differs from the original method in its shared operator
 space and downstream benchmark objective. `TargetSchema` is derived from the

@@ -27,7 +27,7 @@ def dataset_features(frame: pd.DataFrame, column_num: int = 100) -> np.ndarray:
     for column in frame.columns[:column_num]:
         series = frame[column]
         length = len(series)
-        numeric = pd.api.types.is_numeric_dtype(series.dtype)
+        numeric = pd.api.types.is_numeric_dtype(series.dtype) and not pd.api.types.is_bool_dtype(series.dtype)
         unique = series.nunique(dropna=True)
         base = [
             float(DTYPE_IDS.get(str(series.dtype), 4)),
@@ -42,7 +42,8 @@ def dataset_features(frame: pd.DataFrame, column_num: int = 100) -> np.ndarray:
             desc = clean.describe()
             mode = clean.mode()
             mode_value = mode.iloc[0] if len(mode) else 0.0
-            mode_ratio = clean.value_counts(dropna=False).iloc[0] / max(1, length) if length else 0.0
+            counts = clean.value_counts()
+            mode_ratio = counts.iloc[0] / max(1, length) if len(counts) else 0.0
             extra = [
                 desc.get("mean", 0), desc.get("std", 0), desc.get("min", 0),
                 desc.get("25%", 0), desc.get("50%", 0), desc.get("75%", 0),
@@ -57,12 +58,20 @@ def dataset_features(frame: pd.DataFrame, column_num: int = 100) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32).reshape(-1)
 
 
-def frame_from_loaded_data(data) -> pd.DataFrame:
+def feature_frame(frame, target_col: str | None = None) -> pd.DataFrame:
+    """Profile predictors only, excluding frozen standard-test rows and markers."""
+    frame = pd.DataFrame(frame)
+    if "__split__" in frame.columns:
+        frame = frame.loc[frame["__split__"] != "std_test"]
+    return frame.drop(columns=[c for c in (target_col, "__split__") if c in frame.columns])
+
+
+def frame_from_loaded_data(data, target_col: str | None = None) -> pd.DataFrame:
     for attr in ("train_df", "interaction_df"):
         frame = getattr(data, attr, None)
         if frame is not None:
-            return pd.DataFrame(frame)
+            return feature_frame(frame, getattr(data, "target_col", None) or target_col)
     raise ValueError("HAIPipe could not find a training dataframe in the task loader")
 
 
-__all__ = ["dataset_features", "frame_from_loaded_data"]
+__all__ = ["dataset_features", "feature_frame", "frame_from_loaded_data"]

@@ -2,7 +2,7 @@
 
 Thin alias of :class:`SearchPipelineEvaluator` exposing
 ``evaluate_for_agent(pipeline) -> (fitness, metrics, error)``, used inside
-the MCTS reward model. Identical mechanics to DeepPrep/DataMaster
+the MCTS reward model. Identical mechanics to DeepPrep
 evaluators (``small_n`` subsampling + LightGBM/DIN AUC), renamed for
 log-readability.
 """

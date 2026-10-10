@@ -1,8 +1,9 @@
-"""Final-pipeline evaluator for DeepPrep.
+"""Shared downstream evaluator for DeepPrep.
 
 Used both:
 * at the very end of ``DeepPrep.run()`` to score the pipeline (full data),
 * after DeepPrep inference for DPPBench reporting.
+* during search on a fixed-size sample for validation AUC feedback.
 """
 from __future__ import annotations
 

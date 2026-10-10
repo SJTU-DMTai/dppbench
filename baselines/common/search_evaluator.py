@@ -24,7 +24,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         task_dir: str,
         data_name: str,
         data_dir=None,
-        metric_key: str = "auc",
+        metric_key: Optional[str] = None,
         verbose: bool = False,
         small_n: Optional[int] = None,
         seed: int = 42,

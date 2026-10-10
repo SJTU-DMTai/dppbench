@@ -5,7 +5,7 @@ at official commit `265a4e91af6eaaf0a734619cb71e183c0788334f` to DPPBench.
 
 ## Preserved method core
 
-- One amortized conditional GFlowNet is trained offline across source tasks.
+- The DPPBench adaptation trains a separate conditional GFlowNet on each task.
 - A trajectory first selects a logical component order and then one primitive
   (or No-Op) for each component.
 - The policy uses the official state blocks: logic flag, logic one-hot, stage
@@ -33,28 +33,30 @@ at official commit `265a4e91af6eaaf0a734619cb71e183c0788334f` to DPPBench.
 
 ## Checkpoint and context requirements
 
-The official repository does not publish a ready-to-use checkpoint. FlowPipe
-therefore refuses to run with randomly initialized weights. Set
-`checkpoint_path` in `config.yaml` to a checkpoint produced by offline,
-cross-task training with `FlowPipeTrainer`.
+The DPPBench adapter now trains a fresh policy separately for each target task.
+No cross-task pretrained checkpoint is required or loaded. This intentionally
+differs from the original offline/amortized method. Training trajectories and
+evaluations count against the same task search budget; standard-test metrics
+are not used as policy rewards. The task-specific weights are saved as `gfn.pt`.
+`train_epochs`, `trajectories_per_epoch`, `updates_per_epoch`, and
+`trajectory_batch_size` control training. Validation uses 2 epochs with 2
+trajectories each and records `training_stats` / `policy_updates`.
 
-For each target task, cache the official 4096-dimensional Llama embedding at:
+For each target task, cache the 4096-dimensional Qwen3-8B embedding at:
 
 ```text
 <context_cache_dir>/Qwen3-8B/contextual_semantic/<task>.pt
 ```
 
 `llama_model_path` is an explicit `FlowPipe` constructor argument and defaults
-to `/mnt/sdb/dengjiale/dppbench/llm_ckpt`. It is used only by the offline cache
-command; normal `FlowPipe.run()` loads the saved tensor and never loads Llama.
-The DPPBench experiment scripts explicitly override it with
-`/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B` and label the cached context as
-`Qwen3-8B`.
+to `/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B`. It is used only by the
+offline cache command; normal `FlowPipe.run()` loads the saved tensor and never
+loads Qwen3-8B.
 
 Precompute embeddings before training or evaluation:
 
 ```bash
-python scripts/cache_flowpipe_context.py \
+python baselines/FlowPipe/cache_flowpipe_context.py \
   --data_names default_credit \
   --data_dir /mnt/sdb/dengjiale/dppbench/data \
   --output_dir /mnt/sdb/dengjiale/dppbench/output \
@@ -62,7 +64,7 @@ python scripts/cache_flowpipe_context.py \
   --gpu_id 0
 ```
 
-Target-task training is intentionally not performed by `FlowPipe.run()`.
+Target-task training is performed by `FlowPipe.run()` before inference.
 
 ## Official defaults
 

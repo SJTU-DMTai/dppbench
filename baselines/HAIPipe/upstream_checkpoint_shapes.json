@@ -1,0 +1,483 @@
+{
+  "commit": "34d2cc8d24c47f0a8b3f6f19eeab2d20e4e71061",
+  "source": "https://github.com/ruc-datalab/Haipipe",
+  "checkpoints": {
+    "logical": {
+      "path": "aipipe/core/models/0/56000_logical_pipeline.pkl",
+      "shapes": {
+        "nn.0.weight": [
+          1907,
+          1901
+        ],
+        "nn.0.bias": [
+          1907
+        ],
+        "nn.2.weight": [
+          1907,
+          1907
+        ],
+        "nn.2.bias": [
+          1907
+        ],
+        "nn.4.weight": [
+          950,
+          1907
+        ],
+        "nn.4.bias": [
+          950
+        ],
+        "nn.6.weight": [
+          950,
+          950
+        ],
+        "nn.6.bias": [
+          950
+        ],
+        "nn.8.weight": [
+          387,
+          950
+        ],
+        "nn.8.bias": [
+          387
+        ],
+        "nn.10.weight": [
+          387,
+          387
+        ],
+        "nn.10.bias": [
+          387
+        ],
+        "nn.12.weight": [
+          128,
+          387
+        ],
+        "nn.12.bias": [
+          128
+        ],
+        "nn.14.weight": [
+          128,
+          128
+        ],
+        "nn.14.bias": [
+          128
+        ],
+        "nn.16.weight": [
+          64,
+          128
+        ],
+        "nn.16.bias": [
+          64
+        ],
+        "nn.18.weight": [
+          32,
+          64
+        ],
+        "nn.18.bias": [
+          32
+        ],
+        "nn.20.weight": [
+          6,
+          32
+        ],
+        "nn.20.bias": [
+          6
+        ]
+      }
+    },
+    "primitive": {
+      "path": "aipipe/core/models/0/56000_fpreprocessing_model.pkl",
+      "shapes": {
+        "seq_embedding.weight": [
+          27,
+          30
+        ],
+        "seq_lstm.weight_ih_l0": [
+          72,
+          30
+        ],
+        "seq_lstm.weight_hh_l0": [
+          72,
+          18
+        ],
+        "seq_lstm.bias_ih_l0": [
+          72
+        ],
+        "seq_lstm.bias_hh_l0": [
+          72
+        ],
+        "seq_lstm.weight_ih_l1": [
+          72,
+          18
+        ],
+        "seq_lstm.weight_hh_l1": [
+          72,
+          18
+        ],
+        "seq_lstm.bias_ih_l1": [
+          72
+        ],
+        "seq_lstm.bias_hh_l1": [
+          72
+        ],
+        "predictor_embedding.weight": [
+          19,
+          10
+        ],
+        "lpipeline_embedding.weight": [
+          6,
+          5
+        ],
+        "nn.0.weight": [
+          1933,
+          2023
+        ],
+        "nn.0.bias": [
+          1933
+        ],
+        "nn.2.weight": [
+          1933,
+          1933
+        ],
+        "nn.2.bias": [
+          1933
+        ],
+        "nn.4.weight": [
+          1907,
+          1933
+        ],
+        "nn.4.bias": [
+          1907
+        ],
+        "nn.6.weight": [
+          1907,
+          1907
+        ],
+        "nn.6.bias": [
+          1907
+        ],
+        "nn.8.weight": [
+          950,
+          1907
+        ],
+        "nn.8.bias": [
+          950
+        ],
+        "nn.10.weight": [
+          950,
+          950
+        ],
+        "nn.10.bias": [
+          950
+        ],
+        "nn.12.weight": [
+          387,
+          950
+        ],
+        "nn.12.bias": [
+          387
+        ],
+        "nn.14.weight": [
+          387,
+          387
+        ],
+        "nn.14.bias": [
+          387
+        ],
+        "nn.16.weight": [
+          128,
+          387
+        ],
+        "nn.16.bias": [
+          128
+        ],
+        "nn.18.weight": [
+          128,
+          128
+        ],
+        "nn.18.bias": [
+          128
+        ],
+        "nn.20.weight": [
+          64,
+          128
+        ],
+        "nn.20.bias": [
+          64
+        ],
+        "nn.22.weight": [
+          32,
+          64
+        ],
+        "nn.22.bias": [
+          32
+        ],
+        "nn.24.weight": [
+          9,
+          32
+        ],
+        "nn.24.bias": [
+          9
+        ]
+      }
+    },
+    "score": {
+      "path": "model/10",
+      "shapes": {
+        "dataset_nn.0.weight": [
+          950,
+          1900
+        ],
+        "dataset_nn.0.bias": [
+          950
+        ],
+        "dataset_nn.1.weight": [
+          950
+        ],
+        "dataset_nn.1.bias": [
+          950
+        ],
+        "dataset_nn.1.running_mean": [
+          950
+        ],
+        "dataset_nn.1.running_var": [
+          950
+        ],
+        "dataset_nn.1.num_batches_tracked": [],
+        "dataset_nn.3.weight": [
+          950,
+          950
+        ],
+        "dataset_nn.3.bias": [
+          950
+        ],
+        "dataset_nn.4.weight": [
+          950
+        ],
+        "dataset_nn.4.bias": [
+          950
+        ],
+        "dataset_nn.4.running_mean": [
+          950
+        ],
+        "dataset_nn.4.running_var": [
+          950
+        ],
+        "dataset_nn.4.num_batches_tracked": [],
+        "dataset_nn.6.weight": [
+          300,
+          950
+        ],
+        "dataset_nn.6.bias": [
+          300
+        ],
+        "dataset_nn.7.weight": [
+          300
+        ],
+        "dataset_nn.7.bias": [
+          300
+        ],
+        "dataset_nn.7.running_mean": [
+          300
+        ],
+        "dataset_nn.7.running_var": [
+          300
+        ],
+        "dataset_nn.7.num_batches_tracked": [],
+        "dataset_nn.9.weight": [
+          300,
+          300
+        ],
+        "dataset_nn.9.bias": [
+          300
+        ],
+        "dataset_nn.10.weight": [
+          300
+        ],
+        "dataset_nn.10.bias": [
+          300
+        ],
+        "dataset_nn.10.running_mean": [
+          300
+        ],
+        "dataset_nn.10.running_var": [
+          300
+        ],
+        "dataset_nn.10.num_batches_tracked": [],
+        "seq_embedding.weight": [
+          21,
+          30
+        ],
+        "seq_lstm.weight_ih_l0": [
+          400,
+          30
+        ],
+        "seq_lstm.weight_hh_l0": [
+          400,
+          100
+        ],
+        "seq_lstm.bias_ih_l0": [
+          400
+        ],
+        "seq_lstm.bias_hh_l0": [
+          400
+        ],
+        "seq_lstm.weight_ih_l1": [
+          400,
+          100
+        ],
+        "seq_lstm.weight_hh_l1": [
+          400,
+          100
+        ],
+        "seq_lstm.bias_ih_l1": [
+          400
+        ],
+        "seq_lstm.bias_hh_l1": [
+          400
+        ],
+        "seq_lstm.weight_ih_l2": [
+          400,
+          100
+        ],
+        "seq_lstm.weight_hh_l2": [
+          400,
+          100
+        ],
+        "seq_lstm.bias_ih_l2": [
+          400
+        ],
+        "seq_lstm.bias_hh_l2": [
+          400
+        ],
+        "seq_lstm.weight_ih_l3": [
+          400,
+          100
+        ],
+        "seq_lstm.weight_hh_l3": [
+          400,
+          100
+        ],
+        "seq_lstm.bias_ih_l3": [
+          400
+        ],
+        "seq_lstm.bias_hh_l3": [
+          400
+        ],
+        "seq_lstm.weight_ih_l4": [
+          400,
+          100
+        ],
+        "seq_lstm.weight_hh_l4": [
+          400,
+          100
+        ],
+        "seq_lstm.bias_ih_l4": [
+          400
+        ],
+        "seq_lstm.bias_hh_l4": [
+          400
+        ],
+        "end_mlp.0.weight": [
+          1650,
+          3300
+        ],
+        "end_mlp.0.bias": [
+          1650
+        ],
+        "end_mlp.1.weight": [
+          1650
+        ],
+        "end_mlp.1.bias": [
+          1650
+        ],
+        "end_mlp.1.running_mean": [
+          1650
+        ],
+        "end_mlp.1.running_var": [
+          1650
+        ],
+        "end_mlp.1.num_batches_tracked": [],
+        "end_mlp.3.weight": [
+          200,
+          1650
+        ],
+        "end_mlp.3.bias": [
+          200
+        ],
+        "end_mlp.4.weight": [
+          200
+        ],
+        "end_mlp.4.bias": [
+          200
+        ],
+        "end_mlp.4.running_mean": [
+          200
+        ],
+        "end_mlp.4.running_var": [
+          200
+        ],
+        "end_mlp.4.num_batches_tracked": [],
+        "end_mlp.6.weight": [
+          200,
+          200
+        ],
+        "end_mlp.6.bias": [
+          200
+        ],
+        "end_mlp.7.weight": [
+          200
+        ],
+        "end_mlp.7.bias": [
+          200
+        ],
+        "end_mlp.7.running_mean": [
+          200
+        ],
+        "end_mlp.7.running_var": [
+          200
+        ],
+        "end_mlp.7.num_batches_tracked": [],
+        "end_mlp.9.weight": [
+          10,
+          200
+        ],
+        "end_mlp.9.bias": [
+          10
+        ],
+        "end_mlp.10.weight": [
+          10
+        ],
+        "end_mlp.10.bias": [
+          10
+        ],
+        "end_mlp.10.running_mean": [
+          10
+        ],
+        "end_mlp.10.running_var": [
+          10
+        ],
+        "end_mlp.10.num_batches_tracked": [],
+        "end_mlp.12.weight": [
+          1,
+          10
+        ],
+        "end_mlp.12.bias": [
+          1
+        ],
+        "end_mlp.13.weight": [
+          1
+        ],
+        "end_mlp.13.bias": [
+          1
+        ],
+        "end_mlp.13.running_mean": [
+          1
+        ],
+        "end_mlp.13.running_var": [
+          1
+        ],
+        "end_mlp.13.num_batches_tracked": []
+      }
+    }
+  }
+}

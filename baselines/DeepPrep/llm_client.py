@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from baselines.common.api_keys import load_openai_compatible_api_config
 from baselines.common.budget import get_active_budget
+from baselines.common.llm_quantization import fp8_quantization_config
 
 
 @dataclass
@@ -31,8 +32,10 @@ class LLMConfig:
     top_p: float = 1.0
     max_tokens: int = 2048
     timeout: int = 600
-    torch_dtype: str = "auto"
+    torch_dtype: str = "bfloat16"
     device_map: str = "auto"
+    enable_thinking: Optional[bool] = None
+    repetition_penalty: float = 1.0
 
 
 class LLMClient:
@@ -52,8 +55,10 @@ class LLMClient:
         top_p: float = 1.0,
         max_tokens: int = 2048,
         timeout: int = 600,
-        torch_dtype: str = "auto",
+        torch_dtype: str = "bfloat16",
         device_map: str = "auto",
+        enable_thinking: Optional[bool] = None,
+        repetition_penalty: float = 1.0,
     ) -> None:
         if backend not in ("api", "local"):
             raise ValueError(f"Unknown LLM backend {backend!r}")
@@ -82,6 +87,8 @@ class LLMClient:
             timeout=timeout,
             torch_dtype=torch_dtype,
             device_map=device_map,
+            enable_thinking=enable_thinking,
+            repetition_penalty=repetition_penalty,
         )
         # Lazy-initialised handles
         self._api_client = None     # openai.OpenAI
@@ -101,6 +108,7 @@ class LLMClient:
         messages: list[dict],
         system: Optional[str] = None,
         temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Send a list of ``{"role", "content"}`` messages and return the
         assistant text. ``system`` is prepended to ``messages`` if provided.
@@ -111,9 +119,9 @@ class LLMClient:
         if system is not None:
             messages = [{"role": "system", "content": system}, *messages]
         if self.cfg.backend == "api":
-            answer = self._chat_api(messages, temperature=temperature)
+            answer = self._chat_api(messages, temperature=temperature, max_tokens=max_tokens)
         else:
-            answer = self._chat_local(messages, temperature=temperature)
+            answer = self._chat_local(messages, temperature=temperature, max_tokens=max_tokens)
         if budget is not None:
             budget.check_resources()
         return answer
@@ -137,14 +145,14 @@ class LLMClient:
         kwargs["timeout"] = self.cfg.timeout
         self._api_client = OpenAI(**kwargs)
 
-    def _chat_api(self, messages: list[dict], temperature: Optional[float]) -> str:
+    def _chat_api(self, messages: list[dict], temperature: Optional[float], max_tokens: Optional[int] = None) -> str:
         self._ensure_api_client()
         temp = self.cfg.temperature if temperature is None else float(temperature)
         completion = self._api_client.chat.completions.create(
             model=self.cfg.model,
             messages=messages,
             temperature=temp,
-            max_tokens=self.cfg.max_tokens,
+            max_tokens=self.cfg.max_tokens if max_tokens is None else max_tokens,
             timeout=self.cfg.timeout,
         )
         usage = getattr(completion, "usage", None)
@@ -178,19 +186,24 @@ class LLMClient:
             trust_remote_code=True,
             torch_dtype=self.cfg.torch_dtype,
             device_map=self.cfg.device_map,
+            quantization_config=fp8_quantization_config(),
         )
         mdl.eval()
         self._local_tokenizer = tok
         self._local_model = mdl
 
-    def _chat_local(self, messages: list[dict], temperature: Optional[float]) -> str:
+    def _chat_local(self, messages: list[dict], temperature: Optional[float], max_tokens: Optional[int] = None) -> str:
         self._ensure_local_model()
         tok = self._local_tokenizer
         mdl = self._local_model
+        template_options = {}
+        if self.cfg.enable_thinking is not None:
+            template_options["enable_thinking"] = self.cfg.enable_thinking
         prompt = tok.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            **template_options,
         )
         import torch  # noqa: WPS433  -- local-only import
         inputs = tok(prompt, return_tensors="pt").to(mdl.device)
@@ -203,10 +216,11 @@ class LLMClient:
         with torch.no_grad():
             out = mdl.generate(
                 **inputs,
-                max_new_tokens=self.cfg.max_tokens,
+                max_new_tokens=self.cfg.max_tokens if max_tokens is None else max_tokens,
                 do_sample=temp > 0,
                 temperature=max(temp, 0.01),
                 top_p=self.cfg.top_p,
+                repetition_penalty=self.cfg.repetition_penalty,
                 pad_token_id=tok.eos_token_id,
                 eos_token_id=eos_ids or None,
             )
@@ -234,7 +248,10 @@ class LLMClient:
             "temperature": self.cfg.temperature,
             "top_p": self.cfg.top_p,
             "max_new_tokens": self.cfg.max_tokens,
+            "enable_thinking": self.cfg.enable_thinking,
+            "repetition_penalty": self.cfg.repetition_penalty,
             "torch_dtype": self.cfg.torch_dtype,
+            "weight_quantization": "torchao_fp8_weight_only" if self.cfg.backend == "local" else None,
             "device_map": self.cfg.device_map,
             "total_tokens_used": self.total_tokens_used,
         }

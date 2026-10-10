@@ -71,6 +71,8 @@ class GFNAgent:
         if self.context is None:
             raise RuntimeError("FlowPipe context is not set")
         states, actions, masks, errors = [], [], [], []
+        error_messages = []
+        info = {}
         state = env.get_state_repr()
         done, reward = False, 1e-6
         while not done and len(actions) < 1 + env.max_steps:
@@ -79,6 +81,7 @@ class GFNAgent:
             logits = self.apply_mask(logits.squeeze(0), env.get_action_mask())
             if torch.isinf(logits).all():
                 errors.append(-1)
+                error_messages.append('No feasible action remains under the mandatory contract and step budget')
                 break
             if greedy_rank is None:
                 action = torch.distributions.Categorical(logits=logits).sample()
@@ -91,6 +94,8 @@ class GFNAgent:
             actions.append(int(action.item()))
             state, reward, done, info = env.step(int(action.item()))
             errors.append(int(info.get("err_code", 0)))
+            if info.get('error'):
+                error_messages.append(info['error'])
             if errors[-1] != 0:
                 reward = 1e-6
                 break
@@ -100,6 +105,9 @@ class GFNAgent:
             "states": states, "actions": actions, "masks": masks,
             "errors": errors, "reward": max(reward, 1e-6),
             "ctx": self.context.detach().cpu().squeeze(0),
+            "error_messages": error_messages,
+            "fitness": info.get('fitness'), "metrics": info.get('metrics') or {},
+            "success": bool(done and info.get('fitness') is not None and not any(errors)),
         }
         return max(reward, 1e-6), trajectory
 

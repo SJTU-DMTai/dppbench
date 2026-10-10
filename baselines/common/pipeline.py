@@ -1551,7 +1551,7 @@ class Evaluator:
     def __init__(
         self,
         data_name: str,
-        metric_key: str = "auc",
+        metric_key: str | None = None,
         device: str = "cpu",
         data_dir: str | None = None,
         task_dir: str | None = None,

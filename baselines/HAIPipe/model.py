@@ -14,7 +14,7 @@ from torch import nn
 class LogicalDQN(nn.Module):
     def __init__(self, input_dim: int, action_dim: int) -> None:
         super().__init__()
-        self.net = nn.Sequential(
+        self.nn = nn.Sequential(
             nn.Linear(input_dim, 1907), nn.LeakyReLU(),
             nn.Linear(1907, 1907), nn.LeakyReLU(),
             nn.Linear(1907, 950), nn.LeakyReLU(),
@@ -29,7 +29,7 @@ class LogicalDQN(nn.Module):
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        return self.net(state)
+        return self.nn(state)
 
 
 class PrimitiveRnnDQN(nn.Module):
@@ -60,10 +60,10 @@ class PrimitiveRnnDQN(nn.Module):
             batch_first=False,
         )
         self.predictor_embedding = nn.Embedding(predictor_vocab_size, predictor_embedding_dim)
-        self.logical_embedding = nn.Embedding(logical_pipeline_count, logical_embedding_dim)
+        self.lpipeline_embedding = nn.Embedding(logical_pipeline_count, logical_embedding_dim)
         wide = data_dim + seq_hidden_size + predictor_embedding_dim + logical_embedding_dim
         input_dim = data_dim + sequence_length * seq_hidden_size + predictor_embedding_dim + logical_embedding_dim
-        self.net = nn.Sequential(
+        self.nn = nn.Sequential(
             nn.Linear(input_dim, wide), nn.LeakyReLU(),
             nn.Linear(wide, wide), nn.LeakyReLU(),
             nn.Linear(wide, 1907), nn.LeakyReLU(),
@@ -89,8 +89,8 @@ class PrimitiveRnnDQN(nn.Module):
         sequence_out, _ = self.seq_lstm(embedded)
         sequence_out = sequence_out.permute(1, 0, 2).flatten(start_dim=1)
         predictor_out = self.predictor_embedding(predictor).flatten(start_dim=1)
-        logical_out = self.logical_embedding(logical).flatten(start_dim=1)
-        return self.net(torch.cat((data, sequence_out, predictor_out, logical_out), dim=1))
+        logical_out = self.lpipeline_embedding(logical).flatten(start_dim=1)
+        return self.nn(torch.cat((data, sequence_out, predictor_out, logical_out), dim=1))
 
 
 __all__ = ["LogicalDQN", "PrimitiveRnnDQN"]

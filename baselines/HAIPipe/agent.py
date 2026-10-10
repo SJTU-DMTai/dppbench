@@ -22,6 +22,7 @@ class Transition:
     reward: float
     next_state: np.ndarray
     done: bool
+    next_component: str | None = None
 
 
 class ReplayBuffer:
@@ -41,7 +42,7 @@ class ReplayBuffer:
 
 
 class HAIPipeAgent:
-    FORMAT_VERSION = 1
+    FORMAT_VERSION = 2
 
     def __init__(
         self,
@@ -74,7 +75,7 @@ class HAIPipeAgent:
             model = PrimitiveRnnDQN(
                 data_dim=data_dim,
                 sequence_length=self.sequence_length,
-                primitive_vocab_size=len(self.primitive_vocabulary) + 1,
+                primitive_vocab_size=len(self.primitive_vocabulary) + 2,
                 predictor_vocab_size=len(self.model_vocabulary),
                 logical_pipeline_count=len(self.logical_pipelines),
                 action_dim=len(actions) + 1,
@@ -96,19 +97,26 @@ class HAIPipeAgent:
         return max(available, key=lambda i: float(scores[i]))
 
     def select_logical(self, state: np.ndarray, epsilon: float = 0.0) -> int:
+        was_training = self.logical_model.training
+        self.logical_model.eval()
         with torch.no_grad():
             values = self.logical_model(torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0))[0]
+        self.logical_model.train(was_training)
         return self._choose(values, epsilon, set())
 
     def select_component(self, component: str, state: np.ndarray, epsilon: float = 0.0, tried=None) -> int:
+        model = self.models[component]
+        was_training = model.training
+        model.eval()
         with torch.no_grad():
-            values = self.models[component](torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0))[0]
+            values = model(torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0))[0]
+        model.train(was_training)
         return self._choose(values, epsilon, set(tried or []))
 
     def add_transition(self, transition: Transition) -> None:
         self.buffer.add(transition)
 
-    def learn(self, batch_size: int = 100, gamma: float = 0.0) -> dict[str, float]:
+    def learn(self, batch_size: int = 100, gamma: float = 1.0, logic_batch_size: int = 20) -> dict[str, float]:
         samples = self.buffer.sample(batch_size)
         losses = {}
         for component, model in self.models.items():
@@ -121,9 +129,13 @@ class HAIPipeAgent:
             current = model(states).gather(1, actions[:, None]).squeeze(1)
             next_states = torch.as_tensor(np.stack([s.next_state for s in selected]), dtype=torch.float32, device=self.device)
             with torch.no_grad():
-                future = model(next_states).max(1).values
-                done = torch.as_tensor([s.done for s in selected], dtype=torch.bool, device=self.device)
-                expected = rewards + float(gamma) * future.masked_fill(done, 0.0)
+                future = torch.zeros_like(rewards)
+                # Each component has a different action space. Bootstrap from
+                # the next component in this episode's logical pipeline.
+                for next_component in sorted({s.next_component for s in selected if not s.done}):
+                    ids = [i for i, s in enumerate(selected) if not s.done and s.next_component == next_component]
+                    future[ids] = self.models[next_component](next_states[ids]).max(1).values
+                expected = rewards + float(gamma) * future
             loss = F.mse_loss(current, expected)
             self.optimizers[component].zero_grad()
             loss.backward()
@@ -132,7 +144,7 @@ class HAIPipeAgent:
         if self.buffer.logical_items:
             logical = self.rng.sample(
                 list(self.buffer.logical_items),
-                min(int(batch_size), len(self.buffer.logical_items)),
+                min(int(logic_batch_size), len(self.buffer.logical_items)),
             )
             states = torch.as_tensor(
                 np.stack([item[0] for item in logical]),
@@ -161,6 +173,8 @@ class HAIPipeAgent:
             "primitive_vocabulary": self.primitive_vocabulary,
             "model_vocabulary": self.model_vocabulary,
             "data_dim": self.data_dim,
+            "state_encoding": "dynamic_predictors_blank0_padding_last",
+            "sequence_length": self.sequence_length,
         }
 
     def save(self, path: str, provenance: Optional[dict] = None) -> None:
@@ -172,12 +186,12 @@ class HAIPipeAgent:
         }, path)
 
     def load(self, path: str) -> dict:
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         if checkpoint.get("metadata") != self.metadata():
             raise ValueError("HAIPipe checkpoint is incompatible with the current DPPBench search space")
         self.logical_model.load_state_dict(checkpoint["logical_model"])
-        for component, state in checkpoint["component_models"].items():
-            self.models[component].load_state_dict(state)
+        for component, model in self.models.items():
+            model.load_state_dict(checkpoint["component_models"][component])
         return dict(checkpoint.get("provenance") or {})
 
 

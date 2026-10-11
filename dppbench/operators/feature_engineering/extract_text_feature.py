@@ -75,6 +75,7 @@ dag:
         except Exception as exc:
             print(f"  [ExtractTextFeature] sklearn unavailable: {exc}")
             return df
+        feature_blocks = []
         for col in self.cols:
             if col not in df.columns:
                 continue
@@ -89,7 +90,12 @@ dag:
             names = vec.get_feature_names_out()
             base = f"{col}_{self.method}_"
             dense = mat.toarray()
-            for i, name in enumerate(names):
-                df[f"{base}{name}"] = dense[:, i]
+            feature_blocks.append(pd.DataFrame(
+                dense, index=df.index, columns=[f"{base}{name}" for name in names]
+            ))
+        if feature_blocks:
+            features = pd.concat(feature_blocks, axis=1)
+            features = features.loc[:, ~features.columns.duplicated(keep="last")]
+            df = pd.concat([df.drop(columns=features.columns, errors="ignore"), features], axis=1)
         self.fitted_ = True
         return df

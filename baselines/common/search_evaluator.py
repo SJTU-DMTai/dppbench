@@ -24,7 +24,6 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         task_dir: str,
         data_name: str,
         data_dir=None,
-        # metric_key: str = "auc",
         metric_key: str | None = None,
         verbose: bool = False,
         small_n: Optional[int] = None,
@@ -73,6 +72,8 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         small_n = self.small_n
         seed = self.seed
         data = self._orig_make_data_instance()
+        data._search_small_n = small_n
+        data._search_seed = seed
         original_load_data = data.load_data
         original_load_std_test = getattr(data, "load_std_test_frozen", None)
 

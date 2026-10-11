@@ -425,13 +425,27 @@ def validate_step_params(
     if strict and unknown:
         errors.append(f"{op_name} has unknown params: {unknown}")
     errors.extend(_param_space_value_errors(op_name, params))
+    if op_name == "HandleError" and not unknown:
+        # Use the operator's own conditional contract, including per-column
+        # rules, so YAML/LLM candidates and search share identical validation.
+        from dppbench.operators.cleaning.handle_error import HandleError
+        try:
+            HandleError(**params)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"HandleError: {exc}")
     if ctx is not None:
+        if ctx.task_type == "graph" and op_name in {"AugmentNoise", "AugmentMixup", "Oversample", "Undersample"}:
+            errors.append(f"{op_name} requires graph-aware node/topology resampling, which is not implemented")
+        if getattr(ctx, "prediction_task", None) == "regression" and op_name in {"Oversample", "Undersample"}:
+            errors.append(f"{op_name} is classification-only; regression targets are not classes")
         errors.extend(_target_leakage_errors(op_name, params, ctx))
         errors.extend(_rec_id_protection_errors(op_name, params, ctx))
     return errors
 
 
 _FEATURE_INPUT_PARAMS = {
+    "CreateLagFeature": ("target_col",),
+    "CreateRollingFeature": ("target_col",),
     "CreateFeature": ("source_cols",),
     "CreatePolynomialFeature": ("cols",),
     "CrossFeature": ("cols",),
@@ -457,12 +471,14 @@ def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list
         f"in params {leaked_params}"
     ]
 
+
 def _selection_protected_cols(ctx: DataContext) -> list[str]:
     if ctx.task_type == "rec":
         return _rec_protected_cols(ctx)
     if ctx.task_type == "graph":
         return list(dict.fromkeys(c for c in (ctx.id_col, ctx.time_col, ctx.target_col) if c))
     return [ctx.target_col] if ctx.target_col else []
+
 
 def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
     if ctx.task_type != "rec":
@@ -501,6 +517,10 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         return None
     spec = CATALOG[op_name]
     p = copy.deepcopy(spec.default_params)
+    if ctx.task_type == "graph" and op_name in {"AugmentNoise", "AugmentMixup", "Oversample", "Undersample"}:
+        return None
+    if getattr(ctx, "prediction_task", None) == "regression" and op_name in {"Oversample", "Undersample"}:
+        return None
 
     numeric_cols = _exclude_special(ctx.numeric_cols, ctx)
     categorical_cols = _exclude_special(ctx.categorical_cols, ctx)
@@ -519,7 +539,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             p["method"] = "rec"
             return p
         else:
-            # if not ctx.aux_dfs or ctx.id_col is None:
             if not ctx.aux_dfs:
                 return None
             joinable_aux = [
@@ -533,7 +552,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             p["aux_df"] = f"${aux}"
             join_keys = ctx.tables.get(aux).join_keys_to_primary if aux in ctx.tables else []
             p["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
-            # p["method"] = "key"
             table = ctx.tables[aux]
             # Lookup only when the right key is known to be unique. Repeated
             # histories must be aggregated before joining the primary rows.
@@ -547,7 +565,11 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
     if op_name == "ConcatTable":
         if not ctx.aux_dfs:
             return None
-        p["other_dfs"] = [f"${ctx.aux_dfs[0]}"]
+        compatible = [name for name in ctx.aux_dfs
+                      if ctx.tables.get(name) and ctx.target_col in ctx.tables[name].columns]
+        if not compatible:
+            return None
+        p["other_dfs"] = [f"${rng.choice(compatible)}"]
         return p
     if op_name == "CrossFeature":
         cols = _exclude_special(ctx.categorical_cols, ctx)
@@ -619,7 +641,6 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         p["target_col"] = ctx.target_col
         p["method"] = method
         p["exclude_cols"] = _selection_protected_cols(ctx)
-        # p["exclude_cols"] = _rec_protected_cols(ctx) if ctx.task_type == "rec" else [ctx.target_col]
         if method == "univariate":
             p["k"] = max(5, min(50, len(numeric_cols)))
         elif method == "model":
@@ -663,7 +684,13 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
             return None
         p["cols"] = _pick_some(numeric_cols, rng, 1, 2)
         p["rule"] = "numeric"
-        p["action"] = "delete"
+        p["action"] = rng.choice(["delete", "repair"])
+        if p["action"] == "repair":
+            p["repair_method"] = rng.choice(["set_missing", "fill_constant", "median", "mode"])
+            if p["repair_method"] == "fill_constant":
+                p["fill_value"] = 0
+        # Business ranges/whitelists/regex patterns must be supplied explicitly;
+        # schema-only context is not enough to invent such constraints.
         return p
     if op_name == "HandleNonIID":
         cols = list(numeric_cols[:3])
@@ -689,7 +716,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if not numeric_cols:
             return None
         p["cols"] = _pick_some(numeric_cols, rng, 1, 3)
-        p["action"] = "delete"
+        for key, choices in spec.param_space.items():
+            p[key] = rng.choice(choices)
         return p
     if op_name == "ClipOutlier":
         if not numeric_cols:
@@ -801,16 +829,16 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 
     # ---- FE-TimeSeries ----
     if op_name == "CreateLagFeature":
-        if not ctx.time_col or not ctx.target_col:
+        if not ctx.time_col or not numeric_cols:
             return None
-        p["target_col"] = ctx.target_col
+        p["target_col"] = numeric_cols[0]
         p["lags"] = [1, 2, 3]
         p["time_col"] = ctx.time_col
         return p
     if op_name == "CreateRollingFeature":
-        if not ctx.time_col or not ctx.target_col:
+        if not ctx.time_col or not numeric_cols:
             return None
-        p["target_col"] = ctx.target_col
+        p["target_col"] = numeric_cols[0]
         p["windows"] = [3, 7]
         p["aggs"] = ["mean", "std"]
         p["time_col"] = ctx.time_col
@@ -861,7 +889,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         group_cols = []
         if ctx.id_col:
             group_cols.append(ctx.id_col)
-        if ctx.task_type == "rec" and ctx.user_col:
+        if ctx.task_type == "rec" and ctx.user_col and ctx.user_col not in group_cols:
             group_cols.append(ctx.user_col)
         if not group_cols and categorical_cols:
             group_cols = _pick_some(categorical_cols, rng, 1, 2)
@@ -1203,7 +1231,7 @@ def _op_name(op: str | object) -> str:
     return getattr(op, "op_name", op)
 
 
-def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
+def get_param_space(op, ctx: DataContext, current_params: dict | None = None) -> dict[str, Any]:
     """Return a context-aware parameter space for one operator.
 
     The static ``OpSpec.param_space`` is augmented with task columns, source
@@ -1215,6 +1243,13 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
     if spec is None:
         raise KeyError(f"Unknown operator: {name}")
     space = copy.deepcopy(spec.param_space or {})
+    if name == "HandleMV" and current_params is not None:
+        # Filling, deleting and sentinel marking are distinct logical actions.
+        # Parameter tuning must not turn a viable imputer into global deletion.
+        action = current_params.get("action", "impute")
+        space["action"] = [action]
+        if action != "impute":
+            space.pop("method", None)
     numeric_cols = _exclude_special(ctx.numeric_cols, ctx)
     categorical_cols = _exclude_special(ctx.categorical_cols, ctx)
     all_cols = _exclude_special(ctx.all_cols, ctx)
@@ -1262,7 +1297,6 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
 
     if name == "SelectFeature":
         protected = _selection_protected_cols(ctx)
-        # protected = _rec_protected_cols(ctx) if ctx.task_type == "rec" else ([ctx.target_col] if ctx.target_col else [])
         if protected:
             space.setdefault("exclude_cols", protected)
     if name in {"SelectFeature", "TargetEncode", "Oversample", "Undersample", "SampleNegative"} and ctx.target_col:
@@ -1280,9 +1314,42 @@ def get_param_space(op, ctx: DataContext) -> dict[str, Any]:
     return {k: v for k, v in space.items() if v not in (None, [])}
 
 
+def sample_handle_error_params(params: dict, rng: _random.Random) -> dict:
+    """Tune repairs while preserving supplied business rules and their values.
+
+    A regex, whitelist, or range cannot be inferred from a list of column names.
+    Keep each rule fixed and choose only constructor-valid action/repair pairs.
+    """
+    from dppbench.operators.cleaning.handle_error import HandleError
+
+    candidate = copy.deepcopy(params)
+    # Normalize inherited per-column settings using the implementation itself.
+    op = HandleError(**candidate)
+    tuned = []
+    for spec in op.specs_:
+        choices = []
+        for action in CATALOG["HandleError"].param_space["action"]:
+            for method in CATALOG["HandleError"].param_space["repair_method"]:
+                trial = dict(spec, action=action, repair_method=method)
+                try:
+                    HandleError(rules=[trial])
+                except (TypeError, ValueError):
+                    continue
+                choices.append(trial)
+        action = rng.choice(sorted({trial["action"] for trial in choices}))
+        tuned.append(rng.choice([trial for trial in choices if trial["action"] == action]))
+    if candidate.get("rules"):
+        candidate["rules"] = tuned
+    else:
+        # All cols share the same rule and parameter contract in the simple API.
+        candidate["action"] = tuned[0]["action"]
+        candidate["repair_method"] = tuned[0]["repair_method"]
+    return candidate
+
+
 def get_order_constraints(task_type: str) -> list[OpCategory]:
     """Compatibility alias returning category groups, without order semantics."""
-    if task_type not in ("tabular", "rec"):
+    if task_type not in ("tabular", "rec", "graph"):
         return []
     applicable = {CATALOG[name].category for name in operators_for_task(task_type)}
     return [category for category in _CATEGORY_GROUPS if category in applicable]

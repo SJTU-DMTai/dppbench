@@ -178,7 +178,9 @@ class EllipticBitcoinData(TabularData):
         return series.map(cls._normalize_class_value)
 
     def _class_lookup(self):
-        classes = self.auxiliary_dfs.get("classes")
+        classes = getattr(self, "_class_labels", None)
+        if classes is None:
+            classes = self.auxiliary_dfs.get("classes")
         if classes is None or "txId" not in classes.columns or "class" not in classes.columns:
             return {}
         mapped = self._normalize_class_series(classes["class"])
@@ -223,7 +225,11 @@ class EllipticBitcoinData(TabularData):
 
         classes = pd.read_csv(cls_path)
         self._normalize_tx_id_column(classes, "txId")
-        self.auxiliary_dfs["classes"] = classes
+        # Supervision belongs to the primary frame, never a feature branch.
+        # Keep the original labels privately for legacy frozen-frame restoration.
+        self._class_labels = classes
+        # Retain the node-key relation for existing DAGs referencing $classes.
+        self.auxiliary_dfs["classes"] = classes[["txId"]].drop_duplicates().copy()
 
         self._attach_class_labels(feats)
         self.train_df = feats

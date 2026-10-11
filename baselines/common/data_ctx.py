@@ -18,6 +18,8 @@ class TableContext:
     semantic_types: dict[str, str] = field(default_factory=dict)
     # Cardinality of candidate right-hand keys, using JoinTable's string keys.
     join_key_unique: dict[str, bool] = field(default_factory=dict)
+    configured_id_col: str | None = None
+    configured_time_col: str | None = None
 
     @property
     def columns(self) -> list[str]:
@@ -33,7 +35,6 @@ class TableContext:
 
     @property
     def numeric_cols(self) -> list[str]:
-        # return [c for c, dtype in self.dtypes.items() if _is_numeric_dtype(dtype)]
         return [c for c, dtype in self.dtypes.items()
                 if self.semantic_types.get(c) == "numeric"
                 or (c not in self.semantic_types and _is_numeric_dtype(dtype))]
@@ -42,17 +43,14 @@ class TableContext:
     def categorical_cols(self) -> list[str]:
         excluded = set(self.numeric_cols + self.list_cols + self.text_cols)
         excluded.update(c for c in self.columns if self.semantic_types.get(c) == "timestamp")
-        # return [c for c in self.columns if c not in set(self.numeric_cols)]
         return [c for c in self.columns if c not in excluded]
 
     @property
     def list_cols(self) -> list[str]:
-        # return []
         return [c for c in self.columns if self.semantic_types.get(c) == "categorical_list"]
 
     @property
     def text_cols(self) -> list[str]:
-        # return []
         return [c for c in self.columns if self.semantic_types.get(c) == "text"]
 
     @property
@@ -66,6 +64,8 @@ class TableContext:
 
     @property
     def id_col(self) -> str | None:
+        if self.configured_id_col in self.columns:
+            return self.configured_id_col
         for cand in ("id", "loan_id", "SK_ID_CURR", "user_id", "item_id", "node_id"):
             if cand in self.columns:
                 return cand
@@ -77,6 +77,8 @@ class TableContext:
 
     @property
     def time_col(self) -> str | None:
+        if self.configured_time_col in self.columns:
+            return self.configured_time_col
         return _infer_time_col_from_columns(self.columns)
 
 
@@ -87,6 +89,7 @@ class DataContext:
     primary_table: str                 # YAML 中 s0 对应的主表表名
     secondary_tables: list[str] = field(default_factory=list)        # YAML 中 s1, s2, ... 对应的次表
     tables: dict[str, TableContext] = field(default_factory=dict)    # 每张 source table 的 schema/profile
+    prediction_task: str | None = None
 
     @property
     def primary_context(self) -> TableContext | None:
@@ -116,12 +119,10 @@ class DataContext:
 
     @property
     def list_cols(self) -> list[str]:
-        # return []
         return _dedupe(c for t in self.tables.values() for c in t.list_cols)
 
     @property
     def text_cols(self) -> list[str]:
-        # return []
         return _dedupe(c for t in self.tables.values() for c in t.text_cols)
 
     @property
@@ -264,9 +265,11 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
     interaction_df = data.interaction_df
     user_col = data._user_id_col
     item_col = data._item_id_col
+    feature_config = (getattr(data, "model_cfg", None) or {}).get("feature", {}) or {}
+    target_col = feature_config.get("target_col")
     tables: dict[str, TableContext] = {
-        # "interaction": _profile_table("interaction", "primary", interaction_df)
         "interaction": _profile_table("interaction", "primary", interaction_df,
+                                      target_col=target_col,
                                       semantic_types=data.col_types)
     }
     secondary_tables = []
@@ -312,12 +315,13 @@ def _infer_tabular_context(data_name: str, data) -> DataContext:
         )
     }
     preferred_keys = [id_col] if id_col else []
+    tables["main"].configured_id_col = id_col
+    tables["main"].configured_time_col = getattr(data, "_sort_col", None)
     for name, df in aux_tables.items():
         tables[name] = _profile_table(
             name,
             "secondary",
             df,
-            # join_keys_to_primary=_same_name_join_keys(train_df, df, preferred_keys),
             join_keys_to_primary=_same_name_join_keys(
                 train_df, df,
                 (getattr(data, "auxiliary_join_keys", {}) or {}).get(name, preferred_keys),
@@ -325,6 +329,7 @@ def _infer_tabular_context(data_name: str, data) -> DataContext:
         )
     return DataContext(
         task_type="tabular",
+        prediction_task=(getattr(data, "model_cfg", {}) or {}).get("model_params", {}).get("task"),
         data_name=data_name,
         primary_table="main",
         secondary_tables=list(aux_tables.keys()),

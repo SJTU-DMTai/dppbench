@@ -111,24 +111,6 @@ class RandomBaseline:
         ctx = self._build_context(evaluator)
         evaluator.ctx = ctx
 
-        if ctx.task_type == "graph":
-            error = "unsupported_task_type=graph: Random baseline graph search is not implemented"
-            return {
-                "best_pipeline_yaml": None,
-                "best_pipeline_path": None,
-                "best_fitness": None,
-                "best_metrics": {},
-                "eval_error": error,
-                "is_legal": False,
-                "final_pipeline_ops": [],
-                "top_k": [],
-                "n_unique_evaluations": evaluator.n_unique_evaluations,
-                "duration_seconds": time.time() - t0,
-                "output_dir": self.output_dir,
-                "unsupported_task_type": "graph",
-                "error": error,
-            }
-
         if self.verbose:
             print("=" * 60)
             print(f"[Random] dataset={self.data_name}  task={ctx.task_type}")

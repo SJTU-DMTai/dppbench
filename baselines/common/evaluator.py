@@ -15,7 +15,7 @@ from typing import Optional
 
 from baselines.common.data_ctx import infer_data_context
 from baselines.common.budget import Budget, BudgetExceededError, get_active_budget
-from baselines.common.pipeline import Pipeline, check_pipeline
+from baselines.common.pipeline import Pipeline, PipelineCheckReport, check_pipeline
 
 # Ensure the repo root is importable so ``baselines.common.executor`` resolves
 # regardless of how this module is loaded (script vs. package).
@@ -43,8 +43,20 @@ class PipelineEvaluator:
     by search operators) are not retrained.
     """
 
+    executor_class = TrainingExecutor
+
+    def _check_pipeline(self, pipeline, ctx, **kwargs):
+        provider = getattr(pipeline, 'get_evaluator_class', None)
+        if callable(provider):
+            required = provider()
+            if not isinstance(self, required):
+                return PipelineCheckReport(False, [
+                    f'{type(pipeline).__name__} requires {required.__module__}.{required.__name__}; '
+                    f'got {type(self).__module__}.{type(self).__name__}'
+                ])
+        return check_pipeline(pipeline, ctx, **kwargs)
+
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
-                #  metric_key: str = "auc", verbose: bool = False,
                  metric_key: str | None = None, verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
                  scoring_method: str = "full_train", budget: Budget | None = None,
@@ -58,7 +70,7 @@ class PipelineEvaluator:
         self.model_name = model_name
         self.scoring_method = scoring_method
         self.budget = budget or get_active_budget()
-        self._executor = TrainingExecutor(
+        self._executor = self.executor_class(
             task_dir,
             data_name=data_name,
             data_dir=data_dir,
@@ -94,7 +106,7 @@ class PipelineEvaluator:
 
     def run_preprocessing(self, pipeline: Pipeline):
         """Run a partial pipeline without downstream model evaluation."""
-        report = check_pipeline(
+        report = self._check_pipeline(
             pipeline,
             self._get_data_context(),
             require_mandatory=False,
@@ -122,7 +134,7 @@ class PipelineEvaluator:
             self._cache[key] = ev
             return ev
 
-        report = check_pipeline(
+        report = self._check_pipeline(
             pipeline, self._get_data_context(), budget=self.budget,
         )
         if not report.valid:
@@ -153,7 +165,7 @@ class PipelineEvaluator:
             }
         dur = time.time() - t0
 
-        post_report = check_pipeline(
+        post_report = self._check_pipeline(
             pipeline,
             self._get_data_context(),
             budget=self.budget,
@@ -168,7 +180,6 @@ class PipelineEvaluator:
         success = bool(result.get("success"))
         metrics = result.get("metrics") or {}
         if success:
-            # fitness = float(metrics.get(self._metric_key_for_method(method), metrics.get(self.metric_key, metrics.get("auc", 0.0))))
             metric = self._metric_key_for_method(method)
             value = metrics.get(metric)
             if value is None or not math.isfinite(float(value)):

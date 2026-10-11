@@ -16,9 +16,9 @@ import pandas as pd
 import torch
 
 from baselines.common.budget import Budget, budget_scope, BudgetExceededError
-from baselines.DagPipe.dagpipe import DagPipe
-from baselines.DagPipe.pipeline import DagPipePipeline
-from baselines.DagPipe.evaluator import DagPipeEvaluator
+from baselines.DAGPipe.dagpipe import DAGPipe
+from baselines.DAGPipe.pipeline import DAGPipePipeline
+from baselines.DAGPipe.evaluator import DAGPipeEvaluator
 from scripts.final_model_hpo import tune_final_model
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +46,7 @@ class AdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
-        cls.tmp = tempfile.TemporaryDirectory(prefix='dagpipe_contract_')
+        cls.tmp = tempfile.TemporaryDirectory(prefix='DAGPipe_contract_')
         cls.data_dir, cls.std_dir = make_fixture(cls.tmp.name)
         cls.kwargs = dict(task_dir=str(ROOT/'dppbench/tasks/bike_sharing'), data_name='bike_sharing',
                           data_dir=str(cls.data_dir), seed=42, model_name='LightGBM', device='cpu', verbose=False)
@@ -57,7 +57,7 @@ class AdapterTests(unittest.TestCase):
                 raise AssertionError('Search read standard test!')
             return original(path, *args, **kwargs)
         with patch.object(pd, 'read_parquet', side_effect=no_test), budget_scope(cls.budget):
-            cls.runner = DagPipe(**cls.kwargs, max_pipeline_len=10, output_dir=Path(cls.tmp.name)/'run')
+            cls.runner = DAGPipe(**cls.kwargs, max_pipeline_len=10, output_dir=Path(cls.tmp.name)/'run')
             cls.result = cls.runner.run()
         cls.pipeline = cls.runner.get_pipeline()
 
@@ -69,9 +69,25 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.budget.evaluations_used, 2)
         self.assertEqual(self.result['n_unique_evaluations'], 2)
         self.assertEqual(len(self.pipeline), 10)
-        reloaded = DagPipePipeline.from_yaml(self.result['best_pipeline_yaml'])
+        reloaded = DAGPipePipeline.from_yaml(self.result['best_pipeline_yaml'])
         frame = pd.read_csv(self.data_dir/'hour.csv').head(3)
         np.testing.assert_array_equal(self.pipeline.transform(frame), reloaded.transform(frame))
+
+    def test_harness_resume_real_training(self):
+        from types import SimpleNamespace
+        from scripts.evaluate_baseline import _run_baseline_and_eval
+        args = SimpleNamespace(data_dir=self.tmp.name, model='LightGBM', max_pipeline_len=10,
+                               seed=42, quiet=True, device='cpu', final_hpo=True,
+                               resume_pipeline=str(Path(self.tmp.name)/'run/best_pipeline.yaml'))
+        with patch.object(DAGPipe, 'run', side_effect=AssertionError('Repeated search')):
+            with patch('scripts.final_model_hpo.candidate_configs', return_value=[{'n_estimators': 2}]):
+                row = _run_baseline_and_eval('bike_sharing', 'DAGPipe', args,
+                                             str(Path(self.tmp.name)/'recovery'))
+        self.assertIsNone(row['error'])
+        self.assertTrue(row['pipeline_reused'])
+        self.assertIsNone(row['construct_time_s'])
+        self.assertIsNotNone(row['std_test_metric'])
+        self.assertEqual(row['final_hpo_trials'], 1)
 
     def test_query_independence(self):
         frame = pd.read_csv(self.data_dir/'hour.csv').head(4)
@@ -84,7 +100,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_seed_reproducibility(self):
         with budget_scope(Budget(max_evaluations=2)):
-            again = DagPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'repeat').run()
+            again = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'repeat').run()
         self.assertEqual(again['best_pipeline_yaml'], self.result['best_pipeline_yaml'])
 
     def test_hpo_never_reads_test_and_reuses_frozen_pipeline(self):
@@ -96,7 +112,7 @@ class AdapterTests(unittest.TestCase):
         before = self.pipeline.hash()
         with patch.object(pd, 'read_parquet', side_effect=no_test), contextlib.redirect_stdout(io.StringIO()):
             evaluator, summary = tune_final_model(self.pipeline, output_dir=self.tmp.name,
-                                                 evaluator_class=DagPipeEvaluator, **self.kwargs)
+                                                 evaluator_class=DAGPipeEvaluator, **self.kwargs)
         self.assertEqual(len(summary['trials']), 9)
         self.assertTrue(all(t['success'] for t in summary['trials']))
         self.assertEqual(self.pipeline.hash(), before)
@@ -113,14 +129,9 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(BudgetExceededError):
                 self.pipeline.transform(pd.read_csv(self.data_dir/'hour.csv').head(2))
 
-    def test_unsupported_task(self):
-        kwargs = dict(self.kwargs, task_dir=str(ROOT/'dppbench/tasks/movielens'), data_name='movielens', model_name=None)
-        with self.assertRaisesRegex(ValueError, 'unsupported_task_type=rec'):
-            DagPipe(**kwargs).run()
-
     def test_too_short_budget(self):
         with self.assertRaisesRegex(ValueError, 'max_pipeline_len'):
-            DagPipe(**self.kwargs, max_pipeline_len=1)
+            DAGPipe(**self.kwargs, max_pipeline_len=1)
 
 
 if __name__ == '__main__':

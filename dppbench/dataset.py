@@ -68,6 +68,18 @@ class BaseData:
 
     def _protect_aggregate_target(self, df, op, op_name):
         target = getattr(self, "target_col", None) or getattr(self, "model_cfg", {}).get("feature", {}).get("target_col")
+        if op_name in {"CreateLagFeature", "CreateRollingFeature"} and op.target_col == target:
+            raise ValueError(f"{op_name} cannot read supervised targets under batch held-out evaluation")
+        if op_name in {"ClipOutlier", "HandleOutlier", "ScaleFeature", "TransformPower"}:
+            protected = {target, getattr(self, "id_col", None), getattr(self, "_sort_col", None), "__split__"}
+            if op.cols is None:
+                op.cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in protected]
+            elif protected.intersection(op.cols):
+                raise ValueError(f"{op_name} cannot transform protected target/ID/time columns")
+        if op_name == "ConcatTable" and target in df.columns:
+            for side in op.other_dfs:
+                if target not in side.columns or side[target].isna().any():
+                    raise ValueError("ConcatTable cannot append unlabeled auxiliary rows to supervised training data; use JoinTable")
         if op_name == "HandleMV":
             # KNN/iterative imputation otherwise conditions held-out features
             # on held-out labels, even when the imputer was fitted on train.
@@ -371,6 +383,7 @@ class BaseData:
             op_name = step["op"]
             input_dfs = [values[src] for src in incoming[ref]]
             raw_params = step.get("params", {}) or {}
+            print(f"DAG params {ref} {op_name}: {raw_params}")
             params = {k: self._resolve_param(v) for k, v in raw_params.items()}
 
             op_cls = self._load_op(op_name)
@@ -419,7 +432,7 @@ class BaseData:
 
 
 class RecData(BaseData):
-    OPERATOR_DIR = os.path.join(os.path.dirname(__file__), " operators")
+    OPERATOR_DIR = os.path.join(os.path.dirname(__file__), "operators")
 
     NUMERIC = "numeric"
     CATEGORICAL = "categorical"
@@ -873,7 +886,7 @@ class RecData(BaseData):
         self._validation_prepared = True
 
     def run_pre_process(self, yaml_path):
-        if not self._has_std_test:
+        if not self._has_std_test and not getattr(self, "_skip_std_test_loading", False):
             self.load_std_test_frozen()
         self._prepare_validation()
         with open(yaml_path, "r", encoding="utf-8") as f:
@@ -907,7 +920,7 @@ class RecData(BaseData):
 
 
 class TabularData(BaseData):
-    OPERATOR_DIR = os.path.join(os.path.dirname(__file__), " operators")
+    OPERATOR_DIR = os.path.join(os.path.dirname(__file__), "operators")
 
     def __init__(self, name):
         super().__init__(name)
@@ -1128,7 +1141,7 @@ class TabularData(BaseData):
         return new_df
 
     def run_pre_process(self, yaml_path):
-        if not self._has_std_test:
+        if not self._has_std_test and not getattr(self, "_skip_std_test_loading", False):
             self.load_std_test_frozen()
         self._prepare_validation()
         with open(yaml_path, "r", encoding="utf-8") as f:

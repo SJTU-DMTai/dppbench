@@ -152,9 +152,9 @@ class ContinuousPipeline(nn.Module):
                     # numerical differentiation. Preserve that straight-
                     # through construction for the shared tensor adapters.
                     eps = 1e-6
-                    value = apply_soft_op(op_name, out, mask)
-                    value_pos = apply_soft_op(op_name, out.detach() + eps, mask)
-                    value_neg = apply_soft_op(op_name, out.detach() - eps, mask)
+                    value = apply_soft_op(op_name, out, mask, getattr(self, "fit_rows", None))
+                    value_pos = apply_soft_op(op_name, out.detach() + eps, mask, getattr(self, "fit_rows", None))
+                    value_neg = apply_soft_op(op_name, out.detach() - eps, mask, getattr(self, "fit_rows", None))
                     grad = ((value_pos - value_neg) / (2.0 * eps)).detach()
                     outputs.append(
                         value.detach() + grad * out - (grad * out).detach()

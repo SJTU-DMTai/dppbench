@@ -5,7 +5,7 @@ from ..base_op import TabularOp
 
 
 _VALID_ACTIONS = ("delete", "repair")
-_VALID_REPAIR_METHODS = ("clip", "set_missing")
+_VALID_REPAIR_METHODS = ("clip", "set_missing", "median")
 
 
 class HandleOutlier(TabularOp):
@@ -22,7 +22,7 @@ class HandleOutlier(TabularOp):
         if action not in _VALID_ACTIONS:
             raise ValueError("action must be delete/repair")
         if repair_method not in _VALID_REPAIR_METHODS:
-            raise ValueError("repair_method must be clip/set_missing")
+            raise ValueError("repair_method must be clip/set_missing/median")
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
         self.method = method
         self.threshold = float(threshold)
@@ -31,6 +31,7 @@ class HandleOutlier(TabularOp):
         self.flag_col = flag_col
         self.cols_ = []
         self.bounds_ = {}
+        self.medians_ = {}
         self.fitted_ = False
 
     def _select_cols(self, df):
@@ -56,6 +57,12 @@ class HandleOutlier(TabularOp):
     def _fit(self, df):
         self.cols_ = self._select_cols(df)
         self._fit_bounds(df)
+        if self.action == "repair" and self.repair_method == "median":
+            for col in self.cols_:
+                values = pd.to_numeric(df[col], errors="coerce")
+                lo, hi = self.bounds_[col]
+                valid = values[values.between(lo, hi) & np.isfinite(values)]
+                self.medians_[col] = valid.median() if len(valid) else np.nan
         self.fitted_ = True
 
     def _score(self, df):
@@ -83,6 +90,12 @@ class HandleOutlier(TabularOp):
                     df[col] = pd.to_numeric(df[col], errors="coerce").clip(lower=lo, upper=hi)
             elif self.repair_method == "set_missing":
                 df.loc[mask, col] = np.nan
+            elif self.repair_method == "median":
+                value = self.medians_[col]
+                if pd.isna(value):
+                    raise ValueError(f"HandleOutlier: no valid training values for median repair of {col!r}")
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+                df.loc[mask, col] = value
         return df
 
     def transform(self, df):
@@ -101,7 +114,8 @@ class HandleOutlier(TabularOp):
 
 Function description:
 Detect numeric outliers (IQR or z-score) and either delete the flagged rows
-or repair the offending values via clip-to-bounds or set-to-missing.
+or repair the offending values via clip-to-bounds, set-to-missing, or the
+training inlier median (computed per column and reused on later calls).
 
 Input:
 df : pd.DataFrame — Table containing numeric feature columns.
@@ -111,7 +125,7 @@ cols : list[str] or None — Numeric columns to inspect. If None, use all numeri
 method : str — Detection method: "iqr" or "zscore".
 threshold : float — IQR multiplier or z-score cutoff.
 action : str — "delete" or "repair".
-repair_method : str — "clip" or "set_missing" (only used when action='repair').
+repair_method : str — "clip", "set_missing", or "median" (action='repair' only).
 flag_col : str or None — Optional 0/1 marker column written when action='repair'.
 
 Output:

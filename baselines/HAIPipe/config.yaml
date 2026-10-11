@@ -6,16 +6,9 @@ seed: 42
 fast_train: true
 hi_source: prepare_yaml
 
-# Original AIPipe defaults, used by the separate cross-task pretrainer.
+# Agent construction settings. Cross-task training defaults live in pretrain.py.
 learning_rate: 0.00001
-gamma: 0.0
 buffer_capacity: 2000
-batch_size: 100
-epsilon_start: 1.0
-epsilon_end: 0.4
-epsilon_decay: 500
-train_interval: 100
-frames: 100000
 
 # Original active-learning budget (K=20, T=7).
 al_k: 20

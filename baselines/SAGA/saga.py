@@ -143,7 +143,6 @@ class SAGA:
         evaluator._data_context = ctx
         evaluator._executor.clear_data_cache()
         return ctx
-        # return get_data_ctx(self.data_name, data, evaluator.task_type)
 
     # ------------------------------------------------------------------
     def run(self) -> dict:

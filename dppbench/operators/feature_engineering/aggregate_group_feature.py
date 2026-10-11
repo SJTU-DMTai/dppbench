@@ -6,7 +6,9 @@ class AggregateGroupFeature(TabularOp):
 
     def __init__(self, group_cols, agg_cols=None, agg_funcs=None):
         super().__init__(name="AggregateGroupFeature")
-        self.group_cols = group_cols if isinstance(group_cols, list) else [group_cols]
+        # self.group_cols = group_cols if isinstance(group_cols, list) else [group_cols]
+        keys = group_cols if isinstance(group_cols, list) else [group_cols]
+        self.group_cols = list(dict.fromkeys(keys))
         self.agg_cols = agg_cols
         self.agg_funcs = agg_funcs or ["mean", "sum", "count", "std"]
 

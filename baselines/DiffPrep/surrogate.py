@@ -19,10 +19,10 @@ import torch.nn as nn
 # Tabular surrogate
 # ---------------------------------------------------------------------------
 class TabularSurrogate(nn.Module):
-    def __init__(self, in_dim: int, n_classes: int):
+    def __init__(self, in_dim: int, n_classes: int, regression: bool = False):
         super().__init__()
         self.in_dim = in_dim
-        self.n_classes = max(int(n_classes), 2)
+        self.n_classes = 1 if regression else max(int(n_classes), 2)
         # The official implementation uses multinomial logistic regression.
         self.body = nn.Linear(in_dim, self.n_classes)
 

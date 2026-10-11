@@ -83,7 +83,7 @@ def _zscore(arr: np.ndarray) -> np.ndarray:
     sd = np.where(sd < 1e-6, 1.0, sd)
     return (arr - mu) / sd
 def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
-                             device: torch.device):
+                             device: torch.device, fit_indices=None):
     train_df = data.train_df
     target = ctx.target_col
     if target is None or target not in train_df.columns:
@@ -92,10 +92,11 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
             f"none found for dataset {ctx.data_name}."
         )
 
-    numeric_cols = [c for c in ctx.numeric_cols if c != target]
+    protected = {target, ctx.id_col, ctx.time_col, "__split__", "_sort_idx"}
+    numeric_cols = [c for c in ctx.numeric_cols if c not in protected and c in train_df.columns]
     categorical_cols = [
         c for c in ctx.categorical_cols
-        if c != target and c in train_df.columns
+        if c not in protected and c in train_df.columns
     ]
     cols = numeric_cols + categorical_cols
     if max_features:
@@ -114,24 +115,38 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
                 # Official DiffPrep keeps categorical inputs and one-hot encodes
                 # them. Category codes preserve that information without
                 # exploding DPPBench's larger schemas during search.
-                values = train_df[col].astype("category").cat.codes.replace(-1, np.nan)
+                fit_values = train_df[col] if fit_indices is None else train_df[col].iloc[fit_indices]
+                categories = pd.Index(fit_values.dropna().unique())
+                values = pd.Series(pd.Categorical(train_df[col], categories=categories).codes).replace(-1, np.nan)
             parts.append(values.to_numpy(dtype=np.float32).reshape(-1, 1))
             feature_names.append(str(col))
         feat = np.concatenate(parts, axis=1)
 
     mask = np.isnan(feat).astype(np.float32)
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-    feat = _zscore(feat)
+    fit = feat if fit_indices is None else feat[fit_indices]
+    mu = np.mean(fit, axis=0)
+    sd = np.std(fit, axis=0)
+    feat = (feat - mu) / np.where(sd < 1e-6, 1.0, sd)
     feat = np.clip(feat, -5.0, 5.0).astype(np.float32)
 
-    y_codes, classes = pd.factorize(train_df[target], sort=True)
-    y = y_codes.astype(np.int64)
-    if (y < 0).any():
-        y[y < 0] = 0
+    regression = getattr(ctx, "prediction_task", None) == "regression"
+    if regression:
+        y = pd.to_numeric(train_df[target], errors="raise").to_numpy(dtype=np.float32)
+        if not np.isfinite(y).all():
+            raise ValueError("DiffPrep regression targets must be finite")
+        fit_y = y if fit_indices is None else y[fit_indices]
+        y = (y - fit_y.mean()) / max(float(fit_y.std()), 1e-6)
+        classes = [0]
+    else:
+        y_codes, classes = pd.factorize(train_df[target], sort=True)
+        y = y_codes.astype(np.int64)
+        if (y < 0).any():
+            raise ValueError("DiffPrep classification targets must not be missing")
 
     x_t = torch.tensor(feat, dtype=torch.float32, device=device)
     m_t = torch.tensor(mask, dtype=torch.float32, device=device)
-    y_t = torch.tensor(y, dtype=torch.long, device=device)
+    y_t = torch.tensor(y, dtype=torch.float32 if regression else torch.long, device=device)
     return x_t, m_t, y_t, feature_names, max(len(classes), 2)
 
 
@@ -163,7 +178,9 @@ def _rec_feature_tensors(data, ctx: DataContext, max_features: int,
     else:
         i_codes = np.zeros(len(inter), dtype=np.int64)
 
-    cols = [c for c in ctx.numeric_cols if c not in (target, user_col, item_col)][:max_features]
+    # Context also describes side tables, which have not been joined here.
+    cols = [c for c in ctx.numeric_cols
+            if c not in (target, user_col, item_col) and c in inter.columns][:max_features]
     if cols:
         feat = inter[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
     else:
@@ -324,32 +341,6 @@ class DiffPrep:
         train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
-        if task_type not in {"tabular", "rec"}:
-            duration = time.time() - t0
-            error = f"unsupported_task_type={task_type}: DiffPrep supports tabular and rec tasks only"
-            if self.verbose:
-                print(f"[DiffPrep] {error}")
-            return {
-                "best_pipeline_yaml": None,
-                "best_pipeline_path": None,
-                "best_fitness": None,
-                "best_metrics": {},
-                "eval_error": error,
-                "is_legal": False,
-                "check_errors": [error],
-                "check_warnings": [],
-                "final_pipeline_ops": [],
-                "flex_enabled": False,
-                "alpha": [],
-                "discrete_slot_order": [],
-                "search_history": [],
-                "n_unique_evaluations": train_evaluator.n_unique_evaluations,
-                "duration_seconds": duration,
-                "output_dir": self.output_dir,
-                "weights_path": None,
-                "unsupported_task_type": task_type,
-                "error": error,
-            }
 
         if self.verbose:
             print("=" * 60)
@@ -371,7 +362,13 @@ class DiffPrep:
         # 3) Build surrogate tensors/model.  The continuous pipeline is created
         # after feature extraction so its architecture logits can be feature-wise,
         # matching the original DiffPrep relaxation.
-        if task_type == "rec":
+        if task_type == "graph":
+            from .graph_adapter import graph_search_inputs
+            feat, mask, feature_names, surrogate, train_step, val_step = graph_search_inputs(
+                data, self.max_features, self.device, self.surrogate_hidden_dim,
+                self.gumbel_tau, self.hard_sample,
+            )
+        elif task_type == "rec":
             (feat, mask, u_ids, i_ids, y, n_users, n_items) = _rec_feature_tensors(
                 data, ctx, self.max_features, self.device,
             )
@@ -438,15 +435,24 @@ class DiffPrep:
                     acc = (pred == yy).float().mean().item()
                 return loss, acc
         else:
+            # Use the task's frozen training pool and its own split protocol.
+            # In particular, time-series validation must remain chronological.
+            data.load_std_test_frozen()
+            train_cfg = train_evaluator._executor.get_model_config().get("train", {})
+            splits = data.split(val_ratio=train_cfg.get("val_ratio", .2), seed=self.seed)
+            train_frame, val_frame = splits["train"], splits["val"]
+            if train_frame.empty or val_frame.empty:
+                raise ValueError("DiffPrep requires nonempty training and validation partitions")
+            data.train_df = pd.concat([train_frame, val_frame], ignore_index=True)
+            tr_idx = np.arange(len(train_frame))
+            va_idx = np.arange(len(train_frame), len(data.train_df))
+            regression = getattr(ctx, "prediction_task", None) == "regression"
             feat, mask, y, feature_names, n_classes = _tabular_feature_tensors(
-                data, ctx, self.max_features, self.device,
+                data, ctx, self.max_features, self.device, fit_indices=tr_idx,
             )
             surrogate = TabularSurrogate(
-                in_dim=feat.shape[1], n_classes=n_classes
+                in_dim=feat.shape[1], n_classes=n_classes, regression=regression,
             ).to(self.device)
-            tr_idx, va_idx = _train_val_split(
-                len(y), val_ratio=self.val_ratio, seed=self.seed
-            )
             tr_idx_t = torch.tensor(tr_idx, dtype=torch.long, device=self.device)
             va_idx_t = torch.tensor(va_idx, dtype=torch.long, device=self.device)
 
@@ -465,7 +471,7 @@ class DiffPrep:
                     hard_sample=self.hard_sample,
                 )
                 logits = model(out)
-                loss = F.cross_entropy(logits, yy)
+                loss = F.mse_loss(logits.squeeze(-1), yy) if regression else F.cross_entropy(logits, yy)
                 return loss
 
             def val_step(continuous: ContinuousPipeline, model: nn.Module):
@@ -484,10 +490,13 @@ class DiffPrep:
                     hard_sample=self.hard_sample,
                 )
                 logits = model(out)
-                loss = F.cross_entropy(logits, yy)
+                loss = F.mse_loss(logits.squeeze(-1), yy) if regression else F.cross_entropy(logits, yy)
                 with torch.no_grad():
-                    pred = logits.argmax(dim=1)
-                    acc = (pred == yy).float().mean().item()
+                    if regression:
+                        acc = -float(torch.sqrt(loss).item())
+                    else:
+                        pred = logits.argmax(dim=1)
+                        acc = (pred == yy).float().mean().item()
                 return loss, acc
 
         cont = ContinuousPipeline(
@@ -495,7 +504,7 @@ class DiffPrep:
             flex=self.flex,
             init_scale=self.continuous_init_scale,
             n_features=int(feat.shape[1]),
-            feature_names=(feature_names if task_type == "tabular" else None),
+            feature_names=(feature_names if task_type in {"tabular", "graph"} else None),
         ).to(self.device)
 
         # 4) Bilevel training

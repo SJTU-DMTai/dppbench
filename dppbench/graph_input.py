@@ -29,6 +29,18 @@ def prepare_graph_features(values, train_mask, feature_names):
 
 def validate_graph_training(graph, metrics):
     """Reject invalid graph inputs before optimisation or sklearn metrics."""
+    x = np.asarray(graph["x"])
+    n = int(graph.get("num_nodes", len(x)))
+    if x.ndim != 2 or len(x) != n or len(graph["y"]) != n:
+        raise ValueError("graph num_nodes, feature rows and labels must agree")
+    edges = np.asarray(graph.get("edge_index", np.empty((2, 0), dtype=np.int64)))
+    if edges.ndim != 2 or edges.shape[0] != 2 or not np.issubdtype(edges.dtype, np.integer):
+        raise ValueError("graph edge_index must be a 2-by-E integer array")
+    if edges.size and (edges.min() < 0 or edges.max() >= n):
+        raise ValueError("graph edge_index references a node outside num_nodes")
+    for name in ("train_mask", "val_mask", "test_mask", "std_test_mask"):
+        if name in graph and np.asarray(graph[name]).shape != (n,):
+            raise ValueError(f"graph {name} must align with num_nodes")
     if not np.isfinite(graph["x"]).all():
         raise ValueError("graph model input contains non-finite features")
     y = np.asarray(graph["y"])

@@ -90,7 +90,6 @@ class LogicalSearch:
                 failures.append(str(ind.metrics))
         if not population:
             raise RuntimeError(
-                # "Could not generate any successful pipeline during initialisation."
                 "Could not generate any successful pipeline during initialisation. "
                 + " | ".join(dict.fromkeys(failures))
             )
@@ -148,9 +147,8 @@ class LogicalSearch:
         if not report.valid:
             return GAIndividual(pipeline=pipeline, fitness=-math.inf, metrics={"legal_errors": report.errors})
         ev: EvaluationResult = self.evaluator.evaluate(pipeline)
-        # return GAIndividual(pipeline=pipeline, fitness=ev.fitness, metrics=ev.metrics)
         return GAIndividual(pipeline=pipeline, fitness=ev.fitness,
-                                metrics={**ev.metrics, **({"error": ev.error} if ev.error else {})})
+                            metrics={**ev.metrics, **({"error": ev.error} if ev.error else {})})
 
     def _record_generation(self, gen: int, population: list[GAIndividual]) -> None:
         fits = [p.fitness for p in population if p.fitness > -math.inf]

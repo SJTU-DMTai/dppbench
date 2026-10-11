@@ -180,15 +180,32 @@ class CitibikeJcHourlyData(TabularData):
         df["_hour_ts"] = df["started_at"].dt.floor("h")
         out = (
             df.groupby(["start_station_id", "_hour_ts"], dropna=False)
-            .agg(
-                trip_duration_mean=("trip_duration", "mean"),
-                trip_duration_sum=("trip_duration", "sum"),
-                rental_count=("trip_duration", "size"),
-            )
+            .size()
+            .rename("rental_count")
             .reset_index()
         )
         out["_hour_idx"] = pd.to_datetime(out["_hour_ts"]).astype("datetime64[ns]").astype("int64") // 10 ** 9
+        out = self._normalize_frozen_frame(out)
         return out.sort_values(["start_station_id", "_hour_idx"], kind="mergesort").reset_index(drop=True)
+
+    def _normalize_frozen_frame(self, df):
+        """Use only features available before the predicted station-hour.
+
+        Old frozen panels contain same-hour duration statistics: sum / mean
+        reconstructs rental_count. Remove them on both train and test loading
+        without changing labels, rows, or the frozen partition membership.
+        """
+        out = df.drop(columns=["trip_duration_mean", "trip_duration_sum"], errors="ignore").copy()
+        if "_hour_ts" in out.columns:
+            timestamp = pd.to_datetime(out["_hour_ts"], errors="raise")
+        elif self._sort_col in out.columns:
+            timestamp = pd.to_datetime(out[self._sort_col], unit="s", errors="raise")
+        else:
+            raise ValueError("Citi Bike hourly panel requires a timestamp for calendar features")
+        out["hour_of_day"] = timestamp.dt.hour
+        out["day_of_week"] = timestamp.dt.dayofweek
+        out["is_weekend"] = timestamp.dt.dayofweek.ge(5).astype("int8")
+        return out
 
     def split(self, val_ratio=0.2, seed=42):
         prepared = self._prepared_splits()

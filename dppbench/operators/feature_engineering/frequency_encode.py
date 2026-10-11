@@ -65,17 +65,54 @@ dag:
 """
         return description.strip()
 
+    # def transform(self, df):
+    #     df = df.copy()
+    #     if not self.fitted_:
+    #         for col in self.cols:
+    #             if col in df.columns:
+    #                 self.freq_maps_[col] = df[col].value_counts()
+    #         self.fitted_ = True
+    #     for col, freq in self.freq_maps_.items():
+    #         if col not in df.columns:
+    #             continue
+    #         df[f"{col}{self.suffix}"] = df[col].map(freq).fillna(0).astype(np.int32)
+    #         if self.drop_original:
+    #             df = df.drop(columns=[col])
+    #     return df
+
     def transform(self, df):
         df = df.copy()
+
+        # 首次调用时统计频率
         if not self.fitted_:
             for col in self.cols:
                 if col in df.columns:
                     self.freq_maps_[col] = df[col].value_counts()
             self.fitted_ = True
+
+        # 批量生成频率特征，避免逐列插入 DataFrame
+        new_features = {}
+
         for col, freq in self.freq_maps_.items():
             if col not in df.columns:
                 continue
-            df[f"{col}{self.suffix}"] = df[col].map(freq).fillna(0).astype(np.int32)
-            if self.drop_original:
-                df = df.drop(columns=[col])
+
+            new_features[f"{col}{self.suffix}"] = (
+                df[col].map(freq).fillna(0).astype(np.int32)
+            )
+
+        # 一次性拼接所有新特征
+        if new_features:
+            freq_df = pd.DataFrame(new_features, index=df.index)
+            df = pd.concat([df, freq_df], axis=1)
+
+        # 统一删除原始列
+        if self.drop_original:
+            drop_cols = [
+                col for col in self.freq_maps_
+                if col in df.columns
+            ]
+            df = df.drop(columns=drop_cols)
+
         return df
+

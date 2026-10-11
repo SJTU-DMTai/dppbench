@@ -29,7 +29,7 @@ LAYERS = [
 def limited_layers(max_nodes):
     """Round-robin prefixes preserve original per-layer order and coverage."""
     if max_nodes < 1:
-        raise ValueError('DagPipe needs at least one operation node')
+        raise ValueError('DAGPipe needs at least one operation node')
     selected = [[] for _ in LAYERS]
     for pos in range(max(map(len, LAYERS))):
         for i, layer in enumerate(LAYERS):
@@ -40,10 +40,10 @@ def limited_layers(max_nodes):
 
 def make_model(layers, n_features, device='cpu', dtype=torch.float64):
     if not layers or any(not layer for layer in layers):
-        raise ValueError('DagPipe has empty operation layers')
+        raise ValueError('DAGPipe has empty operation layers')
     allowed = {name for layer in LAYERS for name in layer}
     if any(name not in allowed for layer in layers for name in layer):
-        raise ValueError('Unknown DagPipe operation in checkpoint')
+        raise ValueError('Unknown DAGPipe operation in checkpoint')
     return HierarchicalDAGPipe(n_features, [
         [getattr(ops, name)() for name in layer] for layer in layers
     ]).to(device=device, dtype=dtype)
@@ -58,7 +58,7 @@ def check_resources():
 class InputEncoder:
     """Fit numeric fill/scale and category maps on search training rows only.
 
-    The single public DagPipeInputEncoding step includes median imputation,
+    The single public DAGPipeInputEncoding step includes median imputation,
     ordinal coding (unknown=-1), and z-scoring. This prevents the vendor's
     routing from destroying its missing-value sentinel before imputation.
     """
@@ -76,7 +76,7 @@ class InputEncoder:
 
     def fit(self, frame):
         if frame.empty or not len(frame.columns):
-            raise ValueError('DagPipe requires nonempty training features')
+            raise ValueError('DAGPipe requires nonempty training features')
         self.state = []
         for col in frame.columns:
             s = frame[col]
@@ -95,18 +95,18 @@ class InputEncoder:
 
     def transform(self, frame):
         if self.state is None:
-            raise RuntimeError('DagPipe input encoder is not fitted')
+            raise RuntimeError('DAGPipe input encoder is not fitted')
         columns = []
         for spec in self.state:
             col = spec['column']
             if col not in frame:
-                raise ValueError(f'DagPipe missing feature column {col!r}')
+                raise ValueError(f'DAGPipe missing feature column {col!r}')
             v = self.values(frame[col], spec)
             v = np.where(np.isfinite(v), v, spec['fill'])
             columns.append((v-spec['mean'])/spec['scale'])
         out = np.column_stack(columns).astype(np.float64)
         if not np.isfinite(out).all():
-            raise ValueError('DagPipe input conversion produced non-finite values')
+            raise ValueError('DAGPipe input conversion produced non-finite values')
         return out
 
 
@@ -115,7 +115,7 @@ class FrozenTransform:
         self.encoder = InputEncoder(payload['encoder'])
         dtype = getattr(torch, payload.get('dtype', 'float64'))
         if dtype not in (torch.float32, torch.float64):
-            raise ValueError('DagPipe supports float32/float64 checkpoints only')
+            raise ValueError('DAGPipe supports float32/float64 checkpoints only')
         self.model = make_model(payload['layers'], len(payload['encoder']), device, dtype)
         state = {k: torch.tensor(v, dtype=dtype, device=device)
                  for k, v in payload['state_dict'].items()}
@@ -123,11 +123,11 @@ class FrozenTransform:
         self.model.eval()
         self.reference = torch.tensor(payload['reference'], dtype=dtype, device=device)
         if self.reference.ndim != 2 or len(self.reference) < 2:
-            raise ValueError('DagPipe checkpoint requires at least two training reference rows')
+            raise ValueError('DAGPipe checkpoint requires at least two training reference rows')
         if self.reference.shape[1] != len(payload['encoder']) or not torch.isfinite(self.reference).all():
-            raise ValueError('DagPipe checkpoint has invalid training reference shape/values')
+            raise ValueError('DAGPipe checkpoint has invalid training reference shape/values')
         if any(not torch.isfinite(p).all() for p in self.model.parameters()):
-            raise ValueError('DagPipe checkpoint has non-finite parameters')
+            raise ValueError('DAGPipe checkpoint has non-finite parameters')
         self.cache = OrderedDict()
         self.cache_entries = int(payload.get('cache_entries', 2))
 
@@ -147,7 +147,7 @@ class FrozenTransform:
                 # A fixed training context plus this query, never other test rows.
                 value = self.model(torch.cat([self.reference, query], dim=0))[-1]
                 if not torch.isfinite(value).all():
-                    raise ValueError(f'DagPipe non-finite transform at query row {i}')
+                    raise ValueError(f'DAGPipe non-finite transform at query row {i}')
                 out[i] = value.cpu().numpy()
         if self.cache_entries:
             self.cache[key] = out.copy()

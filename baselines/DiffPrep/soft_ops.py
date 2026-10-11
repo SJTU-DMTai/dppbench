@@ -150,8 +150,30 @@ def has_soft_impl(op_name: str) -> bool:
     return op_name in SOFT_OP_FNS
 
 
-def apply_soft_op(op_name: str, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def apply_soft_op(op_name: str, x: torch.Tensor, mask: torch.Tensor, fit_rows=None) -> torch.Tensor:
     """Run a single soft-op forward."""
+    if fit_rows is not None:
+        ref = x[fit_rows]
+        if not len(ref):
+            raise ValueError('Soft transforms require training reference rows')
+        if op_name == 'HandleMV':
+            valid = 1. - mask[fit_rows]
+            mean = (ref * valid).sum(0) / valid.sum(0).clamp(min=1.)
+            return x * (1. - mask) + mean * mask
+        if op_name in {'ScaleFeature', 'TargetEncode', 'ClipOutlier'}:
+            mean = ref.mean(0)
+            std = ref.std(0, unbiased=False).clamp(min=1e-6)
+            if op_name == 'ClipOutlier':
+                return torch.minimum(torch.maximum(x, mean - 3 * std), mean + 3 * std)
+            return (x - mean) / std
+        if op_name == 'Normalize':
+            lo, hi = ref.amin(0), ref.amax(0)
+            return (x - lo) / (hi - lo).clamp(min=1e-6)
+        if op_name in {'DiscretizeFeature', 'OneHotEncode', 'OrdinalEncode',
+                       'HashEncode', 'LabelEncode', 'FrequencyEncode'}:
+            buckets = 8 if op_name == 'DiscretizeFeature' else (16 if op_name == 'FrequencyEncode' else 32)
+            bounds = torch.quantile(ref, torch.linspace(0, 1, buckets + 1, device=x.device, dtype=x.dtype)[1:-1], dim=0)
+            return (x.unsqueeze(1) >= bounds.unsqueeze(0)).sum(1).to(x.dtype) / (buckets - 1)
     if op_name == "HandleMV":
         return soft_fill_missing(x, mask, mode="mean")
     fn = SOFT_OP_FNS.get(op_name)

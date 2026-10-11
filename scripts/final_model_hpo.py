@@ -1,5 +1,6 @@
 """Final-stage validation-only tuning; never called by pipeline search."""
 import json
+import inspect
 import math
 import time
 from pathlib import Path
@@ -162,12 +163,33 @@ def candidate_configs(model_name):
     raise ValueError(f"No final HPO space is defined for model {model_name!r}")
 
 
-def tune_final_model(pipeline, *, output_dir, evaluator_class=PipelineEvaluator, **kwargs):
+def resolve_evaluator_class(pipeline, evaluator_class=None):
+    """Keep custom checkpoint formats on their matching evaluation path."""
+    provider = getattr(pipeline, 'get_evaluator_class', None)
+    required = provider() if callable(provider) else PipelineEvaluator
+    if evaluator_class is None:
+        return required
+    if required is not PipelineEvaluator and not issubclass(evaluator_class, required):
+        raise TypeError(
+            f'{type(pipeline).__name__} requires {required.__module__}.{required.__name__}; '
+            f'got {evaluator_class.__module__}.{evaluator_class.__name__}. '
+            'Use the baseline-specific evaluator for both final HPO and evaluation.'
+        )
+    return evaluator_class
+
+
+def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
+    evaluator_class = resolve_evaluator_class(pipeline, evaluator_class)
     started = time.monotonic()
     trials = []
     best = None
     best_score = -math.inf
-    summary = {"space_version": "common_hparams_v2", "trials": trials}
+    evaluator_name = f'{evaluator_class.__module__}.{evaluator_class.__name__}'
+    evaluator_source = inspect.getfile(evaluator_class)
+    summary = {"space_version": "common_hparams_v2", "trials": trials,
+               "evaluator_class": evaluator_name, "evaluator_source": evaluator_source}
+    if kwargs.get('verbose', False):
+        print(f'[final HPO] evaluator={evaluator_name} source={evaluator_source}')
     path = Path(output_dir) / "final_hpo.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     for params in candidate_configs(kwargs["model_name"]):

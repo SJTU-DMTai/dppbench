@@ -6,26 +6,32 @@ from pathlib import Path
 import yaml
 
 
-class DagPipePipeline:
+class DAGPipePipeline:
+    @staticmethod
+    def get_evaluator_class():
+        """The checkpoint requires its own validator and replay executor."""
+        from .evaluator import DAGPipeEvaluator
+        return DAGPipeEvaluator
+
     def __init__(self, payload):
         self.payload = payload
         self._transforms = {}
         self.validate()
 
     def validate(self):
-        if self.payload.get('format') != 'dppbench.dagpipe.reference.v1':
-            raise ValueError('Unsupported DagPipe pipeline format')
+        if self.payload.get('format') != 'dppbench.DAGPipe.reference.v1':
+            raise ValueError('Unsupported DAGPipe pipeline format')
         for key in ('encoder', 'layers', 'state_dict', 'reference', 'task', 'seed'):
             if key not in self.payload:
-                raise ValueError(f'DagPipe pipeline missing {key}')
+                raise ValueError(f'DAGPipe pipeline missing {key}')
         if not self.payload['encoder']:
-            raise ValueError('DagPipe pipeline has no features')
+            raise ValueError('DAGPipe pipeline has no features')
         # Validate names/dimensions, and all required parameters via strict load.
         from .runtime import FrozenTransform
         FrozenTransform(self.payload)
 
     def op_names(self):
-        return ['DagPipeInputEncoding'] + [
+        return self.payload.get('adapter', {}).get('ops', []) + ['DAGPipeInputEncoding'] + [
             name for layer in self.payload['layers'] for name in layer]
 
     def __len__(self):

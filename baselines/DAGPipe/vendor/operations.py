@@ -357,7 +357,12 @@ class RobustScaler(DifferentiableOperation):
         median = x.median(dim=0, keepdim=True).values
         q75 = torch.quantile(x, 0.75, dim=0, keepdim=True)
         q25 = torch.quantile(x, 0.25, dim=0, keepdim=True)
-        iqr = q75 - q25 + self.eps
+        iqr = q75 - q25
+        # Tied/binary columns often have zero IQR despite nonconstant values.
+        # Dividing their minority values by eps amplifies them by 1e8; stacked
+        # transforms then produce enormous finite losses. Use unit scale for
+        # degenerate IQR, preserving centering without artificial amplification.
+        iqr = torch.where(iqr.abs() <= self.eps, torch.ones_like(iqr), iqr)
         return (x - median) / iqr
 
 

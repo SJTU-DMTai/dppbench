@@ -146,36 +146,30 @@ class NycTaxiHourlyData(TabularData):
             raise ValueError(f"Missing required NYC taxi columns for hourly panel: {missing}")
         df = df.copy()
         df["_hour_ts"] = df["tpep_pickup_datetime"].dt.floor("h")
-        agg_spec = {}
-        for col, funcs in {
-            "trip_distance": ["mean", "sum"],
-            "fare_amount": ["mean", "sum"],
-            "tip_amount": ["mean"],
-            "total_amount": ["mean"],
-            "passenger_count": ["mean"],
-        }.items():
-            if col in df.columns:
-                agg_spec[col] = funcs
-        if agg_spec:
-            out = df.groupby(["PULocationID", "_hour_ts"], dropna=False).agg(agg_spec).reset_index()
-            out.columns = [
-                "_".join([str(x) for x in col if x]) if isinstance(col, tuple) else col
-                for col in out.columns
-            ]
-            counts = (
-                df.groupby(["PULocationID", "_hour_ts"], dropna=False)
-                .size()
-                .reset_index(name="trip_count")
-            )
-            out = out.merge(counts, on=["PULocationID", "_hour_ts"], how="left")
-        else:
-            out = (
-                df.groupby(["PULocationID", "_hour_ts"], dropna=False)
-                .size()
-                .reset_index(name="trip_count")
-            )
+        # Same-hour trip statistics are unavailable before prediction and
+        # sum/mean can reconstruct the target count exactly.
+        out = (df.groupby(["PULocationID", "_hour_ts"], dropna=False)
+               .size().reset_index(name="trip_count"))
         out["_hour_idx"] = pd.to_datetime(out["_hour_ts"]).astype("datetime64[ns]").astype("int64") // 10 ** 9
+        out = self._normalize_frozen_frame(out)
         return out.sort_values(["PULocationID", "_hour_idx"], kind="mergesort").reset_index(drop=True)
+
+    def _normalize_frozen_frame(self, df):
+        """Sanitize both old train/test snapshots without changing membership."""
+        forbidden = [c for c in df if c.startswith((
+            "trip_distance_", "fare_amount_", "tip_amount_",
+            "total_amount_", "passenger_count_"))]
+        out = df.drop(columns=forbidden).copy()
+        if "_hour_ts" in out:
+            timestamp = pd.to_datetime(out["_hour_ts"], errors="raise")
+        elif self._sort_col in out:
+            timestamp = pd.to_datetime(out[self._sort_col], unit="s", errors="raise")
+        else:
+            raise ValueError("NYC hourly panel requires a timestamp for calendar features")
+        out["hour_of_day"] = timestamp.dt.hour
+        out["day_of_week"] = timestamp.dt.dayofweek
+        out["is_weekend"] = timestamp.dt.dayofweek.ge(5).astype("int8")
+        return out
 
     def split(self, val_ratio=0.2, seed=42):
         prepared = self._prepared_splits()

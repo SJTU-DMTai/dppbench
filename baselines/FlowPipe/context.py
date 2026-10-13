@@ -8,6 +8,9 @@ import pandas as pd
 import torch
 
 from baselines.common.op_spec import OpCategory
+from baselines.common.state_features import unique_value_count
+from baselines.common.llm_quantization import (fp8_quantization_config, local_torch_dtype,
+    require_accelerate, model_dtype_kwargs)
 
 
 class SemanticContextLoader:
@@ -20,7 +23,7 @@ class SemanticContextLoader:
 
     def __init__(
         self, cache_dir: str, model_name: str, ctx_dim: int = 4096,
-        llama_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt",
+        llama_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.model_name = str(model_name)
@@ -28,18 +31,14 @@ class SemanticContextLoader:
         self.llama_model_path = Path(llama_model_path)
 
     def path_for(self, data_name: str) -> Path:
-        candidates = (
-            self.cache_dir / self.model_name / "contextual_semantic" / f"{data_name}.pt",
-            self.cache_dir / "contextual_semantic" / f"{data_name}.pt",
-            self.cache_dir / f"{data_name}.pt",
-        )
-        return next((path for path in candidates if path.is_file()), candidates[0])
+        # A generic cache path may hold another model's same-width embedding.
+        return self.cache_dir / self.model_name / "contextual_semantic" / f"{data_name}.pt"
 
     def load(self, data_name: str) -> torch.Tensor:
         path = self.path_for(data_name)
         if not path.is_file():
             raise FileNotFoundError(
-                "FlowPipe requires the frozen Llama-3.1 contextual-semantic "
+                "FlowPipe requires the frozen model-specific contextual-semantic "
                 f"embedding for {data_name}: {path}"
             )
         value = torch.load(path, map_location="cpu", weights_only=True)
@@ -76,7 +75,7 @@ class SemanticContextLoader:
         for column in frame.columns:
             series = frame[column]
             missing = float(series.isna().sum()) / rows
-            unique = int(series.nunique(dropna=True))
+            unique = unique_value_count(series)
             role = "target" if column == ctx.target_col else "feature"
             schema.append(
                 f"- {column}: dtype={series.dtype}, role={role}, "
@@ -110,13 +109,15 @@ class SemanticContextLoader:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         torch_device = torch.device(device)
-        dtype = torch.float16 if torch_device.type == "cuda" else torch.float32
+        require_accelerate(str(torch_device))
         tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, local_files_only=True, torch_dtype=dtype,
-        ).to(torch_device)
+            model_path, local_files_only=True, **model_dtype_kwargs(local_torch_dtype(torch_device)),
+            device_map=str(torch_device),
+            quantization_config=fp8_quantization_config(torch_device),
+        )
         model.eval()
         prompt = self.build_prompt(data_name, frame, ctx)
         tokens = tokenizer(

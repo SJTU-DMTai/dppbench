@@ -1,8 +1,8 @@
 """CustomOp -- LLM-friendly catch-all operator that executes a sandboxed
 ``def pipeline(df) -> df`` user function.
 
-Used by the SPIO baseline: SPIO generates Python code per stage, and each
-generated code snippet is wrapped as a ``CustomOp`` step in the pipeline so
+Used by LLM-driven custom transformations: each generated code snippet can be
+wrapped as a ``CustomOp`` step in the pipeline so
 the dppbench evaluator can execute it just like any other operator.
 
 Code spec (strictly enforced; LLM prompts surface this via
@@ -126,7 +126,7 @@ class CustomOp(BaseOp):
 Function description: Sandboxed execution of an LLM-authored Python function
 on a single ``pd.DataFrame``. The function is passed the current target
 DataFrame (``train`` / ``test`` / ``interaction`` / etc.) and must return
-the new DataFrame. Used as the catch-all stage executor by the SPIO baseline.
+the new DataFrame. Used as the catch-all executor for custom transformations.
 
 Code specification (STRICT — must be followed exactly):
   - The ``code`` string MUST define a function whose name equals ``entry``

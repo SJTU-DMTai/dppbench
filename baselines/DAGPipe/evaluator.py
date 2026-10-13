@@ -11,6 +11,7 @@ from baselines.common.evaluator import PipelineEvaluator, EvaluationResult
 from baselines.common.budget import get_active_budget
 from baselines.common.pipeline import PipelineCheckReport
 from .pipeline import DAGPipePipeline
+from .tabular_adapter import augment_splits
 from .task_adapter import rec_splits, rec_output, graph_splits
 
 
@@ -70,6 +71,7 @@ class DAGPipeExecutor(TrainingExecutor):
                 data.train_df = frame
                 return frame
             splits = training_splits(data, cfg, include_std_test=self._evaluate_std_test)
+            splits = augment_splits(data, splits, self.pipeline.payload.get('adapter', {}))
             encoded = {}
             for split_name in ('train', 'val', 'std_test'):
                 frame = splits.get(split_name)

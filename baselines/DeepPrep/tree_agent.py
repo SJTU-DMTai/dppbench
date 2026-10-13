@@ -10,12 +10,15 @@ import ast
 import copy
 import json
 import logging
+import math
 import random
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from baselines.common.llm_quantization import LocalModelInitializationError
 from baselines.common.data_ctx import DataContext
+from baselines.common.budget import BudgetExceededError
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
@@ -23,6 +26,7 @@ from baselines.common.pipeline import (
     check_pipeline,
     default_target_for,
     make_step,
+    get_operator_param_names,
     validate_step_params,
 )
 from baselines.common.utils import get_available_ops, get_op
@@ -48,7 +52,7 @@ _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 _ACTIONS = {
     "expand": re.compile(r"<expand(?P<attrs>[^>]*)>(?P<body>.*?)</expand>", re.DOTALL),
     "answer": re.compile(r"<answer(?P<attrs>[^>]*)>(?P<body>.*?)</answer>", re.DOTALL),
-    # Legacy tags remain parseable for DataMaster/ReAct compatibility. The
+    # Legacy tags remain parseable for older saved protocol traces. The
     # DeepPrep agent itself rejects these action kinds.
     "operator": re.compile(r"<operator(?P<attrs>[^>]*)>(?P<body>.*?)</operator>", re.DOTALL),
     "solution": re.compile(r"<solution(?P<attrs>[^>]*)>(?P<body>.*?)</solution>", re.DOTALL),
@@ -91,9 +95,19 @@ def parse_response(text: str) -> ParsedAction:
     if not plan and think:
         plan = think
     found = []
+    # Tags quoted in reasoning/prose are not actions. Actual tagged actions
+    # must start a line (or follow a complete reasoning block).
+    action_text = re.sub(r"<(?:think|plan)>.*?</(?:think|plan)>", "", text, flags=re.DOTALL)
+    if "</think>" in action_text:
+        action_text = action_text.rsplit("</think>", 1)[-1]
     for kind, regex in _ACTIONS.items():
-        match = regex.search(text)
-        if match:
+        for match in regex.finditer(action_text):
+            prefix = action_text[action_text.rfind('\n', 0, match.start()) + 1:match.start()].strip()
+            if prefix and not re.fullmatch(
+                r"(?:<(?:expand|answer|operator|solution)[^>]*>.*?</(?:expand|answer|operator|solution)>\s*)+",
+                prefix,
+            ):
+                continue
             attrs = match.group("attrs") or ""
             body = match.group("body").strip()
             parent_match = _PARENT_RE.search(attrs)
@@ -223,7 +237,11 @@ def chain_to_steps(
         if op_name not in valid_ops:
             raise ChainParseError(f"Operator {op_name!r} is unavailable for {ctx.task_type}.")
         if "__positional__" in supplied:
-            raise ChainParseError(f"Operator {op_name!r} requires keyword arguments.")
+            raise ChainParseError(
+                f"Operator {op_name!r} requires keyword arguments. "
+                f"Accepted keywords: {sorted(get_operator_param_names(op_name) or [])}. "
+                "Input tables are supplied by the environment; remove positional table arguments."
+            )
         if strict_instances:
             params = copy.deepcopy(spec.default_params or {})
             params.update(supplied)
@@ -237,7 +255,13 @@ def chain_to_steps(
             target = base.target
         errors = validate_step_params(op_name, params, ctx, strict=True)
         if errors:
-            raise ChainParseError("; ".join(errors))
+            raise ChainParseError(
+                "; ".join(errors)
+                + f". {op_name} accepted keywords: {sorted(get_operator_param_names(op_name) or [])}; "
+                + f"required: {list(spec.required_params)}; defaults: {spec.default_params}. "
+                + "Do not pass df= or table=; the environment supplies the input. "
+                + "Resubmit a corrected full path inside <expand>, with a brief <plan>."
+            )
         steps.append(PipelineStep(op=op_name, target=target, params=params))
     if not steps:
         raise ChainParseError("An expansion must contain at least one operator.")
@@ -283,12 +307,75 @@ class TreeAgent:
         self.tree = SearchTree()
         self.transcript = []
         self.n_errors = 0
-        if downstream_evaluator is not None:
-            logger.warning("DeepPrep ignores downstream_evaluator during official-style inference")
+        self._validated_pipelines: dict[str, Pipeline] = {}
+        self.downstream_evaluator = downstream_evaluator
+        self.candidate_scores: dict[str, dict] = {}
+
+    def _downstream_feedback(self, node: SearchNode) -> str:
+        pipeline = self._pipeline_for_node(node)
+        key = canonical_path(node.accumulated_steps)
+        if key not in self.candidate_scores:
+            fitness, metrics, error = self.downstream_evaluator.evaluate_for_agent(pipeline)
+            if fitness is None or not math.isfinite(fitness):
+                error = error or 'No finite validation fitness (higher is better) returned'
+            self.candidate_scores[key] = dict(path=key, fitness=fitness if not error else None,
+                                              metric_name=getattr(self.downstream_evaluator, 'metric_key', None),
+                                              metrics=metrics, error=error)
+        record = self.candidate_scores[key]
+        valid = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
+        best = max(valid, key=lambda r: r['fitness']) if valid else None
+        return (
+            '\nSampled downstream feedback: ' + json.dumps(record, default=str)
+            + '\nBest sampled validation fitness (higher is better) so far: ' + (str(best['fitness']) if best else 'none')
+            + '\nContinue exploring a different legal full path to improve validation fitness (higher is better). '
+            'Use training errors to revise operators; do not repeat the same path. '
+            'Do not use test metrics or force extra operators merely to increase length.'
+        )
 
     def _log(self, message: str) -> None:
         if self.verbose:
             print("[DeepPrep.Agent]", message)
+
+    def _record_feedback(self, feedback: str, turn: int) -> None:
+        """Persist full feedback and expose failures in the experiment log."""
+        self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+        # Do not dump data observations or prompts into the main log.
+        for marker in ("error: ", "Candidate contract errors: "):
+            if marker in feedback:
+                message = feedback.split(marker, 1)[1].split("</execute>", 1)[0]
+                self._log(f"turn={turn} {marker}{message[:2000]}")
+                break
+
+    def _revision_hint(self) -> str:
+        cursor = self.tree.cursor
+        path = canonical_path(cursor.accumulated_steps)
+        remaining = sorted(set(mandatory_ops_for_context(self.ctx)) - set(s.op for s in cursor.accumulated_steps))
+        lines = [f"Current materialized path (copy exactly): {path}",
+                 f"Mandatory operators still required: {remaining}. These are not optional.",
+                 "Keep exact names such as CreateSequence and JoinTable; do not lowercase them. "
+                 "Use keyword arguments inside parentheses, never explanatory prose or numbered lists."]
+        if 'CreateSequence' in remaining:
+            params = dict(user_col=self.ctx.user_col or 'user_id', item_col=self.ctx.item_col or 'item_id',
+                          time_col=self.ctx.time_col or 'timestamp', seq_col='item_id_seq', max_len=50)
+            example = canonical_path([PipelineStep('CreateSequence', 'interaction', params)])
+            lines.append("CreateSequence syntax for this task: " + example)
+            lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + example + " </execute>")
+        if 'JoinTable' in remaining:
+            lines.append("JoinTable remains mandatory; extra joined feature columns are expected, not a schema violation.")
+            if self.ctx.task_type == 'rec':
+                params = dict(method='rec', user_col=self.ctx.user_col or 'user_id',
+                              item_col=self.ctx.item_col or 'item_id', how='left')
+                for table in ('user', 'item'):
+                    if table in self.ctx.secondary_tables:
+                        params[table + '_df'] = '$' + table + '_df'
+                example = canonical_path([PipelineStep('JoinTable', 'interaction', params)])
+                lines.append("JoinTable syntax for this task: " + example)
+                lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '')
+                             + example + " </execute>")
+            lines.append("JoinTable needs two input table branches, not two preceding operators. "
+                         "method='key'/'agg' uses aux_df and key_col; method='rec' uses item_df/user_df. "
+                         "A chain without the current path starts a new branch from root.")
+        return '\n'.join(lines)
 
     def _initial_messages(self, observation: str) -> list[dict]:
         summary_lines = [
@@ -303,7 +390,9 @@ class TreeAgent:
                 continue
             summary_lines.append(
                 f"- {table_name}: role={table.role} shape={table.shape} "
-                f"dtypes={table.dtypes} join_keys_to_primary={table.join_keys_to_primary}"
+                f"dtypes={dict(list(table.dtypes.items())[:40])} "
+                f"categorical_columns={[c for c, dtype in table.dtypes.items() if str(dtype) in ('object', 'string', 'category')]} "
+                f"join_keys_to_primary={table.join_keys_to_primary}"
             )
         summary = "\n".join(summary_lines)
         mandatory_ops = mandatory_ops_for_context(self.ctx)
@@ -364,29 +453,79 @@ class TreeAgent:
     def _answer_errors(self, node: SearchNode) -> list[str]:
         obs = self.sandbox.restore(node.snapshot)  # type: ignore[arg-type]
         errors = self.target_schema.validate_observation(obs)
+        if self.ctx.task_type == "tabular":
+            remaining = [
+                c for c, dtype in obs.dtypes.items()
+                if str(dtype) in ("object", "string", "category")
+                and c not in (self.ctx.target_col, "__split__")
+            ]
+            if remaining:
+                errors.append(
+                    f"Unencoded categorical features: {remaining}. "
+                    "Use LabelEncode(cols=None) to select all categorical features automatically."
+                )
         report = check_pipeline(self._pipeline_for_node(node), self.ctx)
         errors.extend(report.errors)
         return errors
 
     def _fallback_pipeline(self) -> Pipeline:
+        scored = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
+        if scored:
+            best = max(scored, key=lambda r: r['fitness'])
+            return self._pipeline_for_node(self.tree.find_by_steps(
+                chain_to_steps(best['path'], self.ctx, self._rng, strict_instances=True)))
+        if self._validated_pipelines:
+            return copy.deepcopy(max(self._validated_pipelines.values(), key=lambda p: len(p.steps)))
         candidates = sorted(self.tree.nodes.values(), key=lambda node: node.depth, reverse=True)
         for node in candidates:
-            if not self._answer_errors(node):
-                return self._pipeline_for_node(node)
+            try:
+                if not self._answer_errors(node):
+                    return self._pipeline_for_node(node)
+            except BudgetExceededError:
+                break
         return self._pipeline_for_node(self.tree.nodes[self.tree.root_id])  # type: ignore[index]
 
     def run(self) -> AgentRunResult:
+        try:
+            return self._run_search()
+        except BudgetExceededError as exc:
+            # Evaluating or executing the next candidate must not discard a
+            # previously scored pipeline when the shared budget expires.
+            if not self.tree.nodes:
+                raise
+            turns = max((item.get('turn', 0) for item in self.transcript), default=0)
+            self.transcript.append({'role': 'environment', 'content': str(exc), 'turn': turns})
+            return AgentRunResult(
+                pipeline=self._fallback_pipeline(),
+                success=any(r['fitness'] is not None for r in self.candidate_scores.values()),
+                n_turns=turns, n_errors=self.n_errors, transcript=self.transcript,
+                tree=self.tree.to_dict(), solution_attempts=list(self.candidate_scores.values()),
+            )
+
+    def _run_search(self) -> AgentRunResult:
         reset = self.sandbox.reset()
         if not reset.success or reset.obs is None or reset.snapshot is None:
             return AgentRunResult(Pipeline(), False, 0, 1)
         self.tree.add_root(reset.snapshot, reset.obs.text)
         messages = self._initial_messages(reset.obs.text)
+        if self.downstream_evaluator is not None:
+            messages[0]['content'] += (
+                '\nSearch objective: maximize sampled validation fitness (higher is better) under the shared budget. '
+                'A legal pipeline is only a candidate, not an instruction to stop. '
+                'Use validation fitness and training errors to compare and revise distinct legal paths. '
+                'Do not repeatedly finalize the first candidate; explore alternative operators or parameters.'
+            )
         final_pipeline = None
         turn = 0
 
         for turn in range(1, self.max_explore_turn + 1):
             try:
                 response = self.llm.chat(messages)
+            except BudgetExceededError as exc:
+                self.transcript.append({"role": "environment", "content": str(exc), "turn": turn})
+                break
+            except LocalModelInitializationError:
+                raise
             except Exception as exc:
                 self.n_errors += 1
                 self._log(f"LLM call failed: {exc}")
@@ -398,14 +537,15 @@ class TreeAgent:
             action = parse_response(response)
             turns_left = self.max_explore_turn - turn
 
-            if action.kind not in ("expand", "answer") or not action.plan:
+            if action.kind not in ("expand", "answer"):
                 self.n_errors += 1
                 feedback = render_protocol_error(
-                    "Expected <plan> followed by exactly one <expand> or <answer>.",
+                    "Missing concrete operator chain or a complete action tag.",
                     turns_left,
                 )
+                feedback += "\n" + self._revision_hint()
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 if self.n_errors >= self.max_err_cnt:
                     break
                 continue
@@ -418,12 +558,18 @@ class TreeAgent:
                     self.n_errors += 1
                     feedback = render_protocol_error(parent_error, turns_left)
                     messages.append({"role": "user", "content": feedback})
-                    self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                    self._record_feedback(feedback, turn)
                     continue
                 assert parent is not None
                 self.tree.set_cursor(parent.node_id)
                 errors = self._answer_errors(parent)
                 if not errors:
+                    if self.downstream_evaluator is not None:
+                        self._validated_pipelines[parent.node_id] = self._pipeline_for_node(parent)
+                        feedback = self._downstream_feedback(parent)
+                        messages.append({'role': 'user', 'content': feedback})
+                        self._record_feedback(feedback, turn)
+                        continue
                     parent.is_terminal = True
                     final_pipeline = self._pipeline_for_node(parent)
                     break
@@ -436,10 +582,27 @@ class TreeAgent:
                     turn_left=turns_left,
                 )
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 continue
 
             try:
+                # The released checkpoint often finalizes by repeating its
+                # native chain rather than switching to <answer>. Accept only
+                # an exact materialized path already validated in this run.
+                existing, _ = self._parent(action.chain_str)
+                if existing is not None and existing.node_id in self._validated_pipelines:
+                    if self.downstream_evaluator is not None:
+                        feedback = self._downstream_feedback(existing)
+                        messages.append({'role': 'user', 'content': feedback})
+                        self._record_feedback(feedback, turn)
+                        continue
+                    existing.is_terminal = True
+                    final_pipeline = copy.deepcopy(self._validated_pipelines[existing.node_id])
+                    self.transcript.append({
+                        "role": "environment", "turn": turn,
+                        "content": '<execute status="OK">Repeated validated path accepted as final answer.</execute>',
+                    })
+                    break
                 if action.parent_chain is not None:
                     parent, parent_error = self._parent(action.parent_chain)
                     if parent_error:
@@ -466,8 +629,9 @@ class TreeAgent:
                     error=f"Operator parse/validation failed: {exc}",
                     turn_left=turns_left,
                 )
+                feedback += "\n" + self._revision_hint()
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 continue
 
             self.tree.set_cursor(parent.node_id)
@@ -484,6 +648,14 @@ class TreeAgent:
                 self.tree.add_child([step], result.snapshot, result.obs.text)  # type: ignore[arg-type,union-attr]
 
             cursor = self.tree.cursor
+            if not failure:
+                try:
+                    candidate_errors = self._answer_errors(cursor)
+                    if not candidate_errors:
+                        self._validated_pipelines[cursor.node_id] = self._pipeline_for_node(cursor)
+                except BudgetExceededError as exc:
+                    self.transcript.append({"role": "environment", "content": str(exc), "turn": turn})
+                    break
             feedback = render_execute(
                 parent_path=canonical_path(parent.accumulated_steps),
                 executed_path=canonical_path(cursor.accumulated_steps),
@@ -499,14 +671,25 @@ class TreeAgent:
             )
             if failure:
                 self.n_errors += 1
+            elif candidate_errors:
+                feedback += "\nCandidate contract errors: " + "; ".join(candidate_errors)
+            else:
+                if self.downstream_evaluator is not None:
+                    feedback += self._downstream_feedback(cursor)
+                else:
+                    feedback += "\nCandidate validated. Finish with <answer>" + canonical_path(cursor.accumulated_steps) + "</answer>."
+            if failure or candidate_errors:
+                feedback += "\n" + self._revision_hint()
             messages.append({"role": "user", "content": feedback})
-            self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+            self._record_feedback(feedback, turn)
             if self.n_errors >= self.max_err_cnt:
                 break
 
         success = final_pipeline is not None
         if final_pipeline is None:
             final_pipeline = self._fallback_pipeline()
+        if self.downstream_evaluator is not None:
+            success = any(r['fitness'] is not None for r in self.candidate_scores.values())
         return AgentRunResult(
             pipeline=final_pipeline,
             success=success,
@@ -514,6 +697,7 @@ class TreeAgent:
             n_errors=self.n_errors,
             transcript=self.transcript,
             tree=self.tree.to_dict(),
+            solution_attempts=list(self.candidate_scores.values()),
         )
 
 

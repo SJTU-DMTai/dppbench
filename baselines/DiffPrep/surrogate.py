@@ -4,8 +4,8 @@ The surrogates participate only in the inner loop of DiffPrep's bilevel
 optimisation. They receive features that have flown through the
 :class:`ContinuousPipeline` and produce a binary classification logit.
 
-* ``TabularSurrogate`` -- LR + 1-layer MLP head over numeric feature
-  vectors.
+* ``TabularSurrogate`` -- a single linear classification/regression head
+  over numeric feature vectors.
 * ``RecSurrogate`` -- user/item embedding + dot-product + MLP head; the
   feature tensor is concatenated to the embedding.
 """

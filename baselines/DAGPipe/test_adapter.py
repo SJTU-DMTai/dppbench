@@ -58,6 +58,7 @@ class AdapterTests(unittest.TestCase):
             return original(path, *args, **kwargs)
         with patch.object(pd, 'read_parquet', side_effect=no_test), budget_scope(cls.budget):
             cls.runner = DAGPipe(**cls.kwargs, max_pipeline_len=10, output_dir=Path(cls.tmp.name)/'run')
+            cls.runner.cfg['epochs'] = 2
             cls.result = cls.runner.run()
         cls.pipeline = cls.runner.get_pipeline()
 
@@ -66,8 +67,8 @@ class AdapterTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_budget_and_serialization(self):
-        self.assertEqual(self.budget.evaluations_used, 2)
-        self.assertEqual(self.result['n_unique_evaluations'], 2)
+        self.assertEqual(self.budget.evaluations_used, 0)
+        self.assertEqual(self.result['n_unique_evaluations'], 0)
         self.assertEqual(len(self.pipeline), 10)
         reloaded = DAGPipePipeline.from_yaml(self.result['best_pipeline_yaml'])
         frame = pd.read_csv(self.data_dir/'hour.csv').head(3)
@@ -100,7 +101,9 @@ class AdapterTests(unittest.TestCase):
 
     def test_seed_reproducibility(self):
         with budget_scope(Budget(max_evaluations=2)):
-            again = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'repeat').run()
+            runner = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'repeat')
+            runner.cfg['epochs'] = 2
+            again = runner.run()
         self.assertEqual(again['best_pipeline_yaml'], self.result['best_pipeline_yaml'])
 
     def test_hpo_never_reads_test_and_reuses_frozen_pipeline(self):

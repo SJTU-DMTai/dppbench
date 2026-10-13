@@ -1,8 +1,8 @@
 """Pipeline evaluator that drives downstream model training.
 
 Reuses ``baselines.common.executor.TrainingExecutor`` so that each baseline fitness
-signal is exactly the same metric that the rest of the project optimises
-(LightGBM AUC for tabular tasks, DIN AUC for recommendation tasks).
+signal follows the task configuration. Error metrics are negated so searches
+maximize fitness for classification and regression alike.
 """
 from __future__ import annotations
 
@@ -79,8 +79,10 @@ class PipelineEvaluator:
             seed=seed,
             model_config=model_config,
         )
-        if self.metric_key is None:
-            self.metric_key = self._executor.get_model_config().get("train", {}).get("metrics", ["auc"])[0]
+        configured_metrics = self._executor.get_model_config().get("train", {}).get("metrics") or []
+        self.metric_key = (metric_key if metric_key in configured_metrics
+                           else configured_metrics[0] if configured_metrics
+                           else metric_key or "auc")
         self._cache: dict[str, EvaluationResult] = {}
         self._data_context = None
 

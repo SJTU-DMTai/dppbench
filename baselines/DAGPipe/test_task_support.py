@@ -68,6 +68,7 @@ def rec_run(request, tmp_path, monkeypatch):
                   seed=42, device='cpu', verbose=False)
     with forbid_std_reads(), budget_scope(Budget(max_evaluations=1, max_pipeline_length=8)):
         runner = DAGPipe(**kwargs, max_pipeline_len=8, output_dir=tmp_path / 'run')
+        runner.cfg['epochs'] = 1
         runner.run()
     return kwargs, runner.get_pipeline(), cls, frame
 
@@ -148,6 +149,7 @@ def graph_run(tmp_path):
                   seed=42, device='cpu', verbose=False)
     with forbid_std_reads(), budget_scope(Budget(max_evaluations=1)):
         runner = DAGPipe(**kwargs, max_pipeline_len=5, output_dir=tmp_path / 'run')
+        runner.cfg['epochs'] = 1
         runner.run()
     return kwargs, runner.get_pipeline()
 
@@ -213,16 +215,26 @@ def test_all_tabular_dataset_split_contracts(name, tmp_path, monkeypatch):
         frame[template.id_col] = np.arange(n)
     if getattr(template, '_sort_col', None):
         frame[template._sort_col] = np.arange(n)
+    if name == 'berka':
+        frame['account_id'] = np.arange(n)
+        frame['date'] = 930102
     frame.iloc[:64].to_parquet(std_dir / 'train_frozen.parquet', index=False)
     frame.iloc[64:].to_parquet(std_dir / 'std_test.parquet', index=False)
 
     def load(data):
         data.train_df, data.test_df = frame.copy(), None
+        if name == 'berka':
+            data.auxiliary_dfs['account'] = pd.DataFrame({'account_id': np.arange(n), 'district_id': np.arange(n) % 4})
+            data.auxiliary_dfs['trans'] = pd.DataFrame({'account_id': np.arange(n), 'date': 930101,
+                                                       'amount': np.arange(n) * 10., 'balance': np.arange(n) * 20.})
+        if name == 'default_credit':
+            data.auxiliary_dfs['monthly_history'] = pd.DataFrame({'ID': np.arange(n), 'PAY_STATUS': np.arange(n) % 3})
     monkeypatch.setattr(cls, 'load_data', load)
     kwargs = dict(task_dir=str(ROOT / 'dppbench/tasks' / name), data_name=name,
                   data_dir=str(data_dir), seed=42, verbose=False, model_name='LightGBM')
     with forbid_std_reads(), budget_scope(Budget(max_evaluations=1)):
         runner = DAGPipe(**kwargs, max_pipeline_len=4, output_dir=tmp_path / 'run')
+        runner.cfg['epochs'] = 1
         runner.run()
     evaluator = DAGPipeEvaluator(**kwargs, model_config={
         'model_params': {'n_estimators': 2, 'min_child_samples': 2},

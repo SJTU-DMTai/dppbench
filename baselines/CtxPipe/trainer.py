@@ -167,6 +167,13 @@ class CtxPipeTrainer:
             "history": self.history,
             "best_record": best_record,
             "best_pipeline_yaml": best_pipeline_yaml,
+            "training_stats": {
+                "component_optimizer_steps": getattr(self.agent, 'component_updates', 0),
+                "logical_optimizer_steps": getattr(self.agent, 'logical_updates', 0),
+                "component_parameter_changes": getattr(self.agent, 'component_parameter_changes', 0),
+                "logical_parameter_changes": getattr(self.agent, 'logical_parameter_changes', 0),
+                "frames": self.frames,
+            },
         }
 
 

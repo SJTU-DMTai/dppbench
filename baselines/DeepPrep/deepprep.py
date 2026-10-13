@@ -3,8 +3,8 @@
 Compared to :class:`baselines.SAGA.saga.SAGA` and
 :class:`baselines.CtxPipe.ctxpipe.CtxPipe`, DeepPrep replaces the search
 strategy with DeepPrep's execution-grounded ``<plan>/<expand>/<execute>/
-<answer>`` tree protocol. Downstream evaluation happens only after inference
-and is never fed back to the model.
+<answer>`` tree protocol. The DPPBench adaptation feeds sampled validation fitness
+back into search; full-data final evaluation remains separate.
 """
 from __future__ import annotations
 
@@ -147,10 +147,11 @@ class DeepPrep:
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
-        # Kept as accepted constructor/config fields for runner compatibility.
-        # Official-style inference never feeds downstream scores to the agent.
-        self.downstream_feedback = False
-        self.downstream_eval_n = int(downstream_eval_n) if downstream_eval_n else 0
+        # Sampled task-metric feedback is a DPPBench adaptation; schema-only remains optional.
+        self.downstream_feedback = bool(downstream_feedback)
+        self.downstream_eval_n = int(downstream_eval_n) if downstream_eval_n is not None else 10000
+        if self.downstream_feedback and self.downstream_eval_n <= 0:
+            raise ValueError('downstream_eval_n must be positive for sampled task-metric feedback')
         self.max_solution_attempts = int(max_solution_attempts)
         self.seed = int(seed)
         self.verbose = bool(verbose)
@@ -177,6 +178,8 @@ class DeepPrep:
             timeout=self.timeout,
             torch_dtype=self.torch_dtype,
             device_map=self.device_map,
+            enable_thinking=False,
+            repetition_penalty=1.1,
         )
 
     def _infer_context(self, sandbox: Sandbox) -> DataContext:
@@ -212,11 +215,20 @@ class DeepPrep:
                       f"max_chain={self.max_chain_len}  "
                       f"max_depth={self.max_depth}")
                 print(f"[DeepPrep] small_n={self.small_n or 'OFF'}  "
-                      f"eval_full={self.eval_full}  downstream_feedback=OFF")
+                      f"eval_full={self.eval_full}  downstream_feedback={self.downstream_feedback}")
                 print("=" * 60)
 
             # 2. LLM + Agent
             llm = self._build_llm()
+            agent_evaluator = None
+            if self.downstream_feedback:
+                agent_evaluator = DeepPrepEvaluator(
+                    task_dir=self.task_dir, data_name=self.data_name, data_dir=self.data_dir,
+                    metric_key=None, small_n=self.downstream_eval_n, seed=self.seed,
+                    device=self.device, model_name=self.model_name, verbose=False,
+                )
+                agent_evaluator.set_evaluate_std_test(False)
+                agent_evaluator.set_fast_mode(self.fast_train)
             agent = TreeAgent(
                 llm=llm,
                 sandbox=sandbox,
@@ -227,6 +239,7 @@ class DeepPrep:
                 max_err_cnt=self.max_err_cnt,
                 verbose=self.verbose,
                 seed=self.seed,
+                downstream_evaluator=agent_evaluator,
             )
             run = agent.run()
             pipeline: Pipeline = run.pipeline
@@ -271,6 +284,11 @@ class DeepPrep:
 
         reported_fitness = eval_fitness
         reported_metrics = eval_metrics
+        scored = [r for r in run.solution_attempts if r.get('fitness') is not None]
+        if not self.eval_full and scored:
+            best = max(scored, key=lambda r: r['fitness'])
+            reported_fitness = best['fitness']
+            reported_metrics = dict(best['metrics'])
 
         # 5. Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -295,6 +313,8 @@ class DeepPrep:
                     "checkpoint": self.llm_model,
                     "llm_runtime": llm.runtime_metadata(),
                     "downstream_feedback": self.downstream_feedback,
+                    "downstream_eval_n": self.downstream_eval_n,
+                    "candidate_scores": run.solution_attempts,
                 },
                 f,
                 ensure_ascii=False,

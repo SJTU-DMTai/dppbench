@@ -1,13 +1,12 @@
-# llm_backend (default: api): LLM backend, either api or local.
-llm_backend: api
-# Official experiments use Qwen2.5-Coder; map this name in apikeys/provider config.
-llm_model: qwen2.5-coder-32b-instruct
+# Use the shared local Qwen3-8B checkpoint for DPPBench LLM baselines.
+llm_backend: local
+llm_model: /mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
 # api_key (default: null): Loaded from project apikeys.json; keep null.
 api_key: null
 # base_url (default: null): Loaded from project apikeys.json; keep null.
 base_url: null
 # Official BAT generation parameters.
-temperature: 0.1
+temperature: 0.4
 top_p: 0.8
 # max_tokens (default: 2048): Maximum tokens per LLM response.
 max_tokens: 2048
@@ -20,18 +19,18 @@ max_depth: 5
 # max_chain_len (default: 6): Maximum operator chain length proposed by LLM.
 max_chain_len: 6
 # n_action_samples (default: 1): LLM samples per expandable BAT action.
-n_action_samples: 1
+n_action_samples: 2
 # exploration_constant (default: 1.0): UCB exploration constant.
 exploration_constant: 1.0
 # early_stop_n_paths (default: 2): Number of best terminal paths before early stop.
 early_stop_n_paths: 2
 # Deprecated compatibility key; official BAT stops only at reward == 1.0.
 early_stop_eps: 0.001
-# Official BAT uses schema-only target-column recall during MCTS.
+# DPPBench combines target-column recall with sampled validation fitness.
 reward_alpha: 1.0
-reward_beta: 0.0
+reward_beta: 1.0
 reward_gamma: 0.0
-use_downstream: false
+use_downstream: true
 # use_llm_judge (default: false): Enable optional LLM judge reward channel.
 use_llm_judge: false
 # Compatibility key; implementation uses exact set equality for columns_match.
@@ -40,8 +39,8 @@ columns_match_threshold: 1.0
 small_n: 0
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
 eval_full: true
-# downstream_eval_n (default: 3000): In-loop downstream eval subsample; 0 is full.
-downstream_eval_n: 3000
+# downstream_eval_n (default: 10000): In-loop downstream eval subsample; 0 is full.
+downstream_eval_n: 10000
 # seed (default: 42): Random seed for MCTS and evaluation.
 seed: 42
 # fast_train (default: true): Enable search-time fast training overrides.

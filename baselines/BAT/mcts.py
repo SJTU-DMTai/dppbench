@@ -13,18 +13,25 @@ from __future__ import annotations
 
 import math
 import random
+import time
+import torch
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
+from baselines.common.llm_quantization import LocalModelInitializationError
 from baselines.common.data_ctx import DataContext
+from baselines.common.budget import BudgetExceededError, get_active_budget
 
 from .action import (
     ActionContext,
     BaseAction,
+    _pipeline_key,
+    evaluate_downstream_feedback,
     get_valid_action_space_for_node,
 )
 from .node import MCTSNode, MCTSNodeType
 from .reward import BATReward
+from .llm_client import BATSearchTimeLimit
 
 if TYPE_CHECKING:
     from baselines.DeepPrep.llm_client import LLMClient
@@ -73,6 +80,7 @@ class MCTSSolver:
         self.early_stop_eps = float(early_stop_eps)
         self.rng = random.Random(seed)
         self.verbose = bool(verbose)
+        self.previous_pipeline_texts: list[str] = []
 
     # ------------------------------------------------------------------
     def _log(self, *a, **kw) -> None:
@@ -89,6 +97,8 @@ class MCTSSolver:
             max_chain_len=self.max_chain_len,
             n_action_samples=self.n_action_samples,
             verbose=self.verbose,
+            previous_pipeline_texts=self.previous_pipeline_texts,
+            downstream_evaluator=getattr(self.reward_model, 'downstream_evaluator', None),
         )
 
     # ------------------------------------------------------------------
@@ -154,6 +164,8 @@ class MCTSSolver:
             raise AssertionError("BAT expands only childless nodes")
         if not self._restore_node_state(node):
             return []
+        if node.node_type == MCTSNodeType.TRANSFORMATION:
+            evaluate_downstream_feedback(node, self._action_ctx())
         legal_actions = get_valid_action_space_for_node(node)
         if not legal_actions:
             return []
@@ -162,10 +174,24 @@ class MCTSSolver:
             action: BaseAction = action_cls()
             try:
                 children = action.create_children_nodes(node, self._action_ctx())
+            except BATSearchTimeLimit:
+                if new_children:
+                    return new_children
+                raise
+            except BudgetExceededError:
+                raise
+            except LocalModelInitializationError:
+                raise
+            except torch.cuda.OutOfMemoryError:
+                raise
             except Exception as e:
                 self._log(f"action {action_cls.__name__} failed: {e}")
                 continue
             for c in children:
+                if c.is_terminal():
+                    value, breakdown = self.reward_model.score(c)
+                    c.reward_value = value
+                    c.reward_breakdown = breakdown
                 node.children.append(c)
                 new_children.append(c)
         self.rng.shuffle(node.children)
@@ -194,38 +220,65 @@ class MCTSSolver:
     def solve(self) -> MCTSResult:
         root = MCTSNode(node_type=MCTSNodeType.ROOT, parent=None, depth=0)
         perfect_nodes: list[MCTSNode] = []
+        seen_pipelines: set[str] = set()
         n_completed_rollouts = 0
+        previous_rollout_seconds = 0.0
 
         for it in range(self.max_rollout_steps):
+            budget = get_active_budget()
+            if budget and n_completed_rollouts and budget.max_seconds is not None:
+                remaining = budget.max_seconds - budget.elapsed_seconds
+                if remaining < previous_rollout_seconds:
+                    self._log(f"stopping before rollout {it + 1}: {remaining:.1f}s remain")
+                    break
+            rollout_started_at = time.monotonic()
             self._log(f"--- rollout {it + 1}/{self.max_rollout_steps} ---")
             # 1. Selection
-            leaf = self.select(root)
-
-            # 2. Expansion (skip if leaf is terminal)
-            if not leaf.is_terminal():
-                children = self.expand(leaf)
-                if children:
-                    leaf = self.rng.choice(children)
-                else:
-                    continue
-
-            # 3. Simulation
-            end_node = leaf if leaf.is_terminal() else self.simulate(leaf)
+            try:
+                leaf = self.select(root)
+                if not leaf.is_terminal():
+                    children = self.expand(leaf)
+                    if children:
+                        leaf = self.rng.choice(children)
+                    else:
+                        continue
+                end_node = leaf if leaf.is_terminal() else self.simulate(leaf)
+            except BATSearchTimeLimit as exc:
+                if not any(n.reward_value is not None for n in self._find_end_nodes(root)):
+                    raise
+                self._log(f"stopping with evaluated candidates: {exc}")
+                break
             if not end_node.is_terminal():
                 self._log("simulation failed to reach END; skipping rollout")
                 continue
 
             # 4. Reward + backprop
-            reward, breakdown = self.reward_model.score(end_node)
+            if end_node.reward_value is None:
+                reward, breakdown = self.reward_model.score(end_node)
+                end_node.reward_value = reward
+                end_node.reward_breakdown = breakdown
+            else:
+                reward, breakdown = end_node.reward_value, end_node.reward_breakdown
             self.backpropagate(end_node, reward)
             n_completed_rollouts += 1
+            previous_rollout_seconds = time.monotonic() - rollout_started_at
 
             self._log(
                 f"end reward={reward:.4f} breakdown={breakdown} "
                 f"ops={[s.op for s in end_node.final_pipeline_steps]}"
             )
 
-            if reward == 1.0:
+            pipeline_key = _pipeline_key(end_node.final_pipeline_steps)
+            is_new_pipeline = pipeline_key not in seen_pipelines
+            if is_new_pipeline:
+                seen_pipelines.add(pipeline_key)
+                chain = " --> ".join(
+                    f"{step.op}(" + ", ".join(
+                        f"{key}={value!r}" for key, value in step.params.items()
+                    ) + ")" for step in end_node.final_pipeline_steps
+                )
+                self.previous_pipeline_texts.append(chain)
+            if reward == 1.0 and is_new_pipeline:
                 perfect_nodes.append(end_node)
                 if len(perfect_nodes) >= self.early_stop_n_paths:
                     self._log(
@@ -236,16 +289,19 @@ class MCTSSolver:
 
         end_nodes = self._find_end_nodes(root)
         selected_nodes = list(perfect_nodes[: self.early_stop_n_paths])
+        selected_keys = {_pipeline_key(node.final_pipeline_steps) for node in selected_nodes}
         if len(selected_nodes) < self.early_stop_n_paths:
             ranked = sorted(
-                end_nodes,
-                key=lambda node: node.Q / node.N if node.N else 0.0,
+                [node for node in end_nodes if node.reward_value is not None],
+                key=lambda node: node.Q / node.N if node.N else node.reward_value,
                 reverse=True,
             )
             for node in ranked:
-                if node in selected_nodes:
+                key = _pipeline_key(node.final_pipeline_steps)
+                if key in selected_keys:
                     continue
                 selected_nodes.append(node)
+                selected_keys.add(key)
                 if len(selected_nodes) >= self.early_stop_n_paths:
                     break
         best_paths = [

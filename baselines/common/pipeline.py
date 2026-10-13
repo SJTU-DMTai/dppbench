@@ -1069,6 +1069,7 @@ def repair(
     ctx: DataContext,
     *,
     sort_steps: bool = True,
+    rng: _random.Random | None = None,
 ) -> "Pipeline":
     """In-place structural repair. Returns the same pipeline.
 
@@ -1090,12 +1091,12 @@ def repair(
     ]
 
     if ctx.secondary_tables and "JoinTable" not in pipeline.op_names():
-        step = make_step("JoinTable", ctx, _random.Random())
+        step = make_step("JoinTable", ctx, rng if rng is not None else _random.Random())
         if step is not None:
             pipeline.steps.insert(0, step)
 
     if task_type == "rec":
-        rng = _random.Random()
+        rng = rng if rng is not None else _random.Random()
         existing = {step.op for step in pipeline.steps}
         required = ["CreateSequence"]
         for op_name in required:
@@ -1104,14 +1105,14 @@ def repair(
                 if step is not None:
                     pipeline.steps.append(step)
     else:
-        ensure_tabular_tail(pipeline, ctx)
+        ensure_tabular_tail(pipeline, ctx, rng=rng)
 
     return pipeline
 
 
-def ensure_tabular_tail(pipeline: "Pipeline", ctx: DataContext) -> None:
+def ensure_tabular_tail(pipeline: "Pipeline", ctx: DataContext, *, rng: _random.Random | None = None) -> None:
     """Ensure tabular pipelines include LabelEncode and HandleMV."""
-    rng = _random.Random()
+    rng = rng if rng is not None else _random.Random()
     if "LabelEncode" not in pipeline.op_names():
         step = make_step("LabelEncode", ctx, rng)
         if step is not None:
@@ -1632,7 +1633,7 @@ class Evaluator:
     def __init__(
         self,
         data_name: str,
-        metric_key: str = "auc",
+        metric_key: str | None = None,
         device: str = "cpu",
         data_dir: str | None = None,
         task_dir: str | None = None,

@@ -6,9 +6,9 @@ EXPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/dengjiale/dppbench/output/exps_1_1}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_1_1}"
 GPU_ID="${GPU_ID:-1}"
-CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large}"
+CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
 QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 MAX_PIPELINE_LEN="${MAX_PIPELINE_LEN:-10}"
@@ -105,16 +105,16 @@ parse_common_args() {
 
 parse_common_args "$@"
 
-# DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
-DEFAULT_TASKS="citibike_jc_hourly"
+DEFAULT_TASKS="amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy"
+TASKS="${TASKS:-${DEFAULT_TASKS}}"
 
-# DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe DAGPipe"
+# DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
 
 # baselines not based on LLMs
-DEFAULT_BASELINES="Learn2Clean"
+# DEFAULT_BASELINES="DiffPrep"
 
 # baselines based on LLMs
-# DEFAULT_BASELINES="BAT DeepPrep CtxPipe FlowPipe"
+DEFAULT_BASELINES="BAT DeepPrep CtxPipe FlowPipe"
 
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 

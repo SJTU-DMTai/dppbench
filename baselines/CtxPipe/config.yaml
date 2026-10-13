@@ -16,5 +16,5 @@ illegal_penalty: -1.0
 failure_reward: -1.0
 seed: 42
 fast_train: false
-gte_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large
+gte_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
 context_cache_dir: /mnt/sdb/dengjiale/dppbench/outputs/CtxPipe/context_cache

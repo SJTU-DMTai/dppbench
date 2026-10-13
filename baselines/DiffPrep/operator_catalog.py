@@ -7,9 +7,9 @@ and annotates every operator with a ``slot_kind`` flag:
   ``x_i = sum_j beta_ij f_ij(x_{i-1})`` mixture in :mod:`baselines.DiffPrep.soft_ops`.
 
 * ``"hard"``  -- structural / non-feature-wise (joins, splits, sequence build,
-  outlier row removal, etc.). The continuous pipeline samples one candidate
-  per slot using Gumbel-Softmax + Straight-Through estimator instead of a
-  weighted mixture.
+  outlier row removal, etc.). These have no faithful tensor forward here.
+  Optional hard choices are excluded; required structural adapters are fixed
+  and replayed only by the final dataframe evaluator.
 
 The classification follows the plan in
 ``.trae/documents/diffprep_baseline_implementation_plan.md`` (section 3.2)

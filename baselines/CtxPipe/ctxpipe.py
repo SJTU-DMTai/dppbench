@@ -235,6 +235,9 @@ class CtxPipe:
             verbose=self.verbose,
         )
         train_out = trainer.train()
+        import json
+        with open(os.path.join(self.output_dir, 'training_stats.json'), 'w') as handle:
+            json.dump(train_out['training_stats'], handle, indent=2)
 
         # 5. Inference (greedy).
         tester = CtxPipeTester(verbose=self.verbose)
@@ -319,6 +322,7 @@ class CtxPipe:
             "best_pipeline_path": out_yaml,
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
+            "training_stats": train_out['training_stats'],
             "final_pipeline_ops": [s.op for s in best_pipeline.steps],
             "is_legal": check_pipeline(best_pipeline, data_ctx).valid,
             "eval_error": eval_error,

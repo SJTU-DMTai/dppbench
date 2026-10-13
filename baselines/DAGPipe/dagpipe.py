@@ -16,7 +16,8 @@ from baselines.common.budget import get_active_budget
 from baselines.common.executor import TrainingExecutor
 from .evaluator import training_splits
 from .pipeline import DAGPipePipeline
-from .runtime import InputEncoder, limited_layers, make_model, check_resources
+from .tabular_adapter import tabular_adapter, augment_splits
+from .runtime import InputEncoder, limited_layers, make_model, check_resources, reference_forward
 from .task_adapter import rec_adapter, rec_splits, fit_rec_schema, graph_splits
 
 
@@ -86,12 +87,27 @@ class DAGPipe:
                 exclude = {target, data.id_col, 'time_step', '__split__', 'sample_weight'}
             else:
                 splits = training_splits(data, cfg, include_std_test=False)
+                adapter = tabular_adapter(self.data_name)
+                adapter['task_type'] = task_type
+                splits = augment_splits(data, splits, adapter)
                 target = data.target_col
                 exclude = {target, data.id_col, 'sample_weight', '__split__', getattr(data, '_sort_col', None)}
                 columns = [c for c in splits['train'] if c not in exclude]
             train, val = splits['train'], splits['val']
             exclude.update(self.cfg.get('exclude_columns', {}).get(self.data_name, []))
             columns = [c for c in columns if c not in exclude]
+            input_diagnostics = None
+            if self.data_name == 'berka':
+                input_diagnostics = {
+                    'berka_history_version': adapter.get('berka_history_version', 0),
+                    'feature_columns': columns,
+                    'splits': {name: {
+                        'rows': len(frame),
+                        'positive_labels': int((frame[target] == 1).sum()),
+                        'rows_with_preloan_history': int((frame['trans__count'] > 0).sum()),
+                    } for name, frame in (('train', train), ('val', val))},
+                }
+                print('[DAGPipe inputs] ' + json.dumps(input_diagnostics, ensure_ascii=False))
             if len(train) < 2 or len(val) < 2:
                 raise ValueError('DAGPipe needs >=2 train and >=2 validation rows')
             encoder = InputEncoder().fit(train[columns])
@@ -138,11 +154,10 @@ class DAGPipe:
                                      lr=float(self.cfg['learning_rate']))
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
         generator = torch.Generator().manual_seed(self.seed)
+        # Fixed before optimization and reused by validation and deployment.
+        reference_idx = torch.randperm(len(x_train), generator=generator)[:int(self.cfg['reference_rows'])]
+        reference = x_train[reference_idx].to(self.device)
         epochs = int(self.cfg['epochs'])
-        if budget and budget.max_evaluations is not None:
-            epochs = min(epochs, budget.max_evaluations-budget.evaluations_used)
-        if epochs < 1:
-            raise RuntimeError('DAGPipe has no remaining search evaluations')
         best_loss, best_state, stale, updates = float('inf'), None, 0, 0
         history = []
 
@@ -158,13 +173,11 @@ class DAGPipe:
             for idx in perm.split(batch_size):
                 check_resources()
                 x, y = x_train[idx].to(self.device), y_train[idx].to(self.device)
-                if len(x) == 1:
-                    x = torch.cat([x_train[:1].to(self.device), x])
-                predictions = predictor(model(x))[-len(y):]
+                predictions = predictor(reference_forward(model, x, reference))
                 loss = task_loss(predictions, y)
                 penalty = model.dag_penalty()/(model.num_layers+1)
-                sparse = torch.sigmoid(model.layer_adj_logits).sum()
-                sparse = sparse + sum(torch.sigmoid(a).sum() for a in model.intra_adj_logits)
+                sparse = torch.triu(torch.sigmoid(model.layer_adj_logits), diagonal=1).sum()
+                sparse = sparse + sum(torch.triu(torch.sigmoid(a), diagonal=1).sum() for a in model.intra_adj_logits)
                 loss = loss + float(self.cfg['lambda_dag'])*penalty + float(self.cfg['lambda_sparse'])*sparse
                 if not torch.isfinite(loss):
                     raise RuntimeError(f'DAGPipe non-finite training loss at epoch {epoch+1}')
@@ -175,10 +188,7 @@ class DAGPipe:
                 optimizer.step()
                 updates += 1
                 total_train += loss.item()*len(y)
-            if budget:
-                budget.consume_evaluation()
-            # Original validation minibatch semantics, but genuinely held-out val.
-            # No std-test data is loaded here. Final HPO uses inductive wrapper.
+            # Same train-only reference protocol as final downstream evaluation.
             model.eval(); predictor.eval()
             total_val = 0.0
             with torch.no_grad():
@@ -186,9 +196,7 @@ class DAGPipe:
                     check_resources()
                     x = x_val[start:start+batch_size].to(self.device)
                     y = y_val[start:start+batch_size].to(self.device)
-                    if len(x) == 1:
-                        x = torch.cat([x_train[:1].to(self.device), x])
-                    loss = task_loss(predictor(model(x))[-len(y):], y)
+                    loss = task_loss(predictor(reference_forward(model, x, reference)), y)
                     if not torch.isfinite(loss):
                         raise RuntimeError(f'DAGPipe non-finite validation loss at epoch {epoch+1}')
                     total_val += loss.item()*len(y)
@@ -206,10 +214,9 @@ class DAGPipe:
                 break
         if best_state is None:
             raise RuntimeError('DAGPipe produced no valid checkpoint')
-        reference_idx = torch.randperm(len(x_train), generator=generator)[:int(self.cfg['reference_rows'])]
         payload = {
-            'format': 'dppbench.DAGPipe.reference.v1', 'task': self.data_name,
-            'seed': self.seed, 'variant': 'official_daghie_train_reference',
+            'format': 'dppbench.DAGPipe.reference.v2', 'task': self.data_name,
+            'seed': self.seed, 'variant': 'daghie_inductive_reference_v2',
             'adapter': adapter,
             'dtype': self.cfg.get('dtype', 'float64'),
             'excluded_columns': sorted(c for c in exclude if c),
@@ -228,15 +235,19 @@ class DAGPipe:
                'surrogate': 'node_attribute_mlp' if task_type == 'graph' else 'feature_mlp',
                'n_train': len(x_train), 'n_val': len(x_val), 'n_features': len(columns),
                'epochs_completed': len(history), 'architecture_steps': updates,
-               'n_unique_evaluations': len(history), 'best_epoch': best_epoch,
-               'n_steps': len(pipeline), 'ops': pipeline.op_names(), 'history': history,
+               'n_unique_evaluations': 0, 'best_epoch': best_epoch,
+               'n_steps': len(pipeline), 'step_semantics': 'weighted_dag_nodes_including_adapters',
+               'evaluation_semantics': 'downstream_pipeline_evaluations_excluding_final_hpo',
+               'ops': pipeline.op_names(), 'history': history,
                'construct_time_s': time.monotonic()-started,
                'search_metric': 'negative_normalized_mse' if regression else 'negative_cross_entropy',
                'budget': budget.snapshot() if budget else None}
+        if input_diagnostics is not None:
+            log['input_diagnostics'] = input_diagnostics
         (self.output_dir/'DAGPipe_search.json').write_text(json.dumps(log, indent=2), encoding='utf-8')
         check_resources()
         return {'best_pipeline_yaml': pipeline.to_yaml(), 'best_fitness': -best_loss,
-                'n_unique_evaluations': len(history), 'is_legal': True, 'eval_error': None}
+                'n_unique_evaluations': 0, 'is_legal': True, 'eval_error': None}
 
     def get_pipeline(self):
         if not hasattr(self, 'best_pipeline'):

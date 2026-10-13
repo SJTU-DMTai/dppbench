@@ -15,10 +15,10 @@ def source_info(obj):
 def probe_pipeline(task, task_type):
     from .pipeline import DAGPipePipeline
     from .runtime import make_model
-    layers = [['MeanImputer']]
+    layers = [['Identity']]
     model = make_model(layers, 1)
     return DAGPipePipeline({
-        'format': 'dppbench.DAGPipe.reference.v1', 'task': task, 'seed': 42,
+        'format': 'dppbench.DAGPipe.reference.v2', 'task': task, 'seed': 42,
         'adapter': {'task_type': task_type}, 'layers': layers,
         'encoder': [{'column': 'probe', 'kind': 'numeric', 'fill': 0., 'mean': 0., 'scale': 1.}],
         'state_dict': {k: v.detach().cpu().tolist() for k, v in model.state_dict().items()},
@@ -33,6 +33,8 @@ def check_runtime(*, task_dir, data_name, model_name=None, evaluator_class=None)
     Passing this check proves routing compatibility, not dataset/model fitness.
     """
     from .evaluator import DAGPipeEvaluator, DAGPipeExecutor
+    from .tabular_adapter import augment_splits
+    from .runtime import reference_forward
     from scripts.final_model_hpo import resolve_evaluator_class
     evaluator_class = evaluator_class or DAGPipeEvaluator
     evaluator = evaluator_class(task_dir=task_dir, data_name=data_name,
@@ -62,6 +64,8 @@ def check_runtime(*, task_dir, data_name, model_name=None, evaluator_class=None)
         if rejected.success or len(calls) != 1:
             raise RuntimeError('DAGPipe runtime failed to reject a mismatched checkpoint')
         return {'task': data_name, 'status': 'passed',
+                'tabular_adapter': source_info(augment_splits),
+                'reference_transform': source_info(reference_forward),
                 'evaluate': source_info(evaluator_class.evaluate),
                 'validator': source_info(evaluator_class._check_pipeline),
                 'executor': source_info(type(evaluator._executor)),

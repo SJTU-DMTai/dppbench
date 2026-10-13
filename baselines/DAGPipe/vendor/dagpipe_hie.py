@@ -29,8 +29,8 @@ class HierarchicalDAGPipe(nn.Module):
         ])
 
 
-    def forward(self, x):
-        layer_adj = torch.sigmoid(self.layer_adj_logits)
+    def forward(self, x, reference_rows=None):
+        layer_adj = torch.triu(torch.sigmoid(self.layer_adj_logits), diagonal=1)
 
         layer_outputs = []
 
@@ -39,7 +39,7 @@ class HierarchicalDAGPipe(nn.Module):
         for layer_idx in range(self.num_layers):
             routing = self.routers[layer_idx]()
 
-            intra_adj = torch.sigmoid(self.intra_adj_logits[layer_idx])
+            intra_adj = torch.triu(torch.sigmoid(self.intra_adj_logits[layer_idx]), diagonal=1)
 
             layer_ops = self.op_layers[layer_idx]
             layer_size = self.layer_sizes[layer_idx]
@@ -51,7 +51,11 @@ class HierarchicalDAGPipe(nn.Module):
 
                 weighted_input = current_input * routing[:, op_idx].unsqueeze(0)  # [B, D] * [D] -> [B, D]
 
-                out = op(weighted_input)
+                if reference_rows is None:
+                    out = op(weighted_input)
+                else:
+                    from ..runtime import reference_operation
+                    out = reference_operation(op, weighted_input, reference_rows)
 
                 for prev_op_idx in range(op_idx):
                     weight = intra_adj[prev_op_idx, op_idx]
@@ -74,12 +78,12 @@ class HierarchicalDAGPipe(nn.Module):
         return layer_outputs[-1]
 
     def dag_penalty(self):
-        layer_adj = torch.sigmoid(self.layer_adj_logits)
+        layer_adj = torch.triu(torch.sigmoid(self.layer_adj_logits), diagonal=1)
         layer_penalty = acyclicity_constraint(layer_adj)
 
         intra_penalties = []
         for layer_idx in range(self.num_layers):
-            intra_adj = torch.sigmoid(self.intra_adj_logits[layer_idx])
+            intra_adj = torch.triu(torch.sigmoid(self.intra_adj_logits[layer_idx]), diagonal=1)
             intra_penalties.append(acyclicity_constraint(intra_adj))
 
         return layer_penalty + sum(intra_penalties)

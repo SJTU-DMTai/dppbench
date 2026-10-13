@@ -1,8 +1,7 @@
 """Train-only input conversion and inductive execution of the original network.
 
-Each query is evaluated with the same fixed training reference rows. Original
-batch-statistic operators remain unchanged; other query rows never enter its
-context. This is an explicit deployment protocol, not a paper discretization.
+All stages fit operator statistics only on the same fixed training reference.
+Query rows never contribute to statistics, including during search. This is an explicit deployment protocol, not a paper discretization.
 """
 from __future__ import annotations
 
@@ -18,12 +17,37 @@ from baselines.common.budget import get_active_budget
 from .vendor import operations as ops
 from .vendor.dagpipe_hie import HierarchicalDAGPipe
 
+# InputEncoder already imputes and ordinal-encodes. Do not count ineffective
+# imputer/target-encoder nodes. These operators all have defined inductive semantics.
 LAYERS = [
-    ['MeanImputer', 'MedianImputer', 'KNNImputer'],
-    ['TargetEncoder', 'FrequencyEncoder'],
-    ['StandardScaler', 'RobustScaler', 'MinMaxScaler', 'QuantileScaler', 'LogScaler', 'PolynomialTransform'],
-    ['StandardScaler', 'RobustScaler', 'MinMaxScaler', 'QuantileScaler', 'LogScaler', 'PolynomialTransform'],
+    ['Identity', 'StandardScaler', 'RobustScaler', 'MinMaxScaler', 'PolynomialTransform'],
+    ['Identity', 'StandardScaler', 'RobustScaler', 'MinMaxScaler', 'PolynomialTransform'],
 ]
+
+
+def reference_operation(op, x, reference_rows):
+    """Fit statistics on the training reference prefix, never on query rows."""
+    ref = x[:reference_rows]
+    if isinstance(op, torch.nn.Identity):
+        return x
+    if isinstance(op, ops.PolynomialTransform):
+        return op(x)
+    if isinstance(op, ops.StandardScaler):
+        center, scale = ref.mean(0, keepdim=True), ref.std(0, keepdim=True)
+    elif isinstance(op, ops.RobustScaler):
+        center = ref.median(0, keepdim=True).values
+        scale = torch.quantile(ref, .75, dim=0, keepdim=True) - torch.quantile(ref, .25, dim=0, keepdim=True)
+    elif isinstance(op, ops.MinMaxScaler):
+        center = ref.min(0, keepdim=True).values
+        scale = ref.max(0, keepdim=True).values - center
+    else:
+        raise ValueError(f'Unsupported inductive DAGPipe operator: {type(op).__name__}')
+    scale = torch.where(scale.abs() <= 1e-8, torch.ones_like(scale), scale)
+    return (x-center)/scale
+
+
+def reference_forward(model, queries, reference):
+    return model(torch.cat([reference, queries], dim=0), reference_rows=len(reference))[len(reference):]
 
 
 def limited_layers(max_nodes):
@@ -45,7 +69,7 @@ def make_model(layers, n_features, device='cpu', dtype=torch.float64):
     if any(name not in allowed for layer in layers for name in layer):
         raise ValueError('Unknown DAGPipe operation in checkpoint')
     return HierarchicalDAGPipe(n_features, [
-        [getattr(ops, name)() for name in layer] for layer in layers
+        [torch.nn.Identity() if name == 'Identity' else getattr(ops, name)() for name in layer] for layer in layers
     ]).to(device=device, dtype=dtype)
 
 
@@ -140,15 +164,13 @@ class FrozenTransform:
             return self.cache[key].copy()
         out = np.empty_like(x)
         with torch.no_grad():
-            for i, row in enumerate(x):
-                if i % 32 == 0:
-                    check_resources()
-                query = torch.as_tensor(row, device=self.reference.device, dtype=self.reference.dtype).unsqueeze(0)
-                # A fixed training context plus this query, never other test rows.
-                value = self.model(torch.cat([self.reference, query], dim=0))[-1]
+            for start in range(0, len(x), 1024):
+                check_resources()
+                query = torch.as_tensor(x[start:start+1024], device=self.reference.device, dtype=self.reference.dtype)
+                value = reference_forward(self.model, query, self.reference)
                 if not torch.isfinite(value).all():
-                    raise ValueError(f'DAGPipe non-finite transform at query row {i}')
-                out[i] = value.cpu().numpy()
+                    raise ValueError(f'DAGPipe non-finite transform at query row {start}')
+                out[start:start+len(query)] = value.cpu().numpy()
         if self.cache_entries:
             self.cache[key] = out.copy()
             while len(self.cache) > self.cache_entries:

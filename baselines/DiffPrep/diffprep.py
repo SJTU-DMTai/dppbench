@@ -437,9 +437,9 @@ class DiffPrep:
         else:
             # Use the task's frozen training pool and its own split protocol.
             # In particular, time-series validation must remain chronological.
-            data.load_std_test_frozen()
-            train_cfg = train_evaluator._executor.get_model_config().get("train", {})
-            splits = data.split(val_ratio=train_cfg.get("val_ratio", .2), seed=self.seed)
+            from .data_protocol import tabular_search_splits
+            splits = tabular_search_splits(data, train_evaluator._executor.get_model_config(),
+                                          self.seed, self.small_n)
             train_frame, val_frame = splits["train"], splits["val"]
             if train_frame.empty or val_frame.empty:
                 raise ValueError("DiffPrep requires nonempty training and validation partitions")
@@ -527,6 +527,12 @@ class DiffPrep:
         # 5) Discretise
         rng = _random.Random(self.seed)
         pipe = discretize(cont, slots, ctx, rng=rng)
+        pipe.metadata['diffprep_search_contract'] = {
+            'version': 2,
+            'structural_operations': 'fixed_seeded_adapters_not_differentiably_optimized',
+            'search_feature_columns': list(cont.feature_names),
+            'exported_joins': [s.params for s in pipe.steps if s.op == 'JoinTable'],
+        }
         discrete_slot_order = slot_order(cont)
         check_report = check_pipeline(pipe, ctx)
         if not check_report.valid:
@@ -539,6 +545,13 @@ class DiffPrep:
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
         with open(out_yaml_path, "w", encoding="utf-8") as f:
             f.write(pipe.to_yaml())
+        # The common Pipeline YAML does not serialize arbitrary metadata.
+        # Persist the audit explicitly rather than silently losing it at export.
+        search_contract = pipe.metadata['diffprep_search_contract']
+        with open(os.path.join(self.output_dir, 'search_contract.json'), 'w', encoding='utf-8') as f:
+            json.dump(search_contract, f, ensure_ascii=False, indent=2)
+        if self.verbose:
+            print('[DiffPrep search contract] ' + json.dumps(search_contract, ensure_ascii=False))
 
         weights_path = os.path.join(self.output_dir, "pipeline_weights.pt")
         try:
@@ -609,6 +622,7 @@ class DiffPrep:
 
         return {
             "best_pipeline_yaml": pipe.to_yaml(),
+            "search_contract": search_contract,
             "best_pipeline_path": out_yaml_path,
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,

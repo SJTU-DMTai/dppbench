@@ -1,8 +1,9 @@
-"""Final-pipeline evaluator for DeepPrep.
+"""Shared downstream evaluator for DeepPrep.
 
 Used both:
 * at the very end of ``DeepPrep.run()`` to score the pipeline (full data),
 * after DeepPrep inference for DPPBench reporting.
+* during search on a fixed-size sample for validation fitness feedback.
 """
 from __future__ import annotations
 
@@ -11,13 +12,14 @@ from typing import Optional
 from baselines.common.evaluator import EvaluationResult
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
+from baselines.common.budget import BudgetExceededError
 
 
 class DeepPrepEvaluator(SearchPipelineEvaluator):
     """Thin alias of :class:`SearchPipelineEvaluator` exposed under a DeepPrep-named
     class so users (and external benchmark harnesses) can identify the
     baseline easily. Functionally identical: it runs the downstream
-    LightGBM (tabular) or DIN (rec) training and returns the AUC.
+    LightGBM (tabular) or DIN (rec) training and returns task-specific validation fitness.
     """
 
     def __init__(
@@ -25,7 +27,7 @@ class DeepPrepEvaluator(SearchPipelineEvaluator):
         task_dir: str,
         data_name: str,
         data_dir: Optional[str] = None,
-        metric_key: str = "auc",
+        metric_key: str | None = None,
         verbose: bool = False,
         small_n: Optional[int] = None,
         seed: int = 42,
@@ -56,6 +58,8 @@ class DeepPrepEvaluator(SearchPipelineEvaluator):
         """
         try:
             res = self.evaluate(pipeline)
+        except BudgetExceededError:
+            raise
         except Exception as e:  # pragma: no cover - safety net
             return None, {}, f"{type(e).__name__}: {e}"
         if not res.success:

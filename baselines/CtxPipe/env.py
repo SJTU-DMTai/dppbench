@@ -47,7 +47,7 @@ class PipelineEnv:
         illegal_penalty: float = -1.0,
         failure_reward: float = -1.0,
         seed: int = 42,
-        gte_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large",
+        gte_model_path: str = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
         context_cache_dir: str = "/mnt/sdb/dengjiale/dppbench/outputs/CtxPipe/context_cache",
         device: str = "cpu",
     ) -> None:

@@ -1,0 +1,3 @@
+-r requirements.txt
+# Optional dependency from the incoming change; requires compatible CUDA/PyTorch.
+torchao==0.13.0

@@ -30,6 +30,9 @@ class FlowPipeTrainer:
         self.checkpoint_interval = int(checkpoint_interval)
         self.rng = random.Random(seed)
         os.makedirs(self.output_dir, exist_ok=True)
+        self.candidates = []
+        self.history = []
+        self.policy_updates = 0
 
     def train(self, num_epochs: int | None = None) -> list[dict]:
         if not self.combos:
@@ -38,7 +41,7 @@ class FlowPipeTrainer:
         self.rng.shuffle(shuffled)
         coverage_epochs = math.ceil(len(shuffled) / max(1, self.combos_per_epoch))
         epochs = max(int(num_epochs or coverage_epochs), coverage_epochs)
-        history = []
+        history = self.history
         combo_counter = 0
         trajectory_pool = []
         for epoch in range(epochs):
@@ -55,9 +58,19 @@ class FlowPipeTrainer:
                     reward, trajectory = self.agent.sample_trajectory(env)
                     rewards.append(reward)
                     trajectory_pool.append(trajectory)
-                losses.extend(self.agent.learn_from_batch(
+                    self.candidates.append({
+                        'reward': float(reward), 'pipeline': env.current_pipeline().copy(),
+                        'actions': list(trajectory['actions']), 'errors': list(trajectory['errors']),
+                        'logic_pipeline_id': env.logic_id,
+                        'success': trajectory.get('success', False),
+                        'fitness': trajectory.get('fitness'), 'metrics': trajectory.get('metrics', {}),
+                        'error_messages': trajectory.get('error_messages', []),
+                    })
+                update_losses = self.agent.learn_from_batch(
                     trajectory_pool, self.updates_per_combo, self.trajectory_batch_size,
-                ))
+                )
+                losses.extend(update_losses)
+                self.policy_updates += len(update_losses)
                 combo_counter += 1
                 if combo_counter % self.checkpoint_interval == 0:
                     self.agent.save(os.path.join(self.output_dir, f"combo_{combo_counter}_gfn.pt"))

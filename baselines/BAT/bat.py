@@ -1,15 +1,13 @@
 """Top-level BAT orchestrator.
 
-Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep` and
-:class:`baselines.DataMaster.data_master.DataMaster`:
+Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep`:
 
   1. Build a downstream evaluator (``BATEvaluator``) and a structural
      sandbox (re-using DeepPrep's :class:`Sandbox`).
   2. Reset the sandbox and infer the dataset's :class:`DataContext` via
      SAGA's helpers (so both tabular and rec datasets are supported).
   3. Run the MCTS solver over BAT's DPAS action set using the original
-     target-column reward. Downstream and LLM-judge terms are retained only
-     as explicitly enabled benchmark ablations.
+     combined target-column and sampled validation-metric reward.
   4. Take the first of BAT's two ranked END candidates, attach DAG metadata,
      hard-validate it without repair, and run the final evaluation.
   5. Persist YAML pipeline, agent log, search tree, and best paths under
@@ -20,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import math
 from typing import Optional
 
 from baselines.common.config import (
@@ -37,6 +36,7 @@ from .evaluator import BATEvaluator
 from .mcts import MCTSSolver
 from .reward import BATReward, BATRewardConfig
 from .sandbox import Sandbox
+from .llm_client import BATLLMClient
 
 
 CONFIG_KEYS = (
@@ -203,7 +203,9 @@ class BAT:
 
     # ------------------------------------------------------------------
     def _build_llm(self) -> LLMClient:
-        return LLMClient(
+        return BATLLMClient(
+            trace_path=os.path.join(self.output_dir, "llm_trace.jsonl"),
+            enable_thinking=False,
             backend=self.llm_backend,
             model=self.llm_model,
             api_key=self.api_key,
@@ -230,6 +232,7 @@ class BAT:
                 task_dir=self.task_dir,
                 data_name=self.data_name,
                 data_dir=self.data_dir,
+                metric_key=None,
                 small_n=self.downstream_eval_n,
                 seed=self.seed,
                 verbose=False,
@@ -358,6 +361,7 @@ class BAT:
                         "n_end_nodes": len(mcts_res.end_nodes),
                         "n_best_paths": len(mcts_res.best_paths),
                         "llm_model": self.llm_model,
+                        "llm_runtime": llm.runtime_metadata(),
                         "temperature": self.temperature,
                         "top_p": self.top_p,
                         "use_downstream": self.reward_cfg.use_downstream,
@@ -412,13 +416,12 @@ class BAT:
 
         reported_fitness = eval_fitness
         reported_metrics = eval_metrics
-        if reported_fitness is None and best_node is not None:
-            if isinstance(best_node.downstream_fitness, float):
+        if not self.eval_full and best_node is not None:
+            if (isinstance(best_node.downstream_fitness, (int, float))
+                    and math.isfinite(best_node.downstream_fitness)
+                    and not best_node.downstream_error):
                 reported_fitness = float(best_node.downstream_fitness)
                 reported_metrics = dict(best_node.downstream_metrics or {})
-            elif isinstance(best_node.reward_value, float):
-                reported_fitness = float(best_node.reward_value)
-                reported_metrics = dict(best_node.reward_breakdown or {})
 
         # 7. Persist final pipeline YAML + report.
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -446,6 +449,7 @@ class BAT:
             "best_pipeline_yaml": yaml_text,
             "best_pipeline_path": out_yaml_path,
             "best_fitness": reported_fitness,
+            "best_search_reward": best_node.reward_value if best_node is not None else None,
             "best_metrics": reported_metrics,
             "eval_error": eval_error,
             "n_rollouts": mcts_res.n_rollouts,

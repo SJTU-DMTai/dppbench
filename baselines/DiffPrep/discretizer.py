@@ -124,7 +124,7 @@ def discretize(
                 "feature_choices": selected,
             }
 
-    repair(pipe, ctx.task_type, ctx, sort_steps=not continuous.flex)
+    repair(pipe, ctx.task_type, ctx, sort_steps=not continuous.flex, rng=rng)
     assign_dag_structure(pipe, ctx, rng)
 
     flex_order_repaired = False
@@ -133,7 +133,7 @@ def discretize(
         if not report.valid:
             # Operator-level and DAG legality remain part of the benchmark
             # contract. Preserve metadata if structural repair is needed.
-            repair(pipe, ctx.task_type, ctx, sort_steps=True)
+            repair(pipe, ctx.task_type, ctx, sort_steps=True, rng=rng)
             assign_dag_structure(pipe, ctx, rng)
             flex_order_repaired = True
 

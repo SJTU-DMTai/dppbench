@@ -1,14 +1,61 @@
 # DAGPipe task adapter
 
-Numerical safeguard: RobustScaler uses unit scale for minibatch columns with
-IQR at or below epsilon. This prevents tied categories from being amplified by
-1e8; the safeguard applies to both search and frozen-transform evaluation.
+## Corrected v2 protocol
 
-This adapter learns the released hierarchical DAGPipe feature transform with a
-supervised MLP surrogate, then freezes it before training the benchmark's selected
-downstream model. Recommendation and graph support are DPPBench extensions of
-the tabular implementation, not claims of an original paper implementation for
-these task types.
+This is a DPPBench adaptation of the released hierarchical network, trained
+with an MLP surrogate and frozen before downstream HPO. It is not a verbatim
+paper implementation. Recommendation and graph support are benchmark extensions.
+
+Version 2 fixes a training reference before optimization. Every operator fits
+its statistics only on that reference, during training, validation and replay.
+Queries never affect statistics, so batching cannot change their features.
+Zero-variance/IQR/range reference columns use unit scale.
+
+InputEncoder performs training-only imputation and ordinal encoding. The search
+no longer includes redundant imputers or a TargetEncoder that never received
+labels. It uses two layers of Identity (explicit bypass), StandardScaler,
+RobustScaler, MinMaxScaler and PolynomialTransform, truncated round-robin to
+the node budget. FrequencyEncoder's vendor implementation now counts per column;
+it is excluded from the mixed numeric candidate network until a type-aware,
+training-fitted categorical encoding contract is implemented. This is a changed
+candidate space, and v1/v2 performance must not be mixed in one experiment.
+
+The network remains weighted; no discrete pipeline pruning is claimed.
+`n_steps` counts all operation nodes plus input/task adapters, and may still equal
+10 on every task. Equal node names do not imply equal learned weights.
+`n_unique_evaluations=0` for surrogate training: epochs are recorded separately
+in `DAGPipe_search.json`. Final downstream HPO is accounted for by the existing
+HPO harness, not relabeled as search evaluations. Only forward edges used by
+execution participate in sparsity/DAG penalties.
+
+Berka joins account metadata and strictly pre-loan transaction summaries.
+Each loan's transaction cutoff is checked again in the adapter; same-day and
+later events are excluded. Transaction count, amount/balance mean/max/min and
+categorical distinct counts are joined without changing loan rows or labels.
+The loader may already apply a conservative earliest-loan cutoff per account;
+the adapter does not reintroduce the discarded events. Two JoinTable nodes count
+against the node budget. Missing trans fails instead of silently using only
+account metadata. The saved `berka_history_version: 1` makes this input contract
+explicit; older account-only v2 checkpoints replay their original contract.
+Default_Credit retains the existing per-customer monthly_history mean/max/min
+features. Search and evaluation use identical joins. No target/status or
+post-loan Berka card/order information is joined.
+
+For Berka, `DAGPipe_search.json` and the console include feature names, split
+sizes, positive-label counts and training/validation history coverage. A separate
+validation-only ablation is available:
+
+```bash
+python scripts/diagnose_dagpipe_berka.py --data_dir /path/to/data --seed 42
+```
+
+Optionally supply `--pipeline /path/to/best_pipeline.yaml` to compare that v2
+checkpoint's input encoding with its learned transform under the same fixed
+LightGBM configuration. This diagnostic never evaluates std_test and does not
+select or overwrite a benchmark pipeline. Do not infer test gains from it.
+
+Checkpoints use `dppbench.DAGPipe.reference.v2`. Old v1 checkpoints are rejected
+with a retraining message. Retrain rather than changing their format string.
 
 ## Supported datasets
 
@@ -101,9 +148,9 @@ recommendation models, all three GNNs, unknown IDs, sequence histories, graph
 masks, checkpoint round-trips, and isolation of held-out data. These tests do not
 measure performance or accuracy on the complete external datasets.
 
-The inherited frozen transform evaluates each row against a fixed training
-reference to keep predictions independent of other queries. This can be
-expensive on large datasets; full-data runtime has not been benchmarked here.
+The frozen transform batches queries while fitting all statistics exclusively
+on the saved training reference. Full-data performance must be measured on the
+server; synthetic integration tests do not establish benchmark accuracy.
 
 ## Runtime diagnosis and recovery after failed final HPO
 
@@ -125,7 +172,8 @@ Synchronize the whole `baselines/DAGPipe` directory together with
 `scripts/check_dagpipe_runtime.py`. Changing only the registry class name cannot
 fix an old evaluate implementation.
 
-If search saved `best_pipeline.yaml`, reuse it without repeating search:
+If corrected v2 search saved `best_pipeline.yaml`, reuse it without repeating search
+only when inputs and code are unchanged (v1 checkpoints cannot be recovered this way):
 
 ```bash
 python scripts/evaluate_baseline.py --baseline DAGPipe --final_hpo \

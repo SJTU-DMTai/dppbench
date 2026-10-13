@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import traceback
+import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -28,6 +29,7 @@ from baselines.common.pipeline import (
     check_pipeline,
 )
 from baselines.common.search_evaluator import subsample_data_inplace
+from baselines.common.budget import BudgetExceededError
 from baselines.common.utils import get_data_ctx
 
 
@@ -103,8 +105,16 @@ class Sandbox:
         """(Re)load the original data and return the initial observation."""
         data = self._executor._make_configured_data_instance()
         data.load_data()
+        # run_pre_process() loads frozen std-test lazily and may replace the
+        # sampled training frame with the full frozen frame. Load it first so
+        # the sandbox's small-N sample is the frame actually executed.
+        data.load_std_test_frozen()
         if self.small_n > 0:
             subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)
+        # Fix train/validation partitions before any tree edge (also for RecData).
+        prepare = getattr(data, "_prepare_validation", None)
+        if callable(prepare):
+            prepare()
         self.data = data
         self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
         self._initial_snapshot = self.snapshot()
@@ -154,6 +164,13 @@ class Sandbox:
         ctx = self._context()
         try:
             assign_dag_structure(pipe, ctx, _random.Random(self.seed))
+            # This DAG executes only the next edge, not the final pipeline.
+            # Keep referenced sources; auxiliary tables remain in sandbox data
+            # and can be joined by a later edge. Final validation uses all sources.
+            referenced = set(pipe.train_prev or [])
+            for step in pipe.steps:
+                referenced.update(step.prev)
+            pipe.sources = [s for s in pipe.sources or [] if s['id'] in referenced]
             report = check_pipeline(pipe, ctx, require_mandatory=False)
             if not report.valid:
                 self.data = pickle.loads(pre_snapshot)
@@ -166,9 +183,20 @@ class Sandbox:
             chain_path = os.path.join(self._tmpdir, "chain.yaml")
             with open(chain_path, "w", encoding="utf-8") as f:
                 f.write(chain_yaml)
-            self.data.run_pre_process(chain_path)
-            if self.small_n > 0:
-                subsample_data_inplace(self.data, small_n=self.small_n, seed=self.seed)
+            if ctx.task_type == "rec":
+                # RecData.run_pre_process finalizes by remapping IDs. Doing
+                # that after every tree edge changes join keys prematurely.
+                # Execute the same shared DAG/transform logic without training
+                # finalization; final benchmark replay still uses run_pre_process.
+                self.data.interaction_df = self.data._run_relation_dag(
+                    yaml.safe_load(chain_yaml), self.data._relation_dag_available_sources(),
+                    self.data._transform_rec_dag_df,
+                )
+            else:
+                self.data.run_pre_process(chain_path)
+        except BudgetExceededError:
+            self.data = pickle.loads(pre_snapshot)
+            raise
         except Exception as e:
             err = (
                 f"{type(e).__name__}: {e}\n"
@@ -201,6 +229,7 @@ class Sandbox:
                 shape=(0, 0), columns=[], dtypes={}, head=[],
                 null_ratio=0.0, text="(no primary table available)", tables={},
             )
+        df = self._visible_frame(df)
         cols = [str(c) for c in df.columns]
         dtypes = {c: str(df[c].dtype) for c in cols}
         try:
@@ -240,6 +269,7 @@ class Sandbox:
         for name, table in named.items():
             if table is None or not hasattr(table, "columns"):
                 continue
+            table = self._visible_frame(table)
             cols = [str(c) for c in table.columns]
             dtypes = {c: str(table[c].dtype) for c in cols}
             try:
@@ -260,6 +290,13 @@ class Sandbox:
             }
         return result
 
+    @staticmethod
+    def _visible_frame(frame):
+        """Do not expose frozen-test statistics or examples to the LLM."""
+        if "__split__" in frame.columns:
+            frame = frame.loc[frame["__split__"] != "std_test"]
+        return frame.drop(columns="__split__", errors="ignore")
+
     def _render_text(self, tables: dict) -> str:
         lines = [f"materialized_tables: {list(tables)}"]
         for name, profile in tables.items():
@@ -271,7 +308,10 @@ class Sandbox:
             lines.append(f"  columns ({len(cols)}){more}:")
             for col in col_view:
                 lines.append(f"    - {col}: {profile['dtypes'][col]}")
-            lines.append(f"  sample_rows: {profile['head']}")
+            categorical = [c for c in cols if profile['dtypes'][c] in ('object', 'string', 'category')]
+            lines.append(f"  categorical_columns: {categorical}")
+            rows = [{c: row[c] for c in col_view if c in row} for row in profile['head']]
+            lines.append(f"  sample_rows (displayed columns only): {rows}")
         return "\n".join(lines)
 
 

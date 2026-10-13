@@ -196,7 +196,11 @@ class DQNAgent:
                     continue
                 model.optimizer.zero_grad()
                 loss.backward()
+                probe = list(model.network.parameters())[-1]
+                before = probe.detach().clone()
                 model.optimizer.step()
+                self.component_updates = getattr(self, 'component_updates', 0) + 1
+                self.component_parameter_changes = getattr(self, 'component_parameter_changes', 0) + int(not torch.equal(before, probe.detach()))
                 if mode == ForwardMode.GATED:
                     losses[component] = float(loss.item())
         return losses
@@ -219,7 +223,11 @@ class DQNAgent:
                 continue
             self.logical_model.optimizer.zero_grad()
             loss.backward()
+            probe = list(self.logical_model.network.parameters())[-1]
+            before = probe.detach().clone()
             self.logical_model.optimizer.step()
+            self.logical_updates = getattr(self, 'logical_updates', 0) + 1
+            self.logical_parameter_changes = getattr(self, 'logical_parameter_changes', 0) + int(not torch.equal(before, probe.detach()))
             if mode == ForwardMode.GATED:
                 gated_loss = float(loss.item())
         return gated_loss

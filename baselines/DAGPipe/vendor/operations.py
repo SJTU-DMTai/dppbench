@@ -635,9 +635,11 @@ class FrequencyEncoder(DifferentiableOperation):
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = x.shape[0]
-        unique_vals, inverse, counts = torch.unique(x, return_inverse=True, return_counts=True)
-        frequencies = counts[inverse].float() / batch_size
-        return frequencies.view_as(x)
+        columns = []
+        for column in x.unbind(dim=1):
+            _, inverse, counts = torch.unique(column, return_inverse=True, return_counts=True)
+            columns.append(counts[inverse].to(dtype=x.dtype) / batch_size)
+        return torch.stack(columns, dim=1)
 
 
 # =============================================================================

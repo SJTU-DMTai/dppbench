@@ -7,6 +7,8 @@ not maintain a private operator catalog.
 """
 from __future__ import annotations
 
+import random
+
 from baselines.common.op_spec import (
     CATALOG,
     OpCategory,
@@ -15,7 +17,9 @@ from baselines.common.op_spec import (
     operators_by_category,
     valid_targets_for,
 )
-from baselines.common.pipeline import get_category_order
+from baselines.common.pipeline import build_default_params, get_category_order, get_operator_param_names
+from baselines.common.data_ctx import DataContext
+from baselines.DeepPrep.operator_catalog import mandatory_ops_for_context
 from baselines.common.utils import get_available_ops
 
 
@@ -55,6 +59,8 @@ def format_op_descriptions(task_type: str) -> str:
             tag = "[mandatory]" if is_mandatory(spec.op_name, task_type) else "[optional]"
             required = ", ".join(spec.required_params) if spec.required_params else "none"
             defaults = ", ".join(spec.default_params.keys()) if spec.default_params else "none"
+            accepted = get_operator_param_names(spec.op_name)
+            keywords = ", ".join(sorted(accepted)) if accepted is not None else "see description"
             targets = ", ".join(valid_targets_for(spec.op_name))
             desc = (spec.nl_description or "").strip().replace("\n", " ")
             if len(desc) > 220:
@@ -62,12 +68,28 @@ def format_op_descriptions(task_type: str) -> str:
             lines.append(
                 f"- **{spec.op_name}** {tag} task={spec.task_type} "
                 f"targets=[{targets}] required=[{required}] defaults=[{defaults}] "
+                f"accepted_keywords=[{keywords}] "
                 f"param_space={_param_space_text(spec)}"
             )
             if desc:
                 lines.append(f"  description: {desc}")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def format_mandatory_examples(ctx: DataContext) -> str:
+    """Show legal context-specific calls without inserting them into a candidate."""
+    lines = []
+    for name in mandatory_ops_for_context(ctx):
+        params = build_default_params(name, ctx, random.Random(0))
+        if params is None:
+            lines.append(f"- {name}: required; choose valid keyword arguments from the catalog")
+            continue
+        if ctx.task_type == "tabular" and name in {"HandleMV", "LabelEncode"}:
+            params["cols"] = None
+        args = ", ".join(f"{key}={value!r}" for key, value in params.items())
+        lines.append(f"- {name}({args})")
+    return "\n".join(lines)
 
 
 # BAT paper function families remain operator-level because the shared

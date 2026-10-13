@@ -1,8 +1,12 @@
-# Official FlowPipe requires an offline checkpoint trained across source tasks.
+# DPPBench adaptation: train a fresh policy on each task; no offline checkpoint.
 checkpoint_path: null
+train_epochs: 20
+trajectories_per_epoch: 8
+updates_per_epoch: 1
+trajectory_batch_size: 16
 context_cache_dir: /mnt/sdb/dengjiale/dppbench/output/FlowPipe/context_embeddings
-llama_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt
-llm_name: Meta-Llama-3.1-8B
+llama_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
+llm_name: Qwen3-8B
 ctx_dim: 4096
 hidden_dim: 512
 learning_rate: 0.0005

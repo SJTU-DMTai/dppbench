@@ -11,18 +11,21 @@ import tempfile
 import numpy as np
 import pandas as pd
 import torch
+from baselines.common.state_features import unique_value_count
+from baselines.common.llm_quantization import (fp8_quantization_config, local_torch_dtype,
+    require_accelerate, model_dtype_kwargs)
 
 
-GTE_MODEL_PATH = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large"
+GTE_MODEL_PATH = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B"
 CONTEXT_CACHE_DIR = "/mnt/sdb/dengjiale/dppbench/outputs/CtxPipe/context_cache"
-CONTEXT_DIM = 1024
+CONTEXT_DIM = 4096
 MAX_CONTEXT_ROWS = 100
 MAX_COLUMNS = 100
 COLUMN_FEATURE_DIM = 33
 
 
 class GTEEmbedder:
-    """GTE-large average-pooling encoder used by upstream CtxPipe."""
+    """Average-pooling language-model encoder used by CtxPipe."""
 
     def __init__(
         self,
@@ -46,14 +49,17 @@ class GTEEmbedder:
         if self._model is not None:
             return
         if not Path(self.model_path).is_dir():
-            raise FileNotFoundError(f"GTE-large checkpoint not found: {self.model_path}")
+            raise FileNotFoundError(f"CtxPipe language-model checkpoint not found: {self.model_path}")
         from transformers import AutoModel, AutoTokenizer
+        require_accelerate(str(self.device))
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.model_path, local_files_only=True,
         )
         self._model = AutoModel.from_pretrained(
-            self.model_path, local_files_only=True,
-        ).to(self.device)
+            self.model_path, local_files_only=True, **model_dtype_kwargs(local_torch_dtype(self.device)),
+            device_map=str(self.device),
+            quantization_config=fp8_quantization_config(self.device),
+        ).eval()
 
     @staticmethod
     def _average_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -68,19 +74,21 @@ class GTEEmbedder:
             [text], max_length=512, padding=True, truncation=True,
             return_tensors="pt",
         ).to(self.device)
-        output = self._model(**inputs)
-        embedding = self._average_pool(
-            output.last_hidden_state, inputs["attention_mask"],
-        ).detach().cpu().squeeze(0)
+        with torch.no_grad():
+            output = self._model(**inputs)
+            embedding = self._average_pool(
+                output.last_hidden_state, inputs["attention_mask"],
+            ).to(dtype=torch.float32, device="cpu").squeeze(0)
         if embedding.numel() != CONTEXT_DIM:
             raise ValueError(
-                f"GTE-large must produce {CONTEXT_DIM} dimensions, got {embedding.numel()}"
+                f"CtxPipe encoder must produce {CONTEXT_DIM} dimensions, got {embedding.numel()}"
             )
         return embedding
 
     def _cache_key(self, csv_text: str) -> str:
         payload = (
-            "ctxpipe-gte-large-v1\0" + self.model_path + "\0" + csv_text
+            "ctxpipe-qwen3-8b-v2\0" + os.environ.get("DPPBENCH_LLM_QUANTIZATION", "auto")
+            + "\0" + str(self.device) + "\0" + self.model_path + "\0" + csv_text
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
@@ -178,12 +186,13 @@ def data_feature(frame: pd.DataFrame) -> np.ndarray:
         series = frame[column]
         length = max(1, len(series))
         length_m, length_e = _frexp(len(series))
-        unique_m, unique_e = _frexp(series.nunique())
+        unique_count = unique_value_count(series)
+        unique_m, unique_e = _frexp(unique_count)
         row = [
             _dtype_id(series.dtype), length_m, length_e,
             _finite(series.isnull().sum() / length),
             1.0 if column in numeric_columns else 2.0,
-            unique_m, unique_e, _finite(series.nunique() / length),
+            unique_m, unique_e, _finite(unique_count / length),
         ]
         if column in numeric_columns:
             desc = series.describe()

@@ -313,9 +313,9 @@ def parse_args():
     parser.add_argument("--max_output_rows", type=int, default=None)
     parser.add_argument("--max_output_columns", type=int, default=None)
     parser.add_argument(
-        "--ctxpipe_gte_model_path", type=str,
-        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/gte-large",
-        help="Local GTE checkpoint used by CtxPipe.",
+        "--ctxpipe_gte_model_path", "--ctxpipe_model_path", type=str,
+        default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
+        help="Local Qwen3-8B context encoder used by CtxPipe.",
     )
     parser.add_argument(
         "--deepprep_model_path", type=str,
@@ -431,6 +431,20 @@ def _apply_baseline_model_paths(
             "llama_model_path": args.qwen3_model_path,
             "llm_name": "Qwen3-8B",
         })
+
+
+def _validate_final_pipeline(evaluator, pipeline, baseline_name):
+    # Reject structurally invalid candidates before repeating identical HPO trials.
+    try:
+        report = evaluator._check_pipeline(pipeline, evaluator._get_data_context())
+        if not report.valid:
+            raise RuntimeError(
+                f"{baseline_name} produced an invalid final pipeline; skipping final training/HPO: "
+                + "; ".join(report.errors)
+            )
+    except BaseException:
+        evaluator._executor.cleanup()
+        raise
 
 
 def _run_baseline_and_eval(
@@ -559,6 +573,7 @@ def _run_baseline_and_eval(
         scoring_method="full_train",
         seed=args.seed,
     )
+    _validate_final_pipeline(evaluator, pipeline, baseline_name)
     hpo_summary = {}
     if args.final_hpo:
         from scripts.final_model_hpo import tune_final_model

@@ -19,8 +19,8 @@ class DAGPipePipeline:
         self.validate()
 
     def validate(self):
-        if self.payload.get('format') != 'dppbench.DAGPipe.reference.v1':
-            raise ValueError('Unsupported DAGPipe pipeline format')
+        if self.payload.get('format') != 'dppbench.DAGPipe.reference.v2':
+            raise ValueError('Unsupported DAGPipe pipeline format; retrain old v1 checkpoints with the corrected v2 adapter')
         for key in ('encoder', 'layers', 'state_dict', 'reference', 'task', 'seed'):
             if key not in self.payload:
                 raise ValueError(f'DAGPipe pipeline missing {key}')

@@ -4,43 +4,40 @@ from __future__ import annotations
 from typing import Optional
 
 
+# Prefer the released checkpoint's native action format. Mixing its native
+# closing tags with a newly introduced <plan> opening caused plan-only outputs.
 SYSTEM_TREE_SEARCH = """You are DeepPrep, an execution-grounded data-preparation agent.
-You search a materialized tree of intermediate table states.
-
-# Protocol
-Every response MUST contain one reasoning block followed by exactly one action.
-Use <plan>...</plan>. If your native chat template already starts a
-<think>...</think> block, that block is accepted as the plan; do not emit both.
-
-1. <expand>FULL ROOT-TO-NODE PATH --> OpA(...) --> OpB(...)</expand>
-   Emit the complete path: copy an existing materialized root-to-node path,
-   then append new concrete operator instances. For the root, emit only the
-   new instances. Every copied parameter must match the environment exactly.
-
-2. <answer>FULL ROOT-TO-LEAF PATH</answer>
-   Return the complete path of an existing leaf whose materialized tables
-   satisfy the target schema. Use <answer>root</answer> only when no operator
-   is needed.
-
-The environment, not you, emits <execute>...</execute> after an expansion.
-Never emit <execute>, <operator>, <solution>, or <backtrack> yourself.
-
-The released checkpoint's native fallback format is also accepted:
-CONCRETE_OP(...) --> CONCRETE_OP(...) </execute>
-Use it only when the chat template does not produce <expand>. The text before
-</execute> must contain only the concrete operator chain, with no prose,
-numbered list, Markdown, or invented execution result.
-
-# Constraints
-- Use only operators and parameter values in the injected DPPBench catalog.
-- Every operator instance must be concrete and use keyword arguments only.
-- Required parameters may not be omitted. The environment never guesses or
-  randomly fills missing parameters.
-- Categories are descriptive and do not impose an execution order.
-- Every operator in the mandatory contract must appear in the concrete chain,
-  even when you believe its data contribution is small.
-- To abandon a branch, choose another materialized parent in the next <expand>.
-- Do not claim success until the current tables satisfy the target schema.
+Search the materialized tree using only the supplied DPPBench operators.
+Output a brief explanation (at most 80 words), then a concrete FULL ROOT-TO-NODE
+operator chain on its own line, ending with </execute>. Example:
+Clean missing values and encode categorical features.
+HandleMV(method='median', action='impute') --> LabelEncode(cols=None) </execute>
+Do not emit <plan>, Markdown, catalog entries, or invented execution results.
+The environment executes your chain and reports the materialized path.
+To finish, return <answer>EXACT EXISTING MATERIALIZED PATH</answer>.
+The <expand>CHAIN</expand> format is also accepted. Never return reasoning alone.
+Copy an existing path exactly before appending operators; do not invent a parent.
+Every mandatory operator must appear, even if you consider it unnecessary.
+Do not reinterpret required_tables or mandatory operators as optional.
+Use exact case-sensitive names and concrete calls, never HANDLEMV --> CASTTYPE
+or operator names with explanatory parentheses. Extra joined columns are expected,
+not an error. Integer user/item IDs need not be cast to strings.
+CastType requires a dictionary, e.g. CastType(col_dtypes={'rating': 'float64'}).
+Use keyword arguments only. The environment supplies input tables; never pass
+positional table arguments, df=, or table= to common operators.
+Legal syntax examples (use actual column/table names from context):
+SortRows(by=['timestamp'], ascending=True)
+JoinTable(method='rec', item_df='$item_df', item_col='item_id')
+For key/agg joins use aux_df='$TABLE_df' and key_col='COLUMN'; do not use item_df/user_df.
+Two input nodes for JoinTable means two tables, not two preceding transformations.
+To extend an existing path, repeat that full path before --> JoinTable(...).
+Write the chain on one line; do not number operators or put explanations inside parentheses.
+CreateSequence(user_col='user_id', item_col='item_id', time_col='timestamp', seq_col='item_id_seq', max_len=50)
+CreateSequence uses seq_col and max_len, not sequence_col, max_sequence_length,
+or target_col. LabelEncode(cols=None) automatically selects categorical columns;
+prefer this to enumerating hundreds of columns. Do not encode numeric V* columns
+merely because they exist. Preserve target, identifier, and __split__ columns.
+Examples illustrate syntax, not a fixed solution. Never repeat reasoning or tags.
 """
 
 
@@ -81,8 +78,8 @@ will reject an answer that omits any of them.
 - Maximum operators in one <expand>: {max_chain_len}
 - Maximum reasoning turns: {max_explore_turn}
 
-Emit one <plan> (or the native <think> block already started by your chat
-template), then exactly one <expand> or <answer> action.
+Emit a brief explanation, then the concrete chain ending in </execute>.
+Alternatively emit exactly one <expand> or <answer> action. Never emit only a plan.
 """.strip()
 
 
@@ -115,8 +112,10 @@ def render_protocol_error(error: str, turn_left: int) -> str:
     return (
         '<execute status="FAILED" parent="unchanged">\n'
         f"error: {error}\n"
-        "No tree state was changed. Emit one <plan> (or native <think>) "
-        "followed by exactly one <expand> or <answer>.\n"
+        "No tree state was changed. Output a concrete chain ending in </execute>, "
+        "or one <expand> or <answer> action. Reasoning alone is not an action.\n"
+        "Keep the plan under 80 words; do not repeat previous reasoning.\n"
+        "Syntax example: HandleMV(method='median', action='impute') </execute>\n"
         f"turns_left: {max(0, turn_left)}\n"
         "</execute>"
     )

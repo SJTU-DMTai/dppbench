@@ -1,25 +1,25 @@
 """BAT reward model.
 
-The default path follows official BAT: terminal reward is target-column
-recall computed after executing the candidate. Optional DPPBench ablations
-may explicitly enable downstream or LLM-judge terms.
+The DPPBench default combines target-column recall with sampled validation
+fitness. Setting use_downstream=False restores the original schema-only reward.
 
   reward = alpha * column_similarity
-         + beta  * downstream_metric  (LightGBM AUC / DIN AUC)
+         + beta  * downstream_metric  (task-metric reward)
          + gamma * llm_judge          (optional, in {0, 0.5, 1})
 
-The shared downstream metric remains the final benchmark evaluator and is not
-fed into MCTS by default.
+Downstream training uses fixed model parameters through the shared evaluator.
 """
 from __future__ import annotations
 
 import re
 import json
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
+from baselines.common.search_reward import fitness_to_reward
 
 from . import prompts
 from .action import (
@@ -64,9 +64,9 @@ def _parse_llm_reward(text: str) -> Optional[float]:
 @dataclass
 class BATRewardConfig:
     alpha: float = 1.0
-    beta: float = 0.0
+    beta: float = 1.0
     gamma: float = 0.0
-    use_downstream: bool = False
+    use_downstream: bool = True
     use_llm_judge: bool = False
     columns_match_threshold: float = 1.0  # compatibility; exact equality is used
 
@@ -138,11 +138,20 @@ class BATReward:
                 downstream_metrics,
                 downstream_error,
             ) = self.downstream_evaluator.evaluate_for_agent(pipeline)
-            if isinstance(downstream_fitness, float):
-                downstream_score = max(0.0, min(1.0, downstream_fitness))
+            if downstream_fitness is None or not math.isfinite(downstream_fitness):
+                downstream_error = downstream_error or "downstream evaluation returned no finite validation fitness"
+            elif downstream_error is None:
+                downstream_score = fitness_to_reward(
+                    downstream_fitness, self.downstream_evaluator.metric_key
+                )
+        elif cfg.use_downstream and self.downstream_evaluator is None:
+            downstream_error = "downstream evaluator is required when use_downstream=True"
         end_node.downstream_fitness = downstream_fitness
+        end_node.downstream_error = downstream_error
         end_node.downstream_metrics = downstream_metrics or {}
         breakdown["downstream_fitness"] = downstream_fitness
+        breakdown["downstream_reward"] = downstream_score
+        breakdown["metric_name"] = getattr(self.downstream_evaluator, "metric_key", None)
         breakdown["downstream_metrics"] = downstream_metrics
         breakdown["downstream_error"] = downstream_error
 
@@ -194,7 +203,7 @@ class BATReward:
 
         # If pipeline did not execute, force a 0 reward so the search
         # avoids it.
-        if exec_error:
+        if exec_error or (cfg.use_downstream and downstream_error):
             reward = 0.0
 
         end_node.reward_value = reward

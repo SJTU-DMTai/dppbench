@@ -1,10 +1,10 @@
 """BAT reward model.
 
 The DPPBench default combines target-column recall with sampled validation
-AUC. Setting use_downstream=False restores the original schema-only reward.
+fitness. Setting use_downstream=False restores the original schema-only reward.
 
   reward = alpha * column_similarity
-         + beta  * downstream_metric  (LightGBM AUC / DIN AUC)
+         + beta  * downstream_metric  (task-metric reward)
          + gamma * llm_judge          (optional, in {0, 0.5, 1})
 
 Downstream training uses fixed model parameters through the shared evaluator.
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Optional
 
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline
+from baselines.common.search_reward import fitness_to_reward
 
 from . import prompts
 from .action import (
@@ -138,15 +139,19 @@ class BATReward:
                 downstream_error,
             ) = self.downstream_evaluator.evaluate_for_agent(pipeline)
             if downstream_fitness is None or not math.isfinite(downstream_fitness):
-                downstream_error = downstream_error or "downstream evaluation returned no finite validation AUC"
+                downstream_error = downstream_error or "downstream evaluation returned no finite validation fitness"
             elif downstream_error is None:
-                downstream_score = max(0.0, min(1.0, downstream_fitness))
+                downstream_score = fitness_to_reward(
+                    downstream_fitness, self.downstream_evaluator.metric_key
+                )
         elif cfg.use_downstream and self.downstream_evaluator is None:
             downstream_error = "downstream evaluator is required when use_downstream=True"
         end_node.downstream_fitness = downstream_fitness
         end_node.downstream_error = downstream_error
         end_node.downstream_metrics = downstream_metrics or {}
         breakdown["downstream_fitness"] = downstream_fitness
+        breakdown["downstream_reward"] = downstream_score
+        breakdown["metric_name"] = getattr(self.downstream_evaluator, "metric_key", None)
         breakdown["downstream_metrics"] = downstream_metrics
         breakdown["downstream_error"] = downstream_error
 

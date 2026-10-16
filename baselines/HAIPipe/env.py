@@ -7,6 +7,7 @@ import random
 import numpy as np
 
 from baselines.common.op_spec import is_mandatory
+from baselines.common.budget import BudgetExceededError
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step
 from baselines.common.utils import get_available_ops
 
@@ -55,6 +56,10 @@ class HAIPipeEnv:
 
     def _step_executes(self, steps) -> bool:
         candidate = assign_dag_structure(Pipeline(steps=list(steps)).copy(), self.ctx, self.rng)
+        referenced = set(candidate.train_prev or [])
+        for step in candidate.steps:
+            referenced.update(step.prev)
+        candidate.sources = [s for s in candidate.sources or [] if s["id"] in referenced]
         report = check_pipeline(candidate, self.ctx, require_mandatory=False)
         if not report.valid:
             return False
@@ -63,6 +68,8 @@ class HAIPipeEnv:
             if frame is None:
                 return False
             features = dataset_features(feature_frame(frame, self.ctx.target_col))
+        except BudgetExceededError:
+            raise
         except Exception:
             return False
         self.current_data_feature = features

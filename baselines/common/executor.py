@@ -6,6 +6,9 @@ import tempfile
 import traceback
 import shutil
 import copy
+import gc
+import hashlib
+import json
 import pandas as pd
 
 from baselines.common.data_loader import DATASET_REGISTRY, TaskDataLoader
@@ -109,6 +112,23 @@ class TrainingExecutor:
 
     def _make_configured_data_instance(self):
         data = self._make_data_instance()
+        if self.task_type == "graph" and not self._evaluate_std_test:
+            original_load = data.load_data
+            def load_graph_search_data(*args, **kwargs):
+                original_load(*args, **kwargs)
+                path = os.path.join(data._std_test_dir(data.data_dir), "train_frozen.parquet")
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f"Graph search requires frozen training data: {path}")
+                data.train_df = data._normalize_frozen_frame(pd.read_parquet(path))
+                if "__split__" in data.train_df and not data.train_df["__split__"].eq("train").all():
+                    raise ValueError("Graph search frozen training file contains held-out split markers")
+                data._skip_std_test_loading = True
+                small_n = getattr(data, "_search_small_n", 0)
+                if small_n:
+                    from .search_evaluator import subsample_data_inplace
+                    subsample_data_inplace(data, small_n, getattr(data, "_search_seed", 42))
+                return data.train_df, data.test_df
+            data.load_data = load_graph_search_data
         return self._data_loader.configure_data_instance(data)
 
     def get_current_yaml(self):
@@ -131,6 +151,7 @@ class TrainingExecutor:
         return output_path
 
     def cleanup(self):
+        self.clear_data_cache()
         if os.path.isdir(self._work_dir):
             shutil.rmtree(self._work_dir, ignore_errors=True)
 
@@ -182,6 +203,10 @@ class TrainingExecutor:
         self._data_loader.clear_cache()
 
     def run_training(self):
+        # Search sampling wraps bound load methods in closures. Collect the
+        # previous candidate's unreachable data/model cycles before loading
+        # another full dataset (also applies to final HPO trials).
+        gc.collect()
         if self._task_type == "tabular":
             return self._run_tabular_training()
         elif self._task_type == "graph":
@@ -268,7 +293,8 @@ class TrainingExecutor:
             result["train_shape"] = processed_df.shape
             result["n_features"] = int(max(0, processed_df.shape[1] - (1 if target_col in processed_df.columns else 0)))
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            result["success"] = False
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
 
@@ -572,6 +598,8 @@ class TrainingExecutor:
 
             result["train_shape"] = X_train.shape
             result["n_features"] = X_train.shape[1]
+            print(f"[model inputs] columns={list(X_train.columns)}")
+            print(f"[model inputs] train_sha256={_frame_digest(X_train)} val_sha256={_frame_digest(X_val)}")
 
             cat_cols = [c for c in X_train.columns if X_train[c].dtype.kind in ("O", "b")]
 
@@ -652,6 +680,7 @@ class TrainingExecutor:
                     X_std[c] = 0
                 X_std = X_std[eval_X_train_for_std.columns]
                 y_std = std_test_df[target_col].values
+                print(f"[model inputs] std_test_sha256={_frame_digest(X_std)}")
                 if eval_use_seq:
                     X_std_eval = X_std.copy()
                     for c in cat_cols:
@@ -676,7 +705,8 @@ class TrainingExecutor:
                 result["top_features"] = []
 
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            result["success"] = False
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
@@ -735,7 +765,10 @@ class TrainingExecutor:
                 if k not in ("task", "epochs", "lr", "weight_decay", "seed")
             }
             model = MODEL_MAP[model_name](in_dim=graph["x"].shape[1], **ctor_kwargs)
-            graph_result = train_graph(model, graph, model_params, train_cfg, device=self.device)
+            graph_result = train_graph(
+                model, graph, model_params, train_cfg, device=self.device,
+                evaluate_test=self._evaluate_std_test,
+            )
 
             result["success"] = True
             raw_metrics = (
@@ -753,15 +786,16 @@ class TrainingExecutor:
                 for key, value in raw_metrics.items():
                     if key.startswith("std_test_"):
                         result["metrics"][key] = value
-                    elif not key.startswith("val_"):
                         if key == "std_test_n_nodes":
                             result["metrics"]["std_test_n_rows"] = value
+                    elif not key.startswith("val_"):
                         result["metrics"][f"test_{key}"] = value
             result["train_shape"] = (int(graph["x"].shape[0]), int(graph["x"].shape[1]))
             result["n_features"] = int(graph["x"].shape[1])
 
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            result["success"] = False
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
@@ -796,6 +830,9 @@ class TrainingExecutor:
                 frames_for_features.append(splits["test"])
             all_df = pd.concat(frames_for_features, ignore_index=True)
             feature_columns = build_feature_columns(all_df, cfg, col_types=data.col_types)
+            used_features = [fc.name for fc in feature_columns]
+            ignored = [c for c in all_df.columns if c not in used_features and c not in {"__split__", cfg["feature"]["target_col"]}]
+            print(f"[model inputs] features={used_features} ignored={ignored}")
 
             model = get_model(feature_columns, cfg)
 
@@ -809,7 +846,7 @@ class TrainingExecutor:
             result["success"] = True
             result["metrics"] = self._rec_validation_metrics(history, train_cfg)
             if not result["metrics"]:
-                result["metrics"] = dict(test_results)
+                raise ValueError("Missing validation metrics; test metrics cannot replace validation fitness")
 
             std_test_df = splits.get("test")
             if self._evaluate_std_test and std_test_df is not None and len(std_test_df) > 0:
@@ -829,13 +866,14 @@ class TrainingExecutor:
                     for k, v in std_result.items():
                         result["metrics"][f"std_test_{k}"] = v
                 except Exception as eval_err:
-                    print(f"  [std_test] eval failed: {eval_err}")
+                    raise RuntimeError(f"Standard-test evaluation failed: {eval_err}") from eval_err
 
             result["train_shape"] = (len(splits["train"]), len(feature_columns))
             result["n_features"] = len(feature_columns)
 
         except Exception as e:
-            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()[-500:]}"
+            result["success"] = False
+            result["error"] = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
 
         result["duration_seconds"] = round(time.time() - start_time, 1)
         return result
@@ -857,10 +895,30 @@ class TrainingExecutor:
             "rmse": False,
             "mae": False,
         }
+        # Report all metrics from the actual retained checkpoint, not a
+        # different independently optimal epoch for every metric.
+        epoch = -1
+        monitor = train_cfg.get("early_stopping_monitor")
+        if monitor and train_cfg.get("early_stopping_patience", 0) > 0:
+            values = history.get(f"val_{monitor}", [])
+            candidates = [(i, float(v)) for i, v in enumerate(values) if pd.notna(v)]
+            if candidates:
+                choose = max if higher_is_better.get(monitor, True) else min
+                epoch = choose(candidates, key=lambda pair: pair[1])[0]
         for name in train_cfg.get("metrics", ["auc"]):
             values = history.get(f"val_{name}", [])
-            clean = [float(v) for v in values if pd.notna(v)]
-            if not clean:
+            if not values:
                 continue
-            metrics[name] = max(clean) if higher_is_better.get(name, True) else min(clean)
+            metrics[name] = float(values[epoch])
         return metrics
+
+
+def _frame_digest(frame):
+    """Include schema and row order in the fingerprint of tabular model input."""
+    digest = hashlib.sha256(json.dumps([(str(c), str(t)) for c, t in zip(frame.columns, frame.dtypes)]).encode())
+    try:
+        values = pd.util.hash_pandas_object(frame, index=False)
+    except TypeError:
+        values = pd.util.hash_pandas_object(frame.astype(str), index=False)
+    digest.update(values.values.tobytes())
+    return digest.hexdigest()

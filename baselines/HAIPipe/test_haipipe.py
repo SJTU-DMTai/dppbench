@@ -374,3 +374,58 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
     assert provenance["model_name"] == "LightGBM"
     assert result["training_mode"] == "per_task_model"
     assert result["policy_training"]["frames"] == 56000
+
+
+def test_container_features_remain_finite():
+    frame = pd.DataFrame({'sequence': [[1, 2], [1, 2], [2, 1], None]})
+    features = dataset_features(frame)
+    assert features[4] == 2
+    assert np.isfinite(features).all()
+
+
+def test_active_selection_accepts_negative_fitness_and_rejects_failures(monkeypatch):
+    import torch
+    from types import SimpleNamespace
+    from .active_learning import ActiveCandidateSelector
+
+    class TinyScore(torch.nn.Module):
+        def latent(self, rows):
+            return rows.float()
+
+        def forward(self, dataset, pipelines):
+            return torch.zeros(len(dataset), 1)
+
+    selector = ActiveCandidateSelector(TinyScore(), k_total=3, iterations=1)
+    monkeypatch.setattr(selector, '_representatives', lambda latent, available, count: available)
+    labels_seen = []
+    monkeypatch.setattr(selector, '_fit', lambda model, data, features, ids, labels: labels_seen.append(list(labels)))
+    results = [SimpleNamespace(success=True, fitness=-50., error=None),
+               SimpleNamespace(success=False, fitness=float('-inf'), error='failed'),
+               SimpleNamespace(success=True, fitness=-5., error=None)]
+    evaluator = SimpleNamespace(evaluate=lambda candidate: results[candidate])
+    winner, records = selector.select(np.ones(2), np.array([[0], [1], [2]]), evaluator, [0, 1, 2])
+    assert winner == 2
+    assert len(labels_seen[0]) == 2
+    assert all(abs(float(value)) <= 1 for value in labels_seen[0])
+    assert records[1]['fitness'] is None
+    assert records[2]['fitness'] == -5.
+
+
+def test_partial_execution_propagates_budget(monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    from . import env as module
+    from baselines.common.budget import BudgetExceededError
+
+    env = module.HAIPipeEnv.__new__(module.HAIPipeEnv)
+    env.ctx = SimpleNamespace(target_col='label')
+    env.rng = None
+    env.current_data_feature = np.ones(3)
+    monkeypatch.setattr(module, 'assign_dag_structure', lambda pipe, *args: pipe)
+    monkeypatch.setattr(module, 'check_pipeline', lambda *args, **kwargs: SimpleNamespace(valid=True))
+    def execute(pipe):
+        raise BudgetExceededError('limit')
+    env.evaluator = SimpleNamespace(run_preprocessing=execute)
+    with pytest.raises(BudgetExceededError):
+        env._step_executes([PipelineStep('ScaleFeature')])
+    assert env.current_data_feature.tolist() == [1, 1, 1]

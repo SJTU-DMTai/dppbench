@@ -107,6 +107,10 @@ def repairs_to_pipeline(reps: List[Repair], ctx: DataContext,
                         rng: Optional[_random.Random] = None) -> Pipeline:
     pipe = Pipeline(steps=[r.to_pipeline_step() for r in reps])
     repair_pipeline(pipe, ctx.task_type, ctx)
+    if ctx.task_type in ("tabular", "graph"):
+        # Newly proposed transformations must precede the model-input tail.
+        tail = [s for s in pipe.steps if s.op in {"LabelEncode", "HandleMV"}]
+        pipe.steps = [s for s in pipe.steps if s.op not in {"LabelEncode", "HandleMV"}] + tail
     assign_dag_structure(pipe, ctx, rng or _random.Random())
     return pipe
 

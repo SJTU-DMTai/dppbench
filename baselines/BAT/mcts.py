@@ -18,6 +18,7 @@ import torch
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
+from baselines.common.llm_quantization import LocalModelInitializationError
 from baselines.common.data_ctx import DataContext
 from baselines.common.budget import BudgetExceededError, get_active_budget
 
@@ -178,6 +179,8 @@ class MCTSSolver:
                     return new_children
                 raise
             except BudgetExceededError:
+                raise
+            except LocalModelInitializationError:
                 raise
             except torch.cuda.OutOfMemoryError:
                 raise

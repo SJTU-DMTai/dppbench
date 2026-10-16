@@ -74,7 +74,7 @@ class GFNAgent:
         error_messages = []
         info = {}
         state = env.get_state_repr()
-        done, reward = False, 1e-6
+        done, reward = False, 1e-12
         while not done and len(actions) < 1 + env.max_steps:
             encoded = self.encode_state(state, env.n_logic, len(env.categories))
             logits, _ = self.model(encoded.unsqueeze(0), self.context)
@@ -97,19 +97,19 @@ class GFNAgent:
             if info.get('error'):
                 error_messages.append(info['error'])
             if errors[-1] != 0:
-                reward = 1e-6
+                reward = 1e-12
                 break
-        raw_reward = max(float(reward or 0.0), 1e-6)
+        raw_reward = max(float(reward or 0.0), 1e-12)
         reward = raw_reward ** (1.0 / max(self.reward_temperature, 1e-2))
         trajectory = {
             "states": states, "actions": actions, "masks": masks,
-            "errors": errors, "reward": max(reward, 1e-6),
+            "errors": errors, "reward": max(reward, 1e-12),
             "ctx": self.context.detach().cpu().squeeze(0),
             "error_messages": error_messages,
             "fitness": info.get('fitness'), "metrics": info.get('metrics') or {},
             "success": bool(done and info.get('fitness') is not None and not any(errors)),
         }
-        return max(reward, 1e-6), trajectory
+        return max(reward, 1e-12), trajectory
 
     def learn_from_batch(self, trajectories, updates: int = 1, batch_size: int = 16):
         if not trajectories:
@@ -125,15 +125,15 @@ class GFNAgent:
                 states = torch.stack(trajectory["states"]).to(self.device)
                 ctx = trajectory["ctx"].to(self.device).reshape(1, -1).expand(len(states), -1)
                 logits, log_z = self.model(states, ctx)
-                masks = torch.as_tensor(trajectory["masks"], dtype=logits.dtype, device=self.device)
+                masks = torch.as_tensor(np.asarray(trajectory["masks"]), dtype=logits.dtype, device=self.device)
                 logits = torch.where(masks > 0, logits, torch.full_like(logits, float("-inf")))
                 actions = torch.as_tensor(trajectory["actions"], dtype=torch.long, device=self.device)
                 rows = torch.arange(len(actions), device=self.device)
                 sum_log_pf = torch.log_softmax(logits, dim=-1)[rows, actions].sum()
-                log_reward = torch.log(torch.tensor(trajectory["reward"], device=self.device).clamp(min=1e-6))
+                log_reward = torch.log(torch.tensor(trajectory["reward"], device=self.device).clamp(min=1e-12))
                 # Preserve the executable official implementation's sign convention.
                 loss = (sum_log_pf - log_z[0] - log_reward) ** 2
-                failed = trajectory["reward"] <= 1e-6 or any(trajectory["errors"])
+                failed = not trajectory.get("success", not any(trajectory["errors"]))
                 trajectory_losses.append(loss * (self.failure_weight if failed else 1.0))
             if trajectory_losses:
                 batch_loss = torch.stack(trajectory_losses).mean()

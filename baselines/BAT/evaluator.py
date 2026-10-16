@@ -3,7 +3,7 @@
 Thin alias of :class:`SearchPipelineEvaluator` exposing
 ``evaluate_for_agent(pipeline) -> (fitness, metrics, error)``, used inside
 the MCTS reward model. Identical mechanics to DeepPrep
-evaluators (``small_n`` subsampling + LightGBM/DIN AUC), renamed for
+evaluators (``small_n`` subsampling + task-specific validation metrics), renamed for
 log-readability.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Optional
 from baselines.common.evaluator import EvaluationResult
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.pipeline import Pipeline
+from baselines.common.budget import BudgetExceededError
 
 
 class BATEvaluator(SearchPipelineEvaluator):
@@ -23,7 +24,7 @@ class BATEvaluator(SearchPipelineEvaluator):
         task_dir: str,
         data_name: str,
         data_dir: Optional[str] = None,
-        metric_key: str = "auc",
+        metric_key: str | None = None,
         verbose: bool = False,
         small_n: Optional[int] = None,
         seed: int = 42,
@@ -53,6 +54,8 @@ class BATEvaluator(SearchPipelineEvaluator):
         """
         try:
             res = self.evaluate(pipeline)
+        except BudgetExceededError:
+            raise
         except Exception as e:  # pragma: no cover -- safety net
             return None, {}, f"{type(e).__name__}: {e}"
         if not res.success:

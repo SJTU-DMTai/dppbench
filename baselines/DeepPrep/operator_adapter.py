@@ -26,6 +26,24 @@ def _without_table(params: dict) -> dict:
 def adapt_operator_instance(op_name: str, params: dict) -> tuple[str, dict]:
     """Return one exact DPPBench operator instance or raise ``ValueError``."""
     p = _without_table(params)
+    if op_name == "JoinTable":
+        method = p.get("method")
+        if method in ("key", "agg") and (p.get("item_df") or p.get("user_df")):
+            raise ValueError(
+                "JoinTable key/agg modes require aux_df and key_col; item_df/user_df "
+                "belong to method='rec'. Use method='rec' for recommendation side tables, "
+                "or explicitly supply aux_df='$item_df', key_col='item_id' for a key join. "
+                "Two prev nodes means two input tables, not two preceding operators."
+            )
+        if method == "rec" and p.get("aux_df"):
+            raise ValueError("JoinTable method='rec' uses item_df/user_df, not aux_df.")
+        # Plain table names in checkpoint output denote explicit references,
+        # not Python DataFrames. Preserve the chosen table and join method.
+        for key in ("aux_df", "item_df", "user_df"):
+            value = p.get(key)
+            if isinstance(value, str) and value and not value.startswith("$"):
+                p[key] = "$" + value + ("" if value.endswith("_df") else "_df")
+        return op_name, p
     if op_name == "DropNA":
         how = p.pop("how", "any")
         if how != "any":

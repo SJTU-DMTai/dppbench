@@ -37,6 +37,8 @@ class BikeSharingData(TabularData):
         self.id_col = "instant"
         self.target_col = "cnt"
         self._sort_col = "_sort_idx"
+        # hour.csv and day.csv have independently numbered `instant` rows.
+        self.auxiliary_join_keys = {"day": ["dteday"]}
 
     def _download_if_missing(self):
         os.makedirs(self.data_dir, exist_ok=True)
@@ -86,13 +88,25 @@ class BikeSharingData(TabularData):
             hour[self._sort_col] = hour["instant"].astype("int64")
 
         # Keep day-level table lean for JoinTable aggregation.
-        self.train_df = hour.reset_index(drop=True)
+        self.train_df = hour.drop(columns=["casual", "registered"], errors="ignore").reset_index(drop=True)
         self.test_df = None
-        self.auxiliary_dfs["day"] = day.reset_index(drop=True)
+        # Daily counts contain the prediction target (including held-out hours).
+        # Its two components leak the same outcome. Daily instant is unrelated
+        # to hourly instant; the relation is keyed by dteday.
+        self.auxiliary_dfs["day"] = day.drop(
+            columns=["cnt", "casual", "registered", "instant"], errors="ignore"
+        ).reset_index(drop=True)
 
         return self.train_df, self.test_df
 
+    def _normalize_frozen_frame(self, df):
+        # Older frozen files predate the raw-loader leakage fix.
+        return df.drop(columns=["casual", "registered"], errors="ignore").copy()
+
     def split(self, val_ratio=0.2, seed=42):
+        prepared = self._prepared_splits()
+        if prepared is not None:
+            return prepared
         df = self.train_df
 
         # Peel std-test rows (carried via __split__) before chronological split

@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from baselines.common.llm_quantization import LocalModelInitializationError
 from baselines.common.data_ctx import DataContext
 from baselines.common.budget import BudgetExceededError
 from baselines.common.pipeline import (
@@ -310,22 +311,23 @@ class TreeAgent:
         self.downstream_evaluator = downstream_evaluator
         self.candidate_scores: dict[str, dict] = {}
 
-    def _auc_feedback(self, node: SearchNode) -> str:
+    def _downstream_feedback(self, node: SearchNode) -> str:
         pipeline = self._pipeline_for_node(node)
         key = canonical_path(node.accumulated_steps)
         if key not in self.candidate_scores:
-            auc, metrics, error = self.downstream_evaluator.evaluate_for_agent(pipeline)
-            if auc is None or not math.isfinite(auc):
-                error = error or 'No finite validation AUC returned'
-            self.candidate_scores[key] = dict(path=key, auc=auc if not error else None,
+            fitness, metrics, error = self.downstream_evaluator.evaluate_for_agent(pipeline)
+            if fitness is None or not math.isfinite(fitness):
+                error = error or 'No finite validation fitness (higher is better) returned'
+            self.candidate_scores[key] = dict(path=key, fitness=fitness if not error else None,
+                                              metric_name=getattr(self.downstream_evaluator, 'metric_key', None),
                                               metrics=metrics, error=error)
         record = self.candidate_scores[key]
-        valid = [r for r in self.candidate_scores.values() if r['auc'] is not None]
-        best = max(valid, key=lambda r: r['auc']) if valid else None
+        valid = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
+        best = max(valid, key=lambda r: r['fitness']) if valid else None
         return (
             '\nSampled downstream feedback: ' + json.dumps(record, default=str)
-            + '\nBest sampled validation AUC so far: ' + (str(best['auc']) if best else 'none')
-            + '\nContinue exploring a different legal full path to improve validation AUC. '
+            + '\nBest sampled validation fitness (higher is better) so far: ' + (str(best['fitness']) if best else 'none')
+            + '\nContinue exploring a different legal full path to improve validation fitness (higher is better). '
             'Use training errors to revise operators; do not repeat the same path. '
             'Do not use test metrics or force extra operators merely to increase length.'
         )
@@ -334,13 +336,24 @@ class TreeAgent:
         if self.verbose:
             print("[DeepPrep.Agent]", message)
 
+    def _record_feedback(self, feedback: str, turn: int) -> None:
+        """Persist full feedback and expose failures in the experiment log."""
+        self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+        # Do not dump data observations or prompts into the main log.
+        for marker in ("error: ", "Candidate contract errors: "):
+            if marker in feedback:
+                message = feedback.split(marker, 1)[1].split("</execute>", 1)[0]
+                self._log(f"turn={turn} {marker}{message[:2000]}")
+                break
+
     def _revision_hint(self) -> str:
         cursor = self.tree.cursor
         path = canonical_path(cursor.accumulated_steps)
         remaining = sorted(set(mandatory_ops_for_context(self.ctx)) - set(s.op for s in cursor.accumulated_steps))
         lines = [f"Current materialized path (copy exactly): {path}",
                  f"Mandatory operators still required: {remaining}. These are not optional.",
-                 "Emit exact case-sensitive operator calls with keyword parameters, not an abstract uppercase chain."]
+                 "Keep exact names such as CreateSequence and JoinTable; do not lowercase them. "
+                 "Use keyword arguments inside parentheses, never explanatory prose or numbered lists."]
         if 'CreateSequence' in remaining:
             params = dict(user_col=self.ctx.user_col or 'user_id', item_col=self.ctx.item_col or 'item_id',
                           time_col=self.ctx.time_col or 'timestamp', seq_col='item_id_seq', max_len=50)
@@ -349,6 +362,19 @@ class TreeAgent:
             lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + example + " </execute>")
         if 'JoinTable' in remaining:
             lines.append("JoinTable remains mandatory; extra joined feature columns are expected, not a schema violation.")
+            if self.ctx.task_type == 'rec':
+                params = dict(method='rec', user_col=self.ctx.user_col or 'user_id',
+                              item_col=self.ctx.item_col or 'item_id', how='left')
+                for table in ('user', 'item'):
+                    if table in self.ctx.secondary_tables:
+                        params[table + '_df'] = '$' + table + '_df'
+                example = canonical_path([PipelineStep('JoinTable', 'interaction', params)])
+                lines.append("JoinTable syntax for this task: " + example)
+                lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '')
+                             + example + " </execute>")
+            lines.append("JoinTable needs two input table branches, not two preceding operators. "
+                         "method='key'/'agg' uses aux_df and key_col; method='rec' uses item_df/user_df. "
+                         "A chain without the current path starts a new branch from root.")
         return '\n'.join(lines)
 
     def _initial_messages(self, observation: str) -> list[dict]:
@@ -443,9 +469,9 @@ class TreeAgent:
         return errors
 
     def _fallback_pipeline(self) -> Pipeline:
-        scored = [r for r in self.candidate_scores.values() if r['auc'] is not None]
+        scored = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
         if scored:
-            best = max(scored, key=lambda r: r['auc'])
+            best = max(scored, key=lambda r: r['fitness'])
             return self._pipeline_for_node(self.tree.find_by_steps(
                 chain_to_steps(best['path'], self.ctx, self._rng, strict_instances=True)))
         if self._validated_pipelines:
@@ -460,6 +486,23 @@ class TreeAgent:
         return self._pipeline_for_node(self.tree.nodes[self.tree.root_id])  # type: ignore[index]
 
     def run(self) -> AgentRunResult:
+        try:
+            return self._run_search()
+        except BudgetExceededError as exc:
+            # Evaluating or executing the next candidate must not discard a
+            # previously scored pipeline when the shared budget expires.
+            if not self.tree.nodes:
+                raise
+            turns = max((item.get('turn', 0) for item in self.transcript), default=0)
+            self.transcript.append({'role': 'environment', 'content': str(exc), 'turn': turns})
+            return AgentRunResult(
+                pipeline=self._fallback_pipeline(),
+                success=any(r['fitness'] is not None for r in self.candidate_scores.values()),
+                n_turns=turns, n_errors=self.n_errors, transcript=self.transcript,
+                tree=self.tree.to_dict(), solution_attempts=list(self.candidate_scores.values()),
+            )
+
+    def _run_search(self) -> AgentRunResult:
         reset = self.sandbox.reset()
         if not reset.success or reset.obs is None or reset.snapshot is None:
             return AgentRunResult(Pipeline(), False, 0, 1)
@@ -467,9 +510,9 @@ class TreeAgent:
         messages = self._initial_messages(reset.obs.text)
         if self.downstream_evaluator is not None:
             messages[0]['content'] += (
-                '\nSearch objective: maximize sampled validation AUC under the shared budget. '
+                '\nSearch objective: maximize sampled validation fitness (higher is better) under the shared budget. '
                 'A legal pipeline is only a candidate, not an instruction to stop. '
-                'Use AUC and training errors to compare and revise distinct legal paths. '
+                'Use validation fitness and training errors to compare and revise distinct legal paths. '
                 'Do not repeatedly finalize the first candidate; explore alternative operators or parameters.'
             )
         final_pipeline = None
@@ -481,6 +524,8 @@ class TreeAgent:
             except BudgetExceededError as exc:
                 self.transcript.append({"role": "environment", "content": str(exc), "turn": turn})
                 break
+            except LocalModelInitializationError:
+                raise
             except Exception as exc:
                 self.n_errors += 1
                 self._log(f"LLM call failed: {exc}")
@@ -500,7 +545,7 @@ class TreeAgent:
                 )
                 feedback += "\n" + self._revision_hint()
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 if self.n_errors >= self.max_err_cnt:
                     break
                 continue
@@ -513,7 +558,7 @@ class TreeAgent:
                     self.n_errors += 1
                     feedback = render_protocol_error(parent_error, turns_left)
                     messages.append({"role": "user", "content": feedback})
-                    self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                    self._record_feedback(feedback, turn)
                     continue
                 assert parent is not None
                 self.tree.set_cursor(parent.node_id)
@@ -521,9 +566,9 @@ class TreeAgent:
                 if not errors:
                     if self.downstream_evaluator is not None:
                         self._validated_pipelines[parent.node_id] = self._pipeline_for_node(parent)
-                        feedback = self._auc_feedback(parent)
+                        feedback = self._downstream_feedback(parent)
                         messages.append({'role': 'user', 'content': feedback})
-                        self.transcript.append({'role': 'environment', 'content': feedback, 'turn': turn})
+                        self._record_feedback(feedback, turn)
                         continue
                     parent.is_terminal = True
                     final_pipeline = self._pipeline_for_node(parent)
@@ -537,7 +582,7 @@ class TreeAgent:
                     turn_left=turns_left,
                 )
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 continue
 
             try:
@@ -547,9 +592,9 @@ class TreeAgent:
                 existing, _ = self._parent(action.chain_str)
                 if existing is not None and existing.node_id in self._validated_pipelines:
                     if self.downstream_evaluator is not None:
-                        feedback = self._auc_feedback(existing)
+                        feedback = self._downstream_feedback(existing)
                         messages.append({'role': 'user', 'content': feedback})
-                        self.transcript.append({'role': 'environment', 'content': feedback, 'turn': turn})
+                        self._record_feedback(feedback, turn)
                         continue
                     existing.is_terminal = True
                     final_pipeline = copy.deepcopy(self._validated_pipelines[existing.node_id])
@@ -586,7 +631,7 @@ class TreeAgent:
                 )
                 feedback += "\n" + self._revision_hint()
                 messages.append({"role": "user", "content": feedback})
-                self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+                self._record_feedback(feedback, turn)
                 continue
 
             self.tree.set_cursor(parent.node_id)
@@ -630,13 +675,13 @@ class TreeAgent:
                 feedback += "\nCandidate contract errors: " + "; ".join(candidate_errors)
             else:
                 if self.downstream_evaluator is not None:
-                    feedback += self._auc_feedback(cursor)
+                    feedback += self._downstream_feedback(cursor)
                 else:
                     feedback += "\nCandidate validated. Finish with <answer>" + canonical_path(cursor.accumulated_steps) + "</answer>."
             if failure or candidate_errors:
                 feedback += "\n" + self._revision_hint()
             messages.append({"role": "user", "content": feedback})
-            self.transcript.append({"role": "environment", "content": feedback, "turn": turn})
+            self._record_feedback(feedback, turn)
             if self.n_errors >= self.max_err_cnt:
                 break
 
@@ -644,7 +689,7 @@ class TreeAgent:
         if final_pipeline is None:
             final_pipeline = self._fallback_pipeline()
         if self.downstream_evaluator is not None:
-            success = any(r['auc'] is not None for r in self.candidate_scores.values())
+            success = any(r['fitness'] is not None for r in self.candidate_scores.values())
         return AgentRunResult(
             pipeline=final_pipeline,
             success=success,

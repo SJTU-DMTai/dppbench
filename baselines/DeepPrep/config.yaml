@@ -27,7 +27,7 @@ max_err_cnt: 5
 small_n: 0
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
 eval_full: true
-# DPPBench adaptation: sampled validation AUC feedback, fixed training parameters.
+# DPPBench adaptation: sampled validation fitness feedback, fixed training parameters.
 # Disable downstream_feedback to restore schema-only inference.
 downstream_feedback: true
 downstream_eval_n: 10000

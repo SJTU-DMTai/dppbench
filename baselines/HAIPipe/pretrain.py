@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import random
+import math
+from baselines.common.search_reward import fitness_to_reward
 
 from baselines.common.pipeline import finalize_pipeline
 
@@ -72,7 +74,10 @@ class CrossTaskPretrainer:
                 episode["pipeline"], env.ctx, self.rng, sort_steps=False,
             )
             result = env.evaluator.evaluate(executable) if report.valid else None
-            reward = float(result.fitness) if result is not None and result.success else 0.0
+            reward = (fitness_to_reward(result.fitness, getattr(env.evaluator, "metric_key", None))
+                      if result is not None and result.success and math.isfinite(result.fitness) else 0.0)
+            if not episode["transitions"]:
+                raise RuntimeError("HAIPipe episode produced no transitions; training cannot progress")
             for transition in episode["transitions"]:
                 transition["reward"] = reward if transition["done"] else 0.0
             self.trainer.add_episode(

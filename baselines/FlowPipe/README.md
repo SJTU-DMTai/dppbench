@@ -11,12 +11,12 @@ at official commit `265a4e91af6eaaf0a734619cb71e183c0788334f` to DPPBench.
 - The policy uses the official state blocks: logic flag, logic one-hot, stage
   one-hot, downstream-model id, selected-action multi-hot, and 100-column
   statistical features.
-- Frozen Llama-3.1-8B contextual-semantic embeddings condition two FiLM layers
+- Frozen Qwen3-8B contextual-semantic embeddings condition two FiLM layers
   and a context-dependent `logZ` head.
 - Training uses replay, reward temperature, failure weighting, and the exact
   executable official TB loss convention.
 - Inference samples three trajectories by default and returns the candidate
-  with the highest validation reward.
+  with the highest raw validation fitness.
 
 ## Required DPPBench adaptations
 
@@ -78,3 +78,21 @@ Target-task training is performed by `FlowPipe.run()` before inference.
 | failure weight | 0.2 |
 | reward temperature | 2.0 |
 | inference samples | 3 |
+
+## Regression metrics and loading
+
+The evaluator chooses the metric from the task config. For RMSE/MAE/MSE/logloss,
+fitness is the negative error and the positive training reward is `1/(1+error)`
+(scale 1). AUC keeps its value. Raw metrics and fitness are retained in logs;
+the final pipeline is ranked by fitness, not the transformed reward.
+
+Generic unlabelled embedding files are no longer reused across encoders.
+Use the model-specific cache path above and regenerate it when changing the
+checkpoint, quantization, data, or seed.
+
+Local weight loading uses `DPPBENCH_LLM_QUANTIZATION=auto` by default: FP8
+when CUDA hardware and torchao support it, otherwise unquantized weights with
+a warning. Set `none` to disable quantization or `fp8` to require it strictly.
+CPU loading uses FP32; this does not imply an 8B model fits available memory.
+Quantization is optional; install compatible torchao/transformers on the GPU
+server if required. Model choices and downstream-feedback defaults are retained.

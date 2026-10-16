@@ -82,6 +82,15 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
+    "DAGPipe": {
+        "cls_path": "baselines.DAGPipe.dagpipe.DAGPipe",
+        "pipeline_cls": "baselines.DAGPipe.pipeline.DAGPipePipeline",
+        "evaluator_cls": "baselines.DAGPipe.evaluator.DAGPipeEvaluator",
+        "supports_eval_full": True,
+        "time_cost_kind": "training",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
     "SAGA": {
         "cls_path": "baselines.SAGA.saga.SAGA",
         "supports_eval_full": False,
@@ -89,8 +98,29 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
+    "SPIO": {
+        "cls_path": "baselines.SPIO.spio.SPIO",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
+    "ReAct": {
+        "cls_path": "baselines.ReAct.react.ReAct",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_chain_len",
+        "kwargs": {},
+    },
+    "DataMaster": {
+        "cls_path": "baselines.DataMaster.data_master.DataMaster",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
         "max_len_arg": "max_chain_len",
@@ -237,7 +267,7 @@ def parse_args():
         "--baseline", type=str, default="SAGA",
         help=(
             "Baseline name. Must be a key of BASELINE_CONFIGS defined in "
-            "this script (default: SAGA)."
+            "this script (default: SAGA). Available: " + ", ".join(BASELINE_CONFIGS)
         ),
     )
     parser.add_argument(
@@ -255,6 +285,8 @@ def parse_args():
             "<data_dir>/<data_name>/std_test."
         ),
     )
+    parser.add_argument("--resume_pipeline", default=None,
+                        help="DAGPipe checkpoint path; supports {task} and {model}. Skips search; requires existing frozen data.")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -281,10 +313,9 @@ def parse_args():
     parser.add_argument("--max_output_rows", type=int, default=None)
     parser.add_argument("--max_output_columns", type=int, default=None)
     parser.add_argument(
-        "--ctxpipe_model_path", "--ctxpipe_gte_model_path",
-        dest="ctxpipe_model_path", type=str,
+        "--ctxpipe_gte_model_path", "--ctxpipe_model_path", type=str,
         default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
-        help="Local Qwen3-8B checkpoint used as the CtxPipe context encoder.",
+        help="Local Qwen3-8B context encoder used by CtxPipe.",
     )
     parser.add_argument(
         "--deepprep_model_path", type=str,
@@ -294,7 +325,7 @@ def parse_args():
     parser.add_argument(
         "--qwen3_model_path", type=str,
         default="/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B",
-        help="Shared local Qwen3-8B checkpoint used by BAT, CtxPipe, and FlowPipe.",
+        help="Local Qwen3-8B checkpoint used by BAT and FlowPipe.",
     )
     parser.add_argument(
         "--skip_build", action="store_true",
@@ -384,7 +415,7 @@ def _apply_baseline_model_paths(
 ) -> None:
     """Map experiment checkpoint arguments to each baseline's public API."""
     if baseline_name == "CtxPipe":
-        kwargs["gte_model_path"] = args.ctxpipe_model_path
+        kwargs["gte_model_path"] = args.ctxpipe_gte_model_path
     elif baseline_name == "DeepPrep":
         kwargs.update({
             "llm_backend": "local",
@@ -402,6 +433,20 @@ def _apply_baseline_model_paths(
         })
 
 
+def _validate_final_pipeline(evaluator, pipeline, baseline_name):
+    # Reject structurally invalid candidates before repeating identical HPO trials.
+    try:
+        report = evaluator._check_pipeline(pipeline, evaluator._get_data_context())
+        if not report.valid:
+            raise RuntimeError(
+                f"{baseline_name} produced an invalid final pipeline; skipping final training/HPO: "
+                + "; ".join(report.errors)
+            )
+    except BaseException:
+        evaluator._executor.cleanup()
+        raise
+
+
 def _run_baseline_and_eval(
     task_name: str,
     baseline_name: str,
@@ -413,11 +458,7 @@ def _run_baseline_and_eval(
     pipeline end-to-end so the downstream model is trained and scored on
     the frozen std-test rows.
     """
-    if baseline_name not in BASELINE_CONFIGS:
-        raise SystemExit(
-            f"Unknown baseline '{baseline_name}'. "
-            f"Available: {sorted(BASELINE_CONFIGS)}"
-        )
+    baseline_name = _canonical_baseline_name(baseline_name)
     conf = BASELINE_CONFIGS[baseline_name]
     cls = _load_class(conf["cls_path"])
     kwargs = dict(conf["kwargs"])
@@ -442,27 +483,50 @@ def _run_baseline_and_eval(
         kwargs["model_name"] = model_name
 
     # ---- Phase 1: construct preprocessing pipeline ---------------------
-    t0 = time.time()
-    if budget is not None:
-        budget.start()
-    with budget_scope(budget):
+    resume_path = _resume_path(args, task_name, model_name)
+    if baseline_name == "DAGPipe":
+        from baselines.DAGPipe.preflight import check_runtime
+        report = check_runtime(task_dir=task_dir, data_name=task_name, model_name=model_name,
+                               evaluator_class=_load_class(conf["evaluator_cls"]))
+        if not args.quiet:
+            _print_json({"dagpipe_preflight": report})
+    if resume_path:
+        if baseline_name != "DAGPipe":
+            raise ValueError("--resume_pipeline currently supports DAGPipe only")
+        from pathlib import Path
+        from baselines.DAGPipe.pipeline import DAGPipePipeline
+        source = Path(resume_path)
+        if source.parent.resolve() == Path(runner_output_dir).resolve():
+            raise ValueError("Resume requires a separate --output_dir to preserve the original run")
+        pipeline_text = source.read_text(encoding="utf-8")
+        saved = DAGPipePipeline.from_yaml(pipeline_text)
+        if saved.payload["task"] != task_name or saved.payload["seed"] != args.seed:
+            raise ValueError("Resume checkpoint task/seed does not match requested task/seed")
+        result = {"best_pipeline_yaml": pipeline_text, "is_legal": True}
+        search_budget_snapshot = None
+        construct_time = None
+    else:
+        t0 = time.time()
         if budget is not None:
-            budget.check_resources()
-        runner = cls(
-            task_dir=task_dir,
-            data_name=task_name,
-            data_dir=task_data_dir,
-            seed=args.seed,
-            output_dir=runner_output_dir,
-            verbose=not args.quiet,
-            device=args.device,
-            **kwargs,
-        )
-        result = runner.run()
-        if budget is not None:
-            budget.check_resources()
-    search_budget_snapshot = budget.snapshot() if budget is not None else None
-    construct_time = time.time() - t0
+            budget.start()
+        with budget_scope(budget):
+            if budget is not None:
+                budget.check_resources()
+            runner = cls(
+                task_dir=task_dir,
+                data_name=task_name,
+                data_dir=task_data_dir,
+                seed=args.seed,
+                output_dir=runner_output_dir,
+                verbose=not args.quiet,
+                device=args.device,
+                **kwargs,
+            )
+            result = runner.run()
+            if budget is not None:
+                budget.check_resources()
+        search_budget_snapshot = budget.snapshot() if budget is not None else None
+        construct_time = time.time() - t0
     if result.get("unsupported_task_type"):
         error = result.get("error") or result.get("eval_error") or (
             f"unsupported_task_type={result['unsupported_task_type']}"
@@ -482,13 +546,26 @@ def _run_baseline_and_eval(
     from baselines.common.evaluator import PipelineEvaluator
     from baselines.common.pipeline import Pipeline
 
-    pipeline = Pipeline.from_yaml(pipeline_yaml)
+    pipeline_class = _load_class(conf["pipeline_cls"]) if conf.get("pipeline_cls") else Pipeline
+    pipeline = pipeline_class.from_yaml(pipeline_yaml)
+    from scripts.final_model_hpo import resolve_evaluator_class
+    evaluator_class = resolve_evaluator_class(
+        pipeline, _load_class(conf["evaluator_cls"]) if conf.get("evaluator_cls") else None,
+    )
     if max_pipeline_len is not None and len(pipeline) > max_pipeline_len:
         raise RuntimeError(
             f"{baseline_name} produced pipeline length {len(pipeline)} "
             f"> max_pipeline_len={max_pipeline_len}"
         )
-    evaluator = PipelineEvaluator(
+    if resume_path:
+        # Keep recovery provenance even if a later HPO trial fails.
+        pipeline.save(os.path.join(runner_output_dir, "best_pipeline.yaml"))
+        with open(os.path.join(runner_output_dir, "resume.json"), "w", encoding="utf-8") as f:
+            json.dump({"pipeline_reused": True, "pipeline_source": resume_path,
+                       "pipeline_sha256": pipeline.hash(), "seed": args.seed,
+                       "task": task_name, "model": model_name,
+                       "original_search_seconds": None}, f, indent=2)
+    evaluator = evaluator_class(
         task_dir=task_dir, data_name=task_name,
         data_dir=task_data_dir, verbose=not args.quiet,
         device=args.device,
@@ -496,12 +573,14 @@ def _run_baseline_and_eval(
         scoring_method="full_train",
         seed=args.seed,
     )
+    _validate_final_pipeline(evaluator, pipeline, baseline_name)
     hpo_summary = {}
     if args.final_hpo:
         from scripts.final_model_hpo import tune_final_model
         evaluator._executor.cleanup()
         evaluator, hpo_summary = tune_final_model(
             pipeline, task_dir=task_dir, data_name=task_name,
+            evaluator_class=evaluator_class,
             data_dir=task_data_dir, device=args.device, model_name=model_name,
             seed=args.seed, verbose=not args.quiet,
             output_dir=runner_output_dir,
@@ -533,7 +612,7 @@ def _run_baseline_and_eval(
     if std_test_primary is None:
         # Fall back to any non-bookkeeping metric.
         for k, v in std_test_metrics.items():
-            if k not in ("inference_seconds", "n_rows"):
+            if k not in ("inference_seconds", "n_rows", "n_nodes"):
                 std_test_primary = v
                 std_test_primary_name = k
                 break
@@ -542,11 +621,13 @@ def _run_baseline_and_eval(
             f"non-finite std-test metric {std_test_primary_name}="
             f"{std_test_primary!r}"
         )
+    if std_test_primary is None and std_test_error is None:
+        std_test_error = ev.error or "Frozen standard-test evaluation produced no metric"
     if std_test_error is not None and evaluator.task_type == "graph":
         std_test_primary_name = "unsupported_graph_std_test"
 
     baseline_time_kind = conf.get("time_cost_kind", "search_inference")
-    construct_seconds = round(construct_time, 1)
+    construct_seconds = round(construct_time, 1) if construct_time is not None else None
     final_eval_seconds = round(eval_time, 1)
     final_inference_seconds = (
         float(std_test_metrics["inference_seconds"])
@@ -564,6 +645,9 @@ def _run_baseline_and_eval(
         "output_dir": runner_output_dir,
         "max_pipeline_len": max_pipeline_len,
         "budget": search_budget_snapshot,
+        "pipeline_reused": bool(resume_path),
+        "pipeline_source": resume_path,
+        "pipeline_sha256": pipeline.hash(),
         "search_fitness": (
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
@@ -573,6 +657,8 @@ def _run_baseline_and_eval(
         "final_hpo_trials": len(hpo_summary.get("trials", [])),
         "final_val_fitness": float(ev.fitness) if ev.success else None,
         "val_fitness": float(ev.fitness) if ev.success else None,
+        "val_metric_name": evaluator.metric_key,
+        "val_metric": metrics.get(evaluator.metric_key) if ev.success else None,
         "std_test_auc": float(std_test_auc) if std_test_auc is not None else None,
         "std_test_metric_name": std_test_primary_name,
         "std_test_metric": (
@@ -633,6 +719,9 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
             "final_eval_total": row.get("final_eval_seconds"),
         },
         "pipeline": {
+            "reused": row.get("pipeline_reused", False),
+            "source": row.get("pipeline_source"),
+            "sha256": row.get("pipeline_sha256"),
             "n_steps": row.get("n_steps"),
             "ops": row.get("ops"),
             "n_unique_evals": row.get("n_unique_evals"),
@@ -650,8 +739,10 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
         "task", "baseline", "model", "output_dir", "max_pipeline_len",
+        "pipeline_reused", "pipeline_source", "pipeline_sha256",
         "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",
         "final_val_fitness", "val_fitness", "std_test_metric_name",
+        "val_metric_name", "val_metric",
         "std_test_metric", "std_test_auc", "std_test_inference_seconds",
         "std_test_n_rows", "baseline_time_kind",
         "baseline_search_inference_seconds", "baseline_training_seconds",
@@ -672,9 +763,29 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
             writer.writerow({k: out.get(k) for k in fields})
 
 
+def _canonical_baseline_name(name: str) -> str:
+    for canonical in BASELINE_CONFIGS:
+        if canonical.casefold() == name.strip().casefold():
+            return canonical
+    raise ValueError(
+        f"Unknown baseline '{name}'. Available: {sorted(BASELINE_CONFIGS)}"
+    )
+
+
+def _resume_path(args, task, model):
+    template = getattr(args, "resume_pipeline", None)
+    return os.path.abspath(template.format(task=task, model=model)) if template else None
+
+
 def main():
     args = parse_args()
+    try:
+        args.baseline = _canonical_baseline_name(args.baseline)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     args.device = _resolve_device(args.gpu_id)
+    if args.resume_pipeline and args.baseline != "DAGPipe":
+        raise SystemExit("--resume_pipeline currently supports DAGPipe only")
 
     if args.data_names:
         tasks = [s.strip() for s in args.data_names.split(",") if s.strip()]
@@ -719,6 +830,8 @@ def main():
             "model": model_name,
             "output_dir": run_output_dir,
             "max_pipeline_len": args.max_pipeline_len,
+            "pipeline_reused": bool(args.resume_pipeline),
+            "pipeline_source": _resume_path(args, task_name, model_name),
         }
         budget = Budget(
             max_pipeline_length=args.max_pipeline_len,
@@ -731,12 +844,12 @@ def main():
             max_output_columns=args.max_output_columns,
         )
         try:
-            _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
+            _ensure_std_test(task_name, args.data_dir, args.skip_build or bool(args.resume_pipeline), args.quiet)
             row.update(_run_baseline_and_eval(
                 task_name, args.baseline, args, out_root, budget=budget
             ))
         except Exception as e:
-            tb = traceback.format_exc(limit=2)
+            tb = traceback.format_exc()
             if not args.quiet:
                 print(tb)
             row.update({
@@ -765,6 +878,10 @@ def main():
             })
         rows.append(row)
         _print_json({"run_result": _row_console_summary(row)})
+        # Release unreachable evaluator/loader cycles before the next task's
+        # budget starts; do not carry a previous dataset's live allocations.
+        import gc
+        gc.collect()
 
     _write_csv(rows, csv_path)
     print("\n" + "=" * 60)

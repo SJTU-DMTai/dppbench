@@ -25,4 +25,5 @@ kaggle
 openai
 transformers
 accelerate
-torchao==0.13.0
+
+# Optional FP8 weights: install requirements-fp8.txt on a compatible CUDA host.

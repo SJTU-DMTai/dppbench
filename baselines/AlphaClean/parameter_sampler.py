@@ -14,7 +14,9 @@ import random as _random
 from typing import List, Optional
 
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import get_param_space, make_step
+from baselines.common.pipeline import (
+    get_param_space, make_step, sample_handle_error_params, validate_step_params,
+)
 from baselines.common.utils import get_available_ops, get_op
 
 from .operator_catalog import CATALOG
@@ -62,6 +64,11 @@ class ParameterSampler:
         if step is None:
             return None
         params = copy.deepcopy(step.params)
+        if op_name == "HandleError":
+            # Preserve the rule and its required context while varying only
+            # compatible actions/repairs, as in SAGA's physical search.
+            params = sample_handle_error_params(params, self.rng)
+            return Repair(op_name=op_name, target=step.target, params=params)
         if op_name == "JoinTable" and self.ctx.task_type != "rec" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["aux_df"] = f"${aux}"
@@ -72,7 +79,7 @@ class ParameterSampler:
         elif op_name == "ConcatTable" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["other_dfs"] = [f"${aux}"]
-        param_space = get_param_space(get_op(op_name), self.ctx)
+        param_space = get_param_space(get_op(op_name), self.ctx, params)
 
         # Optionally perturb one key in the shared context-aware parameter space.
         keys = [k for k, v in param_space.items() if k != "source_tables" and v]
@@ -88,6 +95,8 @@ class ParameterSampler:
                 else:
                     params[key] = copy.deepcopy(self.rng.choice(choices))
 
+        if validate_step_params(op_name, params, self.ctx):
+            return None
         return Repair(op_name=op_name, target=step.target, params=params)
 
 

@@ -139,7 +139,10 @@ class SAGA:
     # ------------------------------------------------------------------
     def _build_context(self, evaluator: PipelineEvaluator) -> DataContext:
         data = evaluator.load_data()
-        return get_data_ctx(self.data_name, data, evaluator.task_type)
+        ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
+        evaluator._data_context = ctx
+        evaluator._executor.clear_data_cache()
+        return ctx
 
     # ------------------------------------------------------------------
     def run(self) -> dict:

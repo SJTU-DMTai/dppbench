@@ -6,7 +6,7 @@ import importlib.machinery
 import inspect
 import re
 
-OPERATOR_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dppbench", " operators")
+OPERATOR_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "dppbench", "operators")
 
 
 def _load_all_operators():

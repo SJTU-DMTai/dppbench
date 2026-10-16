@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import resource
+try:
+    import resource
+except ImportError:  # Windows: preserve actual process-memory accounting.
+    resource = None
 import threading
 import time
 from dataclasses import dataclass, field
@@ -153,6 +156,28 @@ class Budget:
 
 
 def _process_peak_memory_mb() -> float:
+    if resource is None:
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in (
+                    "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                    "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+                )
+            ]
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        if not psapi.GetProcessMemoryInfo(kernel.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # Budget tracks the peak within its own scope, not process lifetime.
+        return counters.WorkingSetSize / (1024.0 * 1024.0)
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as handle:
             for line in handle:

@@ -334,6 +334,7 @@ class BATAlignmentTest(unittest.TestCase):
         sandbox._initial_snapshot = b'initial'
         sandbox.execute_chain.return_value.success = True
         evaluator = Mock()
+        evaluator.metric_key = 'auc'
         reward = BATReward(_ctx(), sandbox, downstream_evaluator=evaluator)
         with patch('baselines.BAT.reward.expected_target_columns', return_value=['x']), patch(
             'baselines.BAT.reward._sandbox_columns', return_value=['x'],

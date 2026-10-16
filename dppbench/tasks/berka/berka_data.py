@@ -30,6 +30,23 @@ class BerkaData(TabularData):
     ASC_FILES = ["account", "card", "client", "disp", "district", "loan", "order", "trans"]
     MAIN_TABLE = "loan"
 
+    # ``trans.asc`` has a textual ``bank`` column at zero-based column 8,
+    # where pandas otherwise sees a mixture of strings and missing values.
+    # Keep identifiers inferred (they are used by the relational joins), but
+    # declare the known textual fields explicitly so parsing is deterministic.
+    ASC_DTYPES = {
+        "loan": {"status": "string"},
+        "account": {"frequency": "string"},
+        "card": {"type": "string"},
+        "client": {"gender": "string"},
+        "disp": {"type": "string"},
+        "order": {"bank_to": "string", "account_to": "string", "k_symbol": "string"},
+        "trans": {
+            "type": "string", "operation": "string", "k_symbol": "string",
+            "bank": "string",
+        },
+    }
+
     def __init__(self, data_dir=None):
         super().__init__(name="Berka")
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "data")
@@ -146,10 +163,37 @@ class BerkaData(TabularData):
         if not os.path.exists(path):
             return None
         try:
-            return pd.read_csv(path, sep=";", quotechar='"', encoding="latin-1")
+            return pd.read_csv(
+                path, sep=";", quotechar='"', encoding="latin-1",
+                dtype=self.ASC_DTYPES.get(name),
+            )
         except UnicodeDecodeError:
-            return pd.read_csv(path, sep=";", quotechar='"', encoding="utf-8",
-                               errors="replace")
+            return pd.read_csv(
+                path, sep=";", quotechar='"', encoding="utf-8",
+                encoding_errors="replace", dtype=self.ASC_DTYPES.get(name),
+            )
+
+    def _normalize_frozen_frame(self, df):
+        # Old artifacts must not reintroduce the source of the binary label.
+        return df.drop(columns=["status"], errors="ignore").copy()
+
+    @staticmethod
+    def _pre_loan_transactions(trans, loans):
+        """Expose only history available before loan origination.
+
+        Account-level joins use the earliest loan date when an account has
+        multiple loans. This conservative cutoff is safe for every such loan.
+        Same-day events are excluded because the source has no event times.
+        """
+        loan_dates = pd.to_datetime(loans["date"].astype("string"), format="%y%m%d", errors="raise")
+        if loan_dates.isna().any() or loans["account_id"].isna().any():
+            raise ValueError("Berka loans require account_id and origination date")
+        cutoffs = loan_dates.groupby(loans["account_id"]).min()
+        trans_dates = pd.to_datetime(trans["date"].astype("string"), format="%y%m%d", errors="raise")
+        keep = trans_dates.lt(trans["account_id"].map(cutoffs))
+        history = trans.loc[keep].copy()
+        print(f"[berka pre-loan history] trans={len(trans)} -> {len(history)}")
+        return history
 
     # ------------------------------------------------------------------
     # Public API
@@ -174,6 +218,8 @@ class BerkaData(TabularData):
 
         for name in self.AUX_TABLES:
             df = self._read_asc(name)
+            if name == "trans" and df is not None:
+                df = self._pre_loan_transactions(df, loan)
             self.auxiliary_dfs[name] = df
 
         return self.train_df, self.test_df

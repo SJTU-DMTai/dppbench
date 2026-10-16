@@ -1,0 +1,98 @@
+import pandas as pd
+import numpy as np
+from ..base_op import RecOp, TabularOp
+
+
+class Deduplicate(RecOp, TabularOp):
+    APPLIES_TO_STD_TEST = False
+
+    KEEP_OPTIONS = ("first", "last", False)
+
+    def __init__(self, subset=None, keep="first"):
+        super().__init__(name="Deduplicate")
+
+        if keep not in self.KEEP_OPTIONS:
+            raise ValueError(
+                f"keep must be one of {self.KEEP_OPTIONS}, got '{keep}'"
+            )
+
+        self.subset = subset
+        self.keep = keep
+
+    def get_op_description(self):
+        description = """Operator name: Deduplicate
+
+Function description:
+Remove duplicate rows from a pandas DataFrame. Duplicates are identified
+based on all columns or a specified subset of columns. The 'keep' parameter controls which
+occurrence of a duplicate row is retained.
+
+Input:
+df : pd.DataFrame — A DataFrame that may contain duplicate rows.
+
+Parameters:
+subset : list[str] or None — Column names to consider when identifying duplicates. If None, all columns are used. Default: None.
+keep : str or False — Which duplicate to keep. 'first' keeps the first occurrence, 'last' keeps the last occurrence, False drops all duplicates. Default: 'first'.
+
+Output:
+pd.DataFrame — A DataFrame with duplicate rows removed. The index is reset.
+
+Example:
+>>> df = pd.DataFrame({'id': [1, 2, 2, 3], 'name': ['Alice', 'Bob', 'Bob', 'Carol']})
+>>> op = Deduplicate(subset=['id', 'name'], keep='first')
+>>> op.transform(df)
+   id   name
+0   1  Alice
+1   2    Bob
+2   3  Carol
+
+Example YAML:
+dag:
+  sources:
+  - id: s0
+    table: main
+  ops:
+  - id: o1
+    op: Deduplicate
+    prev:
+    - s0
+    params:
+      subset:
+      - user_id
+      - item_id
+      keep: first
+  train:
+    prev:
+    - o1
+"""
+        return description.strip()
+
+    def transform(self, df):
+        """
+        Remove duplicate rows from the given DataFrame.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame with potential duplicate rows.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with duplicates removed and index reset.
+        """
+        # return df.drop_duplicates(subset=self.subset, keep=self.keep).reset_index(drop=True)
+        # Equality of list-valued cells is equality of the ordered sequence.
+        # Use immutable keys only for comparison; return the original cells.
+        cols = list(df.columns) if self.subset is None else (
+            [self.subset] if isinstance(self.subset, str) else self.subset
+        )
+        keys = df[cols].copy()
+        def key(value):
+            if isinstance(value, (list, tuple, np.ndarray)):
+                return tuple(key(v) for v in value)
+            return value
+        for col in cols:
+            if keys[col].dtype == object:
+                keys[col] = keys[col].map(key)
+        return df.loc[~keys.duplicated(keep=self.keep)].reset_index(drop=True)

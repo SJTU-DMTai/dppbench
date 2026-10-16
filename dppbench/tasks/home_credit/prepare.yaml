@@ -9,7 +9,7 @@ dag:
     op: JoinTable
     prev: [s0, s1]
     params:
-      method: key
+      method: agg
       aux_df: $bureau
       key_col: SK_ID_CURR
   - id: o2

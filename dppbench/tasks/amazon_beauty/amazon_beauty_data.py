@@ -54,6 +54,64 @@ class AmazonBeautyData(RecData):
         self.interaction_df = self._select_and_rename(self._load_gz_json(interaction_file), self.INTERACTION_RENAME)
         self.item_df = self._select_and_rename(self._load_gz_json(item_file), self.ITEM_RENAME)
 
+        items = self.item_df.copy()
+
+        # 商品维表必须有有效的商品键。
+        missing_id = (
+            items["item_id"].isna()
+            | items["item_id"].astype("string").str.strip().eq("").fillna(False)
+        )
+        if missing_id.any():
+            raise ValueError(
+                f"AmazonBeauty metadata contains "
+                f"{int(missing_id.sum())} rows without item_id"
+            )
+
+        # 缺失品牌统一为 NA，避免空字符串被当作另一个品牌。
+        if "item_brand" in items.columns:
+            items["item_brand"] = (
+                items["item_brand"]
+                .astype("string")
+                .str.strip()
+                .replace("", pd.NA)
+            )
+
+        # 先消除当前使用字段完全相同的重复记录。
+        before = len(items)
+        items = items.drop_duplicates()
+
+        if "item_brand" in items.columns:
+            # 相同商品出现多个不同的非空品牌，不能任意保留第一条。
+            brand_counts = (
+                items.groupby("item_id")["item_brand"]
+                .nunique(dropna=True)
+            )
+            conflicts = brand_counts[brand_counts > 1]
+
+            if not conflicts.empty:
+                examples = conflicts.index[:10].tolist()
+                raise ValueError(
+                    f"AmazonBeauty metadata has conflicting brands for "
+                    f"{len(conflicts)} items; examples={examples}"
+                )
+
+            # 此时每个商品最多一个非空品牌：
+            # 合并重复记录，并优先保留该非空值。
+            items = (
+                items.groupby("item_id", sort=False, as_index=False)
+                .agg(item_brand=("item_brand", "first"))
+            )
+        else:
+            items = items.drop_duplicates(subset=["item_id"])
+
+        self.item_df = items.reset_index(drop=True)
+
+        print(
+            f"[AmazonBeauty item metadata] "
+            f"rows={before} -> {len(self.item_df)}, "
+            f"unique_item_id={self.item_df['item_id'].is_unique}"
+        )
+
         self.register_col_types({
             "user_id": self.CATEGORICAL,
             "item_id": self.CATEGORICAL,

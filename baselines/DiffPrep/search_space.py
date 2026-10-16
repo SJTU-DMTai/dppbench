@@ -31,10 +31,9 @@ class ContinuousPipeline(nn.Module):
 
     ``tau`` has shape ``[slots, features, max_candidates]``.  For a soft slot,
     each feature can choose a different candidate transformation, matching the
-    original DiffPrep design.  For hard/structural slots we cannot apply the
-    actual dataframe operator in tensor space; we keep a straight-through gate
-    so those logits remain optimisable, and the selected operator is executed by
-    the final common evaluator after discretisation.
+    original DiffPrep design. Required structural adapters have no learned
+    choices here and are executed only by the final dataframe evaluator.
+    Optional unsupported dataframe operations are excluded by the slot planner.
     """
 
     def __init__(
@@ -152,25 +151,21 @@ class ContinuousPipeline(nn.Module):
                     # numerical differentiation. Preserve that straight-
                     # through construction for the shared tensor adapters.
                     eps = 1e-6
-                    value = apply_soft_op(op_name, out, mask)
-                    value_pos = apply_soft_op(op_name, out.detach() + eps, mask)
-                    value_neg = apply_soft_op(op_name, out.detach() - eps, mask)
+                    value = apply_soft_op(op_name, out, mask, getattr(self, "fit_rows", None))
+                    value_pos = apply_soft_op(op_name, out.detach() + eps, mask, getattr(self, "fit_rows", None))
+                    value_neg = apply_soft_op(op_name, out.detach() - eps, mask, getattr(self, "fit_rows", None))
                     grad = ((value_pos - value_neg) / (2.0 * eps)).detach()
                     outputs.append(
                         value.detach() + grad * out - (grad * out).detach()
                     )
             return softmix(beta_row, outputs)
 
-        if hard_sample and self.training:
-            logits = self.tau[slot_idx, :, : slot.n_candidates]
-            weights = F.gumbel_softmax(logits, tau=gumbel_tau, hard=True, dim=-1)
-        else:
-            weights = beta_row
-
-        idx = torch.arange(slot.n_candidates, device=out.device, dtype=out.dtype)
-        idx = idx - idx.mean()
-        gate = 1.0 + 1e-3 * torch.sum(weights.to(out.dtype) * idx.view(1, -1), dim=-1)
-        return out * gate.view(1, -1)
+        # A fixed required structural adapter is replayed in the exported YAML,
+        # not optimized here. Candidate-index scaling is not an implementation
+        # of JoinTable/row filtering and must never supply architecture gradients.
+        if not slot.mandatory or slot.n_candidates != 1:
+            raise ValueError('DiffPrep cannot optimize unsupported hard operation choices')
+        return out
 
     def forward(
         self,

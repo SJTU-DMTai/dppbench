@@ -29,6 +29,7 @@ from baselines.common.pipeline import (
     check_pipeline,
 )
 from baselines.common.search_evaluator import subsample_data_inplace
+from baselines.common.budget import BudgetExceededError
 from baselines.common.utils import get_data_ctx
 
 
@@ -110,6 +111,10 @@ class Sandbox:
         data.load_std_test_frozen()
         if self.small_n > 0:
             subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)
+        # Fix train/validation partitions before any tree edge (also for RecData).
+        prepare = getattr(data, "_prepare_validation", None)
+        if callable(prepare):
+            prepare()
         self.data = data
         self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
         self._initial_snapshot = self.snapshot()
@@ -189,8 +194,9 @@ class Sandbox:
                 )
             else:
                 self.data.run_pre_process(chain_path)
-            if self.small_n > 0:
-                subsample_data_inplace(self.data, small_n=self.small_n, seed=self.seed)
+        except BudgetExceededError:
+            self.data = pickle.loads(pre_snapshot)
+            raise
         except Exception as e:
             err = (
                 f"{type(e).__name__}: {e}\n"
@@ -223,6 +229,7 @@ class Sandbox:
                 shape=(0, 0), columns=[], dtypes={}, head=[],
                 null_ratio=0.0, text="(no primary table available)", tables={},
             )
+        df = self._visible_frame(df)
         cols = [str(c) for c in df.columns]
         dtypes = {c: str(df[c].dtype) for c in cols}
         try:
@@ -262,6 +269,7 @@ class Sandbox:
         for name, table in named.items():
             if table is None or not hasattr(table, "columns"):
                 continue
+            table = self._visible_frame(table)
             cols = [str(c) for c in table.columns]
             dtypes = {c: str(table[c].dtype) for c in cols}
             try:
@@ -281,6 +289,13 @@ class Sandbox:
                 "head": rows,
             }
         return result
+
+    @staticmethod
+    def _visible_frame(frame):
+        """Do not expose frozen-test statistics or examples to the LLM."""
+        if "__split__" in frame.columns:
+            frame = frame.loc[frame["__split__"] != "std_test"]
+        return frame.drop(columns="__split__", errors="ignore")
 
     def _render_text(self, tables: dict) -> str:
         lines = [f"materialized_tables: {list(tables)}"]

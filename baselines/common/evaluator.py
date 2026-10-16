@@ -1,8 +1,8 @@
 """Pipeline evaluator that drives downstream model training.
 
 Reuses ``baselines.common.executor.TrainingExecutor`` so that each baseline fitness
-signal follows the task's configured primary metric. Metrics that represent losses
-(RMSE, MSE, MAE, and logloss) are negated so every search still maximizes fitness.
+signal follows the task configuration. Error metrics are negated so searches
+maximize fitness for classification and regression alike.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Optional
 
 from baselines.common.data_ctx import infer_data_context
 from baselines.common.budget import Budget, BudgetExceededError, get_active_budget
-from baselines.common.pipeline import Pipeline, check_pipeline
+from baselines.common.pipeline import Pipeline, PipelineCheckReport, check_pipeline
 
 # Ensure the repo root is importable so ``baselines.common.executor`` resolves
 # regardless of how this module is loaded (script vs. package).
@@ -43,6 +43,19 @@ class PipelineEvaluator:
     by search operators) are not retrained.
     """
 
+    executor_class = TrainingExecutor
+
+    def _check_pipeline(self, pipeline, ctx, **kwargs):
+        provider = getattr(pipeline, 'get_evaluator_class', None)
+        if callable(provider):
+            required = provider()
+            if not isinstance(self, required):
+                return PipelineCheckReport(False, [
+                    f'{type(pipeline).__name__} requires {required.__module__}.{required.__name__}; '
+                    f'got {type(self).__module__}.{type(self).__name__}'
+                ])
+        return check_pipeline(pipeline, ctx, **kwargs)
+
     def __init__(self, task_dir: str, data_name: str, data_dir=None,
                  metric_key: str | None = None, verbose: bool = False,
                  device: str = "cpu", model_name: Optional[str] = None,
@@ -51,12 +64,13 @@ class PipelineEvaluator:
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
+        self.metric_key = metric_key
         self.verbose = verbose
         self.device = device
         self.model_name = model_name
         self.scoring_method = scoring_method
         self.budget = budget or get_active_budget()
-        self._executor = TrainingExecutor(
+        self._executor = self.executor_class(
             task_dir,
             data_name=data_name,
             data_dir=data_dir,
@@ -65,19 +79,10 @@ class PipelineEvaluator:
             seed=seed,
             model_config=model_config,
         )
-        configured_metrics = (
-            self._executor.get_model_config().get("train", {}).get("metrics")
-            or []
-        )
-        self.metric_key = (
-            metric_key
-            if metric_key in configured_metrics
-            else (
-                configured_metrics[0]
-                if configured_metrics
-                else metric_key or "auc"
-            )
-        )
+        configured_metrics = self._executor.get_model_config().get("train", {}).get("metrics") or []
+        self.metric_key = (metric_key if metric_key in configured_metrics
+                           else configured_metrics[0] if configured_metrics
+                           else metric_key or "auc")
         self._cache: dict[str, EvaluationResult] = {}
         self._data_context = None
 
@@ -89,6 +94,9 @@ class PipelineEvaluator:
                 data,
                 self.task_type,
             )
+            # Context contains schema metadata only. Training loads its own
+            # instance, so retaining this raw dataset doubles resident data.
+            self._executor.clear_data_cache()
         return self._data_context
 
     @property
@@ -100,7 +108,7 @@ class PipelineEvaluator:
 
     def run_preprocessing(self, pipeline: Pipeline):
         """Run a partial pipeline without downstream model evaluation."""
-        report = check_pipeline(
+        report = self._check_pipeline(
             pipeline,
             self._get_data_context(),
             require_mandatory=False,
@@ -128,7 +136,7 @@ class PipelineEvaluator:
             self._cache[key] = ev
             return ev
 
-        report = check_pipeline(
+        report = self._check_pipeline(
             pipeline, self._get_data_context(), budget=self.budget,
         )
         if not report.valid:
@@ -159,7 +167,7 @@ class PipelineEvaluator:
             }
         dur = time.time() - t0
 
-        post_report = check_pipeline(
+        post_report = self._check_pipeline(
             pipeline,
             self._get_data_context(),
             budget=self.budget,
@@ -174,18 +182,16 @@ class PipelineEvaluator:
         success = bool(result.get("success"))
         metrics = result.get("metrics") or {}
         if success:
-            metric_key = self._metric_key_for_method(method)
-            if metric_key not in metrics:
-                raise ValueError(
-                    f"configured fitness metric {metric_key!r} is missing; "
-                    f"available metrics: {sorted(metrics)}"
-                )
-            metric_value = float(metrics[metric_key])
-            fitness = (
-                -metric_value
-                if metric_key in {"rmse", "mse", "mae", "logloss"}
-                else metric_value
-            )
+            metric = self._metric_key_for_method(method)
+            value = metrics.get(metric)
+            if value is None or not math.isfinite(float(value)):
+                success = False
+                result["error"] = f"Missing or non-finite evaluation metric {metric!r}: {value!r}"
+                fitness = -math.inf
+            else:
+                fitness = float(value)
+                if metric in {"rmse", "mse", "mae", "logloss"}:
+                    fitness = -fitness
         else:
             fitness = -math.inf
 
@@ -204,6 +210,7 @@ class PipelineEvaluator:
             else:
                 err_short = (result.get("error") or "")[:200].replace("\n", " ")
                 print(f"  [eval:{label}] FAILED ({dur:.1f}s)  steps={len(pipeline)}  err={err_short}")
+                print(result.get("error") or "")
         return ev
 
     def _display_method(self, method: str) -> str:

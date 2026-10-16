@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import os
 import time
+import random
+import numpy as np
+import torch
 from typing import Optional
 
 from baselines.common.config import default_config_path, load_baseline_config, resolve_config_value
@@ -130,6 +133,9 @@ class FlowPipe:
 
     def run(self) -> dict:
         started = time.time()
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
         evaluator = self._build_evaluator()
         data = evaluator.load_data()
         if evaluator.task_type == "graph":
@@ -210,6 +216,8 @@ class FlowPipe:
                 "official_commit": "265a4e91af6eaaf0a734619cb71e183c0788334f",
                 "checkpoint_path": self.checkpoint_path,
                 "training_mode": "per_task",
+                "metric_name": evaluator.metric_key,
+                "reward_mapping": "reciprocal_error_scale_1_or_bounded_score",
                 "training_history": trainer.history,
                 "policy_updates": trainer.policy_updates,
                 "budget_error": budget_error,

@@ -11,7 +11,7 @@ dag:
     params:
       method: key
       aux_df: $day
-      key_col: instant
+      key_col: dteday
   - id: o2
     op: DropColumns
     prev: [o1]

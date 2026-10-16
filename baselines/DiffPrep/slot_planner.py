@@ -17,6 +17,7 @@ from baselines.common.pipeline import PipelineStep, get_category_order, make_ste
 from baselines.common.utils import get_available_ops
 
 from .operator_catalog import OpCategory, is_mandatory, slot_kind_of
+from .soft_ops import has_soft_impl
 
 
 IDENTITY = "Identity"
@@ -54,11 +55,20 @@ def make_slots(
         forced_op = mandatory_ops[0] if mandatory_ops else None
         mandatory_slot = forced_op is not None
 
+        # Unsupported dataframe operations cannot be learned by a tensor gate.
+        # Retain required structural adapters only; learn supported soft ops.
+        if mandatory_slot and slot_kind_of(forced_op) == 'hard':
+            cands = [forced_op]
+        else:
+            cands = [n for n in cands if slot_kind_of(n) == 'soft' and has_soft_impl(n)]
+            if not cands:
+                continue
+
         if max_len is not None and len(slots) >= max_len and not mandatory_slot:
             continue
 
         candidates = cands if mandatory_slot else cands + [IDENTITY]
-        kind = "hard" if mandatory_slot or any(slot_kind_of(n) == "hard" for n in cands) else "soft"
+        kind = "hard" if any(slot_kind_of(n) == "hard" for n in cands) else "soft"
 
         slots.append(Slot(
             index=len(slots),

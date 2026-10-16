@@ -4,11 +4,29 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import torch
+import numpy as np
+import pandas as pd
 
-from .context import CONTEXT_DIM, GTEEmbedder
+from .context import CONTEXT_DIM, GTEEmbedder, data_feature
 
 
 class ContextInferenceTest(unittest.TestCase):
+    def test_sequence_columns_support_lists_and_arrays_without_mutation(self):
+        for make in (list, np.asarray):
+            frame = pd.DataFrame({'item_id_seq': [make([1, 2]), make([1, 2]), make([3]), None]})
+            before = frame.copy(deep=True)
+            features = data_feature(frame)
+            self.assertEqual(features.shape, (3300,))
+            self.assertTrue(np.isfinite(features).all())
+            self.assertEqual(features[7], 0.5)
+            pd.testing.assert_frame_equal(frame, before)
+
+    def test_scalar_unique_fraction_is_preserved(self):
+        frame = pd.DataFrame({'brand': ['a', 'a', 'b', None], 'number': [1., 2., 2., 3.]})
+        features = data_feature(frame).reshape(100, 33)
+        self.assertEqual(features[0, 7], 0.5)
+        self.assertEqual(features[1, 7], 0.75)
+
     def test_forward_disables_grad_and_returns_trainable_policy_input(self):
         class Inputs(dict):
             def to(self, device):

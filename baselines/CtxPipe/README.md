@@ -50,3 +50,10 @@ authoritative.
 
 Search fitness is validation-only. Frozen `std_test` replay remains in the
 benchmark harness and is not used as an RL reward.
+
+Local weight loading uses `DPPBENCH_LLM_QUANTIZATION=auto` by default: FP8
+when CUDA hardware and torchao support it, otherwise unquantized weights with
+a warning. Set `none` to disable quantization or `fp8` to require it strictly.
+CPU loading uses FP32; this does not imply an 8B model fits available memory.
+Quantization is optional; install compatible torchao/transformers on the GPU
+server if required. Model choices and downstream-feedback defaults are retained.

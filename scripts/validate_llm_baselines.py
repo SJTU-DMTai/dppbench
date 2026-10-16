@@ -220,7 +220,7 @@ def run_example_worker(args: argparse.Namespace) -> int:
         cls = _load_object(conf["cls_path"])
         kwargs = dict(conf["kwargs"])
         model_args = argparse.Namespace(
-            ctxpipe_model_path=str(args.ctxpipe_model_path),
+            ctxpipe_gte_model_path=str(args.ctxpipe_model_path),
             deepprep_model_path=str(args.deepprep_model_path),
             qwen3_model_path=str(args.qwen3_model_path),
         )
@@ -324,12 +324,12 @@ def run_example_worker(args: argparse.Namespace) -> int:
             errors.extend(report.errors)
         if name == "BAT" and runner.reward_cfg.use_downstream:
             metrics = result.get("best_metrics") or {}
-            if metrics.get("auc") is None:
-                errors.append("BAT downstream AUC evaluation failed: "
-                              + str(metrics.get("downstream_error") or "no validation AUC"))
+            if result.get("best_fitness") is None:
+                errors.append("BAT downstream task-metric evaluation failed: "
+                              + str(metrics.get("downstream_error") or "no validation fitness"))
         if name == "DeepPrep" and runner.downstream_feedback:
-            if (result.get("best_metrics") or {}).get("auc") is None:
-                errors.append("DeepPrep sampled validation AUC evaluation failed: no scored candidate")
+            if result.get("best_fitness") is None:
+                errors.append("DeepPrep sampled validation evaluation failed: no scored candidate")
         if name == "CtxPipe" and args.ctxpipe_train_check:
             stats = result.get('training_stats') or {}
             if not stats.get('component_optimizer_steps') or not stats.get('logical_optimizer_steps'):

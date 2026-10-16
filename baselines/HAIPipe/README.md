@@ -132,3 +132,15 @@ rejected because state/token semantics and the evaluator architecture changed.
 They require retraining or an explicit migration; changing metadata alone is not
 valid. Upstream checkpoints likewise need mapping and training-task provenance,
 not just matching shapes.
+
+## Merge adaptations (2026-10-11)
+
+Target-task training and v2 checkpoint architecture from the incoming version
+are retained. Existing v1 checkpoints must be regenerated. Dataset profiling
+supports sequence cells and excludes target/standard-test fields. Partial DAGs
+execute only referenced sources and propagate shared budget exceptions.
+
+For policy training, error metrics use reward `1/(1+error)` (scale 1) instead of
+negative errors that would rank failure reward zero above successful runs.
+Active selection keeps raw signed fitness, excludes failed/non-finite scores,
+and scales centered training labels to [-1,1] for the tanh scoring head.

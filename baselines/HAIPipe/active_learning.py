@@ -5,6 +5,7 @@ import copy
 import random
 
 import numpy as np
+import math
 import torch
 from sklearn.cluster import KMeans
 from torch import nn
@@ -117,7 +118,8 @@ class ActiveCandidateSelector:
         selected = []
         for cluster, center in enumerate(labels.cluster_centers_):
             members = [i for pos, i in enumerate(available) if labels.labels_[pos] == cluster]
-            selected.append(min(members, key=lambda i: np.linalg.norm(latent[i] - center)))
+            if members:
+                selected.append(min(members, key=lambda i: np.linalg.norm(latent[i] - center)))
         return selected
 
     def select(self, dataset_feature: np.ndarray, candidate_features: np.ndarray, evaluator, candidates) -> tuple[int, list[dict]]:
@@ -160,20 +162,21 @@ class ActiveCandidateSelector:
                 chosen.append(candidate)
             for index in chosen:
                 result = evaluator.evaluate(candidates[index])
-                score = float(result.fitness) if result.success else -1.0
+                score = float(result.fitness) if result.success and math.isfinite(result.fitness) else -math.inf
                 labeled[index] = score
                 tried.add(index)
                 records.append({"candidate": index, "fitness": score if result.success else None, "success": result.success, "error": result.error})
-            valid = [(i, score) for i, score in labeled.items() if score >= 0]
+            valid = [(i, score) for i, score in labeled.items() if math.isfinite(score)]
             if valid:
                 average = sum(score for _, score in valid) / len(valid)
                 train_ids = [i for i, _ in valid]
-                labels = torch.as_tensor([score - average for _, score in valid], dtype=torch.float32)
+                scale = max(1.0, max(abs(score - average) for _, score in valid))
+                labels = torch.as_tensor([(score - average) / scale for _, score in valid], dtype=torch.float32)
                 if len(train_ids) > 1:
                     self._fit(self.model, dataset_matrix, candidate_features, train_ids, labels)
                     for committee_model in self.committee:
                         bootstrap = [self.rng.choice(train_ids) for _ in train_ids]
-                        bootstrap_labels = [labeled[i] - average for i in bootstrap]
+                        bootstrap_labels = [(labeled[i] - average) / scale for i in bootstrap]
                         self._fit(
                             committee_model, dataset_matrix, candidate_features,
                             bootstrap, bootstrap_labels,
@@ -193,7 +196,7 @@ class ActiveCandidateSelector:
                 break
             if index not in labeled:
                 result = evaluator.evaluate(candidates[index])
-                labeled[index] = float(result.fitness) if result.success else -1.0
+                labeled[index] = float(result.fitness) if result.success and math.isfinite(result.fitness) else -math.inf
                 records.append({"candidate": index, "fitness": result.fitness if result.success else None, "success": result.success, "error": result.error, "final": True})
         return max(labeled, key=labeled.get), records
 

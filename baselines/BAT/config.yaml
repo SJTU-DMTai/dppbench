@@ -26,7 +26,7 @@ exploration_constant: 1.0
 early_stop_n_paths: 2
 # Deprecated compatibility key; official BAT stops only at reward == 1.0.
 early_stop_eps: 0.001
-# DPPBench combines target-column recall with sampled validation AUC.
+# DPPBench combines target-column recall with sampled validation fitness.
 reward_alpha: 1.0
 reward_beta: 1.0
 reward_gamma: 0.0

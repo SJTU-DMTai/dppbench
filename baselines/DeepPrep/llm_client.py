@@ -19,7 +19,8 @@ from typing import Any, Optional
 
 from baselines.common.api_keys import load_openai_compatible_api_config
 from baselines.common.budget import get_active_budget
-from baselines.common.llm_quantization import fp8_quantization_config
+from baselines.common.llm_quantization import (fp8_quantization_config, local_torch_dtype,
+    require_accelerate, model_dtype_kwargs, LocalModelInitializationError)
 
 
 @dataclass
@@ -169,6 +170,17 @@ class LLMClient:
         if self._local_model is not None:
             return
         try:
+            self._load_local_model()
+        except LocalModelInitializationError:
+            raise
+        except Exception as exc:
+            raise LocalModelInitializationError(
+                f"Cannot initialize local model {self.cfg.model!r}: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def _load_local_model(self):
+        require_accelerate(self.cfg.device_map)
+        try:
             from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         except ImportError as e:
             raise RuntimeError(
@@ -181,12 +193,17 @@ class LLMClient:
                 "The DeepPrep checkpoint tokenizer has no chat_template; "
                 "provide the official tokenizer files instead of a base model."
             )
+        quantization = fp8_quantization_config(self.cfg.device_map)
+        self._weight_quantization = "torchao_fp8_weight_only" if quantization is not None else None
+        dtype = self.cfg.torch_dtype
+        if dtype in ("auto", "bfloat16"):
+            dtype = local_torch_dtype(self.cfg.device_map)
         mdl = AutoModelForCausalLM.from_pretrained(
             self.cfg.model,
             trust_remote_code=True,
-            torch_dtype=self.cfg.torch_dtype,
+            **model_dtype_kwargs(dtype),
             device_map=self.cfg.device_map,
-            quantization_config=fp8_quantization_config(),
+            quantization_config=quantization,
         )
         mdl.eval()
         self._local_tokenizer = tok
@@ -251,7 +268,7 @@ class LLMClient:
             "enable_thinking": self.cfg.enable_thinking,
             "repetition_penalty": self.cfg.repetition_penalty,
             "torch_dtype": self.cfg.torch_dtype,
-            "weight_quantization": "torchao_fp8_weight_only" if self.cfg.backend == "local" else None,
+            "weight_quantization": getattr(self, "_weight_quantization", None),
             "device_map": self.cfg.device_map,
             "total_tokens_used": self.total_tokens_used,
         }

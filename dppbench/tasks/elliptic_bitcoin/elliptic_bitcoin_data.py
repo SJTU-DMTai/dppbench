@@ -64,6 +64,9 @@ class EllipticBitcoinData(TabularData):
         0: 0,
     }
 
+    # These are graph metadata, never candidate predictor columns.
+    required_graph_columns = ("txId", "time_step", "class")
+
     def __init__(self, data_dir=None):
         super().__init__(name="EllipticBitcoin")
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "data")
@@ -175,7 +178,9 @@ class EllipticBitcoinData(TabularData):
         return series.map(cls._normalize_class_value)
 
     def _class_lookup(self):
-        classes = self.auxiliary_dfs.get("classes")
+        classes = getattr(self, "_class_labels", None)
+        if classes is None:
+            classes = self.auxiliary_dfs.get("classes")
         if classes is None or "txId" not in classes.columns or "class" not in classes.columns:
             return {}
         mapped = self._normalize_class_series(classes["class"])
@@ -194,12 +199,13 @@ class EllipticBitcoinData(TabularData):
         df["class"] = labels.fillna(-1).astype(np.int64)
         return df
 
-    def load_std_test_frozen(self):
-        loaded = super().load_std_test_frozen()
-        if loaded and self.train_df is not None:
-            self._normalize_tx_id_column(self.train_df, "txId")
-            self._attach_class_labels(self.train_df)
-        return loaded
+    def _normalize_frozen_frame(self, df):
+        # Legacy frozen training files contain only features. Restore labels
+        # from the node-label table before the generic finite-label check;
+        # unknown nodes remain -1 and are excluded by graph loss masks.
+        df = df.copy()
+        self._normalize_tx_id_column(df, "txId")
+        return self._attach_class_labels(df)
 
     # ------------------------------------------------------------------
     # load
@@ -219,7 +225,11 @@ class EllipticBitcoinData(TabularData):
 
         classes = pd.read_csv(cls_path)
         self._normalize_tx_id_column(classes, "txId")
-        self.auxiliary_dfs["classes"] = classes
+        # Supervision belongs to the primary frame, never a feature branch.
+        # Keep the original labels privately for legacy frozen-frame restoration.
+        self._class_labels = classes
+        # Retain the node-key relation for existing DAGs referencing $classes.
+        self.auxiliary_dfs["classes"] = classes[["txId"]].drop_duplicates().copy()
 
         self._attach_class_labels(feats)
         self.train_df = feats
@@ -240,6 +250,20 @@ class EllipticBitcoinData(TabularData):
     # ------------------------------------------------------------------
     # graph build (post pre-process)
     # ------------------------------------------------------------------
+    def _prepare_validation(self):
+        # Freeze the same supervised masks used by build_graph BEFORE fitted
+        # preprocessing. Unknown nodes stay in the graph but never fit an op.
+        df = self.train_df.copy()
+        ts = pd.to_numeric(df["time_step"], errors="raise")
+        labeled = pd.to_numeric(df["class"], errors="coerce").ge(0)
+        held_out = (df["__split__"].eq("std_test") if "__split__" in df
+                    else pd.Series(False, index=df.index))
+        df["__split__"] = "test"
+        df.loc[labeled & ts.le(34), "__split__"] = "train"
+        df.loc[labeled & ts.between(35, 39), "__split__"] = "val"
+        df.loc[held_out, "__split__"] = "std_test"
+        self.train_df = df
+
     def build_graph(self):
         if self.train_df is None:
             raise RuntimeError("call load_data() and run_pre_process() before build_graph()")
@@ -270,7 +294,7 @@ class EllipticBitcoinData(TabularData):
 
         # Feature matrix.
         feat_cols = [c for c in df.columns if c.startswith("feat_")]
-        x = df[feat_cols].to_numpy(dtype=np.float32)
+        x = df[feat_cols].to_numpy(dtype=np.float64)
 
         # Labels: -1 unknown, 1 illicit, 0 licit.
         y_raw = pd.to_numeric(df["class"], errors="coerce").fillna(-1).astype(np.int64).to_numpy()
@@ -289,6 +313,9 @@ class EllipticBitcoinData(TabularData):
             train_mask = train_mask & ~std_test_mask
             val_mask = val_mask & ~std_test_mask
             test_mask = test_mask & ~std_test_mask
+
+        from ...graph_input import prepare_graph_features
+        x = prepare_graph_features(x, train_mask, feat_cols)
 
         self.graph = {
             "x": x,

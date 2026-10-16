@@ -35,7 +35,7 @@ schema from `DataContext` and the downstream model-input contract because tasks
 do not currently expose a separate target-schema artifact. No target table
 instances or frozen standard-test rows are exposed to the search.
 
-The DPPBench search reward is `(target_column_recall + validation_auc) / 2`.
+The DPPBench search reward is `(target_column_recall + validation_reward) / 2`.
 Each terminal candidate is evaluated using the same `SearchPipelineEvaluator`
 path as SAGA, with `downstream_eval_n=10000`, a fixed seed, and fast training
 enabled by default. Model parameters are fixed; no model hyperparameter search
@@ -68,7 +68,7 @@ optional. Final full-data evaluation is controlled separately by `eval_full`.
 compatibility, but official-aligned inference uses exact equality.
 
 Transformation nodes now receive sampled downstream evaluation before
-expansion, so training errors and validation AUC are included in revision
+expansion, so training errors and validation fitness are included in revision
 prompts. Terminal scoring reuses the common evaluation cache. A training
 failure permits revision even when all target columns already match.
 Wide-table prompts request compact automatic column selection (`cols=None`)
@@ -104,3 +104,15 @@ CPU-only alignment tests:
 ```bash
 python -m unittest baselines.BAT.test_bat_alignment -v
 ```
+
+Local weight loading uses `DPPBENCH_LLM_QUANTIZATION=auto` by default: FP8
+when CUDA hardware and torchao support it, otherwise unquantized weights with
+a warning. Set `none` to disable quantization or `fp8` to require it strictly.
+CPU loading uses FP32; this does not imply an 8B model fits available memory.
+Quantization is optional; install compatible torchao/transformers on the GPU
+server if required. Model choices and downstream-feedback defaults are retained.
+
+For error metrics, `validation_reward = 1/(1+error)` (scale 1); AUC uses
+its original value. `best_fitness` is the raw signed validation fitness,
+while `best_search_reward` is the MCTS reward. A failed final evaluation
+does not substitute an earlier sampled score.

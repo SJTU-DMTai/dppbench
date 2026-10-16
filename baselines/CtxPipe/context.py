@@ -11,7 +11,9 @@ import tempfile
 import numpy as np
 import pandas as pd
 import torch
-from baselines.common.llm_quantization import fp8_quantization_config
+from baselines.common.state_features import unique_value_count
+from baselines.common.llm_quantization import (fp8_quantization_config, local_torch_dtype,
+    require_accelerate, model_dtype_kwargs)
 
 
 GTE_MODEL_PATH = "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B"
@@ -49,11 +51,12 @@ class GTEEmbedder:
         if not Path(self.model_path).is_dir():
             raise FileNotFoundError(f"CtxPipe language-model checkpoint not found: {self.model_path}")
         from transformers import AutoModel, AutoTokenizer
+        require_accelerate(str(self.device))
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.model_path, local_files_only=True,
         )
         self._model = AutoModel.from_pretrained(
-            self.model_path, local_files_only=True, torch_dtype=torch.bfloat16,
+            self.model_path, local_files_only=True, **model_dtype_kwargs(local_torch_dtype(self.device)),
             device_map=str(self.device),
             quantization_config=fp8_quantization_config(self.device),
         ).eval()
@@ -75,7 +78,7 @@ class GTEEmbedder:
             output = self._model(**inputs)
             embedding = self._average_pool(
                 output.last_hidden_state, inputs["attention_mask"],
-            ).cpu().squeeze(0)
+            ).to(dtype=torch.float32, device="cpu").squeeze(0)
         if embedding.numel() != CONTEXT_DIM:
             raise ValueError(
                 f"CtxPipe encoder must produce {CONTEXT_DIM} dimensions, got {embedding.numel()}"
@@ -84,7 +87,8 @@ class GTEEmbedder:
 
     def _cache_key(self, csv_text: str) -> str:
         payload = (
-            "ctxpipe-qwen3-8b-fp8-v1\0" + self.model_path + "\0" + csv_text
+            "ctxpipe-qwen3-8b-v2\0" + os.environ.get("DPPBENCH_LLM_QUANTIZATION", "auto")
+            + "\0" + str(self.device) + "\0" + self.model_path + "\0" + csv_text
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
@@ -182,12 +186,13 @@ def data_feature(frame: pd.DataFrame) -> np.ndarray:
         series = frame[column]
         length = max(1, len(series))
         length_m, length_e = _frexp(len(series))
-        unique_m, unique_e = _frexp(series.nunique())
+        unique_count = unique_value_count(series)
+        unique_m, unique_e = _frexp(unique_count)
         row = [
             _dtype_id(series.dtype), length_m, length_e,
             _finite(series.isnull().sum() / length),
             1.0 if column in numeric_columns else 2.0,
-            unique_m, unique_e, _finite(series.nunique() / length),
+            unique_m, unique_e, _finite(unique_count / length),
         ]
         if column in numeric_columns:
             desc = series.describe()

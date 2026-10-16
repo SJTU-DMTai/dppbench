@@ -27,7 +27,11 @@ Use keyword arguments only. The environment supplies input tables; never pass
 positional table arguments, df=, or table= to common operators.
 Legal syntax examples (use actual column/table names from context):
 SortRows(by=['timestamp'], ascending=True)
-JoinTable(method='rec', item_df='item', item_col='item_id')
+JoinTable(method='rec', item_df='$item_df', item_col='item_id')
+For key/agg joins use aux_df='$TABLE_df' and key_col='COLUMN'; do not use item_df/user_df.
+Two input nodes for JoinTable means two tables, not two preceding transformations.
+To extend an existing path, repeat that full path before --> JoinTable(...).
+Write the chain on one line; do not number operators or put explanations inside parentheses.
 CreateSequence(user_col='user_id', item_col='item_id', time_col='timestamp', seq_col='item_id_seq', max_len=50)
 CreateSequence uses seq_col and max_len, not sequence_col, max_sequence_length,
 or target_col. LabelEncode(cols=None) automatically selects categorical columns;

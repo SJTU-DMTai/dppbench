@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from baselines.common.state_features import unique_value_count
 
 
 DTYPE_IDS = {
@@ -28,7 +29,7 @@ def dataset_features(frame: pd.DataFrame, column_num: int = 100) -> np.ndarray:
         series = frame[column]
         length = len(series)
         numeric = pd.api.types.is_numeric_dtype(series.dtype) and not pd.api.types.is_bool_dtype(series.dtype)
-        unique = series.nunique(dropna=True)
+        unique = unique_value_count(series)
         base = [
             float(DTYPE_IDS.get(str(series.dtype), 4)),
             float(length),

@@ -12,7 +12,10 @@ import random
 from dataclasses import dataclass
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
-from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, get_param_space
+from baselines.common.pipeline import (
+    Pipeline, assign_dag_structure, check_pipeline, get_param_space,
+    sample_handle_error_params,
+)
 from baselines.common.utils import get_op
 
 
@@ -75,8 +78,11 @@ class PhysicalSearch:
                     spec = get_op(step.op)
                 except KeyError:
                     continue
+                if step.op == "HandleError":
+                    step.params = sample_handle_error_params(step.params, self.rng)
+                    continue
                 if ctx is not None:
-                    context_space = get_param_space(step.op, ctx)
+                    context_space = get_param_space(step.op, ctx, step.params)
                     allowed_keys = set(spec.param_space or {}) | set(spec.required_params or ())
                     space_by_key = {
                         k: v for k, v in context_space.items()
@@ -84,6 +90,10 @@ class PhysicalSearch:
                     }
                 else:
                     space_by_key = dict(spec.param_space or {})
+                    if step.op == "HandleMV":
+                        space_by_key["action"] = [step.params.get("action", "impute")]
+                        if step.params.get("action", "impute") != "impute":
+                            space_by_key.pop("method", None)
                 if not space_by_key:
                     continue
                 for k, space in space_by_key.items():

@@ -1,7 +1,7 @@
 """Evaluator for Auto-Prep candidates.
 
 Subclasses ``SearchPipelineEvaluator`` so we get the small-data subsampling and the
-same downstream training stack (LightGBM AUC for tabular, DIN AUC for rec)
+same downstream training stack and task-configured metric (e.g. RMSE or AUC)
 used elsewhere in dppbench. Adds a single ``evaluate_for_agent`` wrapper
 that returns ``(fitness, metrics, error_str)`` triples and never raises.
 """
@@ -22,7 +22,7 @@ class AutoPrepEvaluator(SearchPipelineEvaluator):
         task_dir: str,
         data_name: str,
         data_dir=None,
-        metric_key: str = "auc",
+        metric_key: Optional[str] = None,
         verbose: bool = False,
         small_n: Optional[int] = 3000,
         seed: int = 42,
@@ -47,7 +47,7 @@ class AutoPrepEvaluator(SearchPipelineEvaluator):
     ) -> tuple[float, dict, Optional[str]]:
         """Return ``(fitness, metrics, error)``.
 
-        ``fitness`` is the chosen metric (default AUC). Failures are caught
+        ``fitness`` follows the task metric (loss metrics are negated). Failures are caught
         and returned as ``-inf`` fitness with a short error string so the
         outer search loop can continue without crashing.
         """

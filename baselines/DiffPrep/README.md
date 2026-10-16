@@ -15,7 +15,7 @@ DiffPrep relaxes discrete pipeline search into continuous architecture parameter
 
 | Topic | Original DiffPrep | DPPBench implementation |
 |---|---|---|
-| Operator space | Tabular preprocessing functions: missing-value imputation, normalization, outlier cleaning, discretization | Shared DPPBench operator catalog via `baselines.common.utils.get_available_ops` |
+| Operator space | Tabular preprocessing functions: missing-value imputation, normalization, outlier cleaning, discretization | Supported tensor operators from the shared catalog; fixed structural adapters at export |
 | Tasks | Tabular classification with differentiable LR | Tabular classification with multinomial LR + recommendation tasks with a differentiable recommendation surrogate |
 | Search objective | Validation loss of the differentiable downstream model | Validation loss of the surrogate during search; final benchmark score from common downstream evaluator/std-test |
 | Final execution | DiffPrep's own transformed tensors | DPPBench YAML `Pipeline` executed by `baselines.common.evaluator` |
@@ -60,3 +60,35 @@ Outputs are written under the selected evaluation output directory, e.g. `output
 | `discretizer.py` | Projects continuous choices to an executable common `Pipeline`. |
 | `evaluator.py` | Thin alias for common `SearchPipelineEvaluator`. |
 | `diffprep.py` | Top-level orchestrator. |
+
+## Search protocol audit (2026-10-12)
+
+This remains a DPPBench adaptation, not an exact execution-equivalent reproduction
+of all shared operators. The tabular surrogate is a single linear head; final
+LightGBM is a different optimization target. Soft forwards are approximations
+and their selected YAML operators are refitted by the shared evaluator.
+
+Unsupported optional structural operations are no longer assigned artificial
+candidate-index-dependent gates. Mixed categories retain their supported soft
+choices. Required hard adapters have no trainable choice and act as identity
+in tensor search; their real execution happens only in the exported dataframe
+pipeline. A JoinTable inserted by structural repair is therefore not a
+learned selection based on the quality of joined history features.
+
+DiffPrep now passes its seeded RNG through structural repair (including joins
+and mandatory tails). Other callers retain their existing behavior unless they
+supply the new optional rng argument. The saved `search_contract.json` and returned `search_contract`
+record version 2, actual search feature names, exported joins and the structural
+adapter policy. Inspect the join's aux_df/method/key_col before interpreting a
+low Berka score; it is not necessarily an account-only pipeline.
+
+Tabular search loads only train_frozen.parquet, validates split markers and uses
+the task's canonical train/validation split. It never opens std_test.parquet.
+small_n limits the training partition after splitting, not the validation set.
+A previous load_std_test_frozen call loaded held-out labels even though they
+were subsequently excluded; this was unnecessary access, not evidence that
+those labels contributed to the training loss.
+
+These corrections change DiffPrep search/export behavior on all supported tasks.
+Rerun its experiments rather than comparing old and new results as one version.
+No dataset-specific Berka history features were added to DiffPrep.

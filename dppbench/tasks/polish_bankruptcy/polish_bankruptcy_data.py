@@ -110,6 +110,7 @@ class PolishBankruptcyData(TabularData):
 
         main = dfs[5].rename(columns={"class": "TARGET"}).copy()
         main["_join_key"] = 1
+        self.auxiliary_join_keys = {f"year{n}": ["_join_key"] for n in range(1, 5)}
         self.train_df = main.reset_index(drop=True)
         self.test_df = None
 

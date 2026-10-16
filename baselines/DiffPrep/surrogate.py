@@ -4,8 +4,8 @@ The surrogates participate only in the inner loop of DiffPrep's bilevel
 optimisation. They receive features that have flown through the
 :class:`ContinuousPipeline` and produce a binary classification logit.
 
-* ``TabularSurrogate`` -- LR + 1-layer MLP head over numeric feature
-  vectors.
+* ``TabularSurrogate`` -- a single linear classification/regression head
+  over numeric feature vectors.
 * ``RecSurrogate`` -- user/item embedding + dot-product + MLP head; the
   feature tensor is concatenated to the embedding.
 """
@@ -19,10 +19,10 @@ import torch.nn as nn
 # Tabular surrogate
 # ---------------------------------------------------------------------------
 class TabularSurrogate(nn.Module):
-    def __init__(self, in_dim: int, n_classes: int):
+    def __init__(self, in_dim: int, n_classes: int, regression: bool = False):
         super().__init__()
         self.in_dim = in_dim
-        self.n_classes = max(int(n_classes), 2)
+        self.n_classes = 1 if regression else max(int(n_classes), 2)
         # The official implementation uses multinomial logistic regression.
         self.body = nn.Linear(in_dim, self.n_classes)
 

@@ -42,6 +42,7 @@ class BeijingAirQualityData(TabularData):
         self.id_col = None
         self.target_col = "PM2.5"
         self._sort_col = "_sort_idx"
+        self.auxiliary_join_keys = {"station_meta": ["station"]}
 
     def _download_if_missing(self):
         os.makedirs(self.data_dir, exist_ok=True)
@@ -134,6 +135,9 @@ class BeijingAirQualityData(TabularData):
         return self.train_df, self.test_df
 
     def split(self, val_ratio=0.2, seed=42):
+        prepared = self._prepared_splits()
+        if prepared is not None:
+            return prepared
         df = self.train_df
 
         std_test = None

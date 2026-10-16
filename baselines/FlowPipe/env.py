@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import random
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ import numpy as np
 
 from baselines.common.op_spec import CATALOG, OpCategory, is_mandatory
 from baselines.common.budget import BudgetExceededError
+from baselines.common.search_reward import fitness_to_reward
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step
 from baselines.common.state_features import dataframe_state_features, primary_feature_frame
 
@@ -117,7 +119,7 @@ class FlowPipeEnv:
         gid = int(gid)
         if self.get_action_mask()[gid] <= 0:
             self.done = True
-            return self.get_state_repr(), 1e-6, True, {"error": "masked action", "err_code": -1}
+            return self.get_state_repr(), 1e-12, True, {"error": "masked action", "err_code": -1}
         if not self.logic_selected:
             self.logic_selected = True
             self.logic_id = gid
@@ -130,7 +132,7 @@ class FlowPipeEnv:
             step = make_step(action.name, self.ctx, self.rng)
             if step is None:
                 self.done = True
-                return self.get_state_repr(), 1e-6, True, {**info, "error": "parameter instantiation failed", "err_code": -1}
+                return self.get_state_repr(), 1e-12, True, {**info, "error": "parameter instantiation failed", "err_code": -1}
             candidate = self.pipeline.copy()
             candidate.steps.append(step)
             try:
@@ -149,7 +151,7 @@ class FlowPipeEnv:
                 raise
             except Exception as exc:
                 self.done = True
-                return self.get_state_repr(), 1e-6, True, {
+                return self.get_state_repr(), 1e-12, True, {
                     **info, "error": f"{type(exc).__name__}: {exc}", "err_code": -1,
                 }
             self.pipeline = candidate
@@ -166,15 +168,15 @@ class FlowPipeEnv:
         assign_dag_structure(self.pipeline, self.ctx, self.rng)
         report = check_pipeline(self.pipeline, self.ctx)
         if not report.valid:
-            return self.get_state_repr(), 1e-6, True, {
+            return self.get_state_repr(), 1e-12, True, {
                 **info, "error": "; ".join(report.errors), "err_code": -1,
             }
         result = self.evaluator.evaluate(self.pipeline)
-        if not result.success or result.fitness is None:
-            return self.get_state_repr(), 1e-6, True, {
+        if not result.success or result.fitness is None or not math.isfinite(float(result.fitness)):
+            return self.get_state_repr(), 1e-12, True, {
                 **info, "error": result.error or "evaluation failed", "err_code": -1,
             }
-        return self.get_state_repr(), max(float(result.fitness), 1e-6), True, {
+        return self.get_state_repr(), max(fitness_to_reward(result.fitness, getattr(self.evaluator, "metric_key", None)), 1e-12), True, {
             **info, "fitness": float(result.fitness), "metrics": dict(result.metrics or {}),
         }
 

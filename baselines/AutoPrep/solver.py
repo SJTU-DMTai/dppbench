@@ -81,7 +81,7 @@ def _join_step_for_edge(
         table_ctx = ctx.tables.get(edge.aux_ref)
         join_keys = table_ctx.join_keys_to_primary if table_ctx is not None else []
         params["key_col"] = join_keys[0]["primary"] if join_keys else ctx.id_col
-        params["method"] = "key"
+        params["method"] = "key" if table_ctx and table_ctx.join_key_unique.get(params["key_col"], False) else "agg"
         if rng.random() < 0.5:
             params["prefix"] = edge.aux_ref.upper()[:8]
             params["max_cols"] = 20

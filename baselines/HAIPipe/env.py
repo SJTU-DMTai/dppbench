@@ -6,7 +6,7 @@ import random
 
 import numpy as np
 
-from baselines.common.op_spec import is_mandatory
+from baselines.common.op_spec import is_mandatory, CATALOG
 from baselines.common.budget import BudgetExceededError
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step
 from baselines.common.utils import get_available_ops
@@ -20,11 +20,13 @@ class HAIPipeEnv:
         self.evaluator = evaluator
         self.ctx = ctx
         self.rng = random.Random(seed)
-        specs = list(get_available_ops(ctx.task_type))
+        specs = list(CATALOG.values())
+        self.applicable_ops = {s.op_name for s in get_available_ops(ctx.task_type)
+                               if any(make_step(s.op_name, ctx, random.Random(10_000 + i)) is not None
+                                      for i in range(3))}
         by_category = {}
         for spec in specs:
-            if not is_mandatory(spec.op_name, ctx.task_type):
-                by_category.setdefault(spec.category, []).append(spec.op_name)
+            by_category.setdefault(spec.category, []).append(spec.op_name)
         self.component_actions = {}
         for component, categories in COMPONENT_CATEGORY_GROUPS:
             actions = sorted({name for category in categories for name in by_category.get(category, [])})
@@ -75,6 +77,10 @@ class HAIPipeEnv:
         self.current_data_feature = features
         return True
 
+    def invalid_actions(self, component):
+        return [i for i, name in enumerate(self.component_actions[component])
+                if name not in self.applicable_ops or is_mandatory(name, self.ctx.task_type)]
+
     def episode(self, agent, *, epsilon: float = 0.0) -> dict:
         self.current_data_feature = self.data_feature.copy()
         logical_id = agent.select_logical(self.logical_state(), epsilon)
@@ -85,7 +91,7 @@ class HAIPipeEnv:
         transitions = []
         vocabulary_ids = {name: i + 1 for i, name in enumerate(self.primitive_vocabulary)}
         for position, component in enumerate(order):
-            tried = set()
+            tried = set(self.invalid_actions(component))
             chosen = None
             while len(tried) < len(self.component_actions[component]) + 1:
                 state = self.primitive_state(sequence_ids, logical_id)
@@ -106,6 +112,7 @@ class HAIPipeEnv:
                 "component": component, "state": state, "action": action,
                 "reward": 0.0, "next_state": next_state,
                 "done": component == order[-1],
+                "next_invalid_actions": tuple(self.invalid_actions(order[position + 1])) if position + 1 < len(order) else (),
                 "next_component": order[position + 1] if position + 1 < len(order) else None,
             })
             trace.append({

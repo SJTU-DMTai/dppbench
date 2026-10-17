@@ -1,3 +1,11 @@
+# Three training modes; missing pretrained weights are an explicit error.
+training_mode: finetune
+pretrained_dir: checkpoints/pretrained
+pretrained_checkpoint: null
+finetune_frames: 2000
+finetune_epochs: 2
+finetune_eps_start: 0.2
+finetune_eps_end: 0.05
 # Upstream CtxPipe defaults, adapted only for four DPPBench categories.
 frames: 50000
 max_steps: 8

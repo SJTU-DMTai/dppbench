@@ -100,7 +100,7 @@ __all__ = ["CrossTaskPretrainer"]
 
 def save_alternative_evaluator(
     model, path: str, *, data_dim: int, primitive_vocabulary: list[str],
-    provenance: dict | None = None,
+    provenance: dict | None = None, checkpoint_metadata: dict | None = None,
 ) -> None:
     """Save the strict vocabulary-bearing checkpoint consumed by HAIPipe."""
     import torch
@@ -108,6 +108,7 @@ def save_alternative_evaluator(
     if model.dataset_dim != int(data_dim):
         raise ValueError("ScoreNN dataset dimension differs from checkpoint metadata")
     torch.save({
+        "checkpoint_metadata": checkpoint_metadata,
         "metadata": model.metadata(primitive_vocabulary),
         "provenance": dict(provenance or {}),
         "model": model.state_dict(),
@@ -115,3 +116,12 @@ def save_alternative_evaluator(
 
 
 __all__.append("save_alternative_evaluator")
+
+
+def load_alternative_evaluator(model, path, vocabulary, checkpoint_metadata):
+    import torch
+    checkpoint = torch.load(path, map_location=next(model.parameters()).device, weights_only=True)
+    if checkpoint.get("metadata") != model.metadata(vocabulary) or checkpoint.get("checkpoint_metadata") != checkpoint_metadata:
+        raise ValueError("Incompatible HAIPipe alternative-evaluator checkpoint; retrain both weights together")
+    model.load_state_dict(checkpoint["model"])
+    return checkpoint.get("provenance", {})

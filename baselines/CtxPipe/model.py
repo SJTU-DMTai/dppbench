@@ -32,17 +32,16 @@ class _ContextGateMixin:
     def _init_context(self, actions_dim: int, device: torch.device) -> None:
         mean = 3.0 / (actions_dim + N_DIM_FIRST)
         self.ctx_linear = _ctx_plugin(actions_dim)
-        self.context_gate = torch.normal(
+        self.context_gate = nn.Parameter(torch.normal(
             mean=mean, std=mean / 3.0,
             size=(actions_dim + N_DIM_FIRST, actions_dim),
             device=device,
-            requires_grad=True,
-        )
+        ))
         bias_mean = 3.0 / actions_dim
-        self.context_gate_bias = torch.normal(
+        self.context_gate_bias = nn.Parameter(torch.normal(
             mean=bias_mean, std=bias_mean / 3.0,
-            size=(actions_dim,), device=device, requires_grad=True,
-        )
+            size=(actions_dim,), device=device,
+        ))
 
     def _apply_network(self, x, ctx, mode):
         value = x

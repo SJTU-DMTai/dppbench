@@ -19,7 +19,7 @@ class CtxPipeTester:
             component = env.current_component_id()
             state = env.get_state()
             context = env.context_embedding()
-            tried = []
+            tried = list(env.invalid_actions(component))
             while True:
                 action, _ = agent.select_component(
                     component, state, context, epsilon=0.0, tried=tried,

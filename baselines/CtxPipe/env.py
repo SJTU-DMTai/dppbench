@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from baselines.common.op_spec import OpCategory
+from baselines.common.op_spec import OpCategory, CATALOG
 from baselines.common.pipeline import (
     Pipeline, assign_dag_structure, make_step, repair, truncate_optional_steps,
 )
@@ -57,6 +57,8 @@ class PipelineEnv:
         self.max_steps = int(max_steps)
         self.illegal_penalty = float(illegal_penalty)
         self.failure_reward = float(failure_reward)
+        if self.failure_reward >= 0:
+            raise ValueError("CtxPipe failure_reward must be negative")
         self.rng = _random.Random(seed)
         self.embedder = GTEEmbedder(
             gte_model_path,
@@ -66,14 +68,16 @@ class PipelineEnv:
             sample_seed=seed,
         )
 
-        specs = list(get_available_ops(self.task_type))
+        specs = list(CATALOG.values())
+        applicable = {s.op_name for s in get_available_ops(self.task_type)}
+        self.applicable_ops = {n for n in applicable if self._can_make_step(n)}
         self.op_names = [spec.op_name for spec in specs]
         self.op_gid = {name: index + 1 for index, name in enumerate(self.op_names)}
         self.components: dict[str, Component] = {}
         for category in OpCategory:
             candidates = tuple(
                 spec.op_name for spec in specs
-                if spec.category == category and self._can_make_step(spec.op_name)
+                if spec.category == category
             )
             if not candidates:
                 raise ValueError(f"CtxPipe category {category.value} has no applicable operators")
@@ -138,6 +142,10 @@ class PipelineEnv:
             raise ValueError(f"invalid logical pipeline id {logical_pipeline_id}")
         self.logical_pipeline_id = int(logical_pipeline_id)
 
+    def invalid_actions(self, component_id):
+        component = self.components[component_id]
+        return [i for i, name in enumerate(component.candidates) if name not in self.applicable_ops]
+
     def current_component_id(self) -> Optional[str]:
         if self.done or self.position >= self.n_components:
             return None
@@ -177,6 +185,8 @@ class PipelineEnv:
             "action": int(action),
         }
 
+        if action in self.invalid_actions(component_id):
+            return state, self.illegal_penalty, False, {**info, "error": "masked action", "retry": True}
         if action == component.skip_action:
             info["action_name"] = "SKIP"
             info["reason"] = "skip"
@@ -231,7 +241,8 @@ class PipelineEnv:
             return self.failure_reward, {
                 "success": False, "error": result.error, "metrics": result.metrics,
             }
-        return float(result.fitness), {
+        from baselines.common.search_reward import fitness_to_reward
+        return fitness_to_reward(result.fitness, self.evaluator.metric_key), {
             "success": True, "fitness": float(result.fitness),
             "metrics": dict(result.metrics or {}),
         }
@@ -241,6 +252,8 @@ class PipelineEnv:
 
     def action_to_op(self, component_id: str, action: int) -> str:
         component = self.components[component_id]
+        if action in self.invalid_actions(component_id):
+            return state, self.illegal_penalty, False, {**info, "error": "masked action", "retry": True}
         if action == component.skip_action:
             return "SKIP"
         return component.candidates[action]

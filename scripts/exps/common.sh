@@ -153,6 +153,15 @@ run_eval() {
     --qwen3_model_path "${QWEN3_MODEL_PATH}"
   )
 
+  case "$baseline" in
+    CtxPipe|HAIPipe|FlowPipe)
+      cmd+=(--training_mode "${TRAINING_MODE:-finetune}"
+            --pretrained_dir "${PRETRAINED_DIR:-${REPO_ROOT}/checkpoints/pretrained}")
+      add_optional_arg cmd --finetune_frames "${FINETUNE_FRAMES:-}"
+      add_optional_arg cmd --finetune_epochs "${FINETUNE_EPOCHS:-}"
+      ;;
+  esac
+
   if [[ -n "${max_pipeline_len}" ]]; then
     cmd+=(--max_pipeline_len "${max_pipeline_len}")
   fi

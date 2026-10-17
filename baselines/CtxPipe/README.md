@@ -57,3 +57,16 @@ a warning. Set `none` to disable quantization or `fp8` to require it strictly.
 CPU loading uses FP32; this does not imply an 8B model fits available memory.
 Quantization is optional; install compatible torchao/transformers on the GPU
 server if required. Model choices and downstream-feedback defaults are retained.
+
+## Shared pretraining and target modes
+
+The default is `training_mode: finetune`: load a shared checkpoint and adapt it for
+2000 target interaction frames. `pretrained` performs no policy updates;
+`scratch` retains full random-initialization task training. Follow
+[the training scripts and configuration guide](../../scripts/BASELINE_TRAINING.md).
+Source training alternates complete episodes across datasets with a shared agent,
+replay buffer and one frozen Qwen3-8B encoder. Global action IDs remain fixed and
+task applicability is masked in selection and Bellman bootstraps. Gate tensors
+are registered parameters and included in optimizer/checkpoint state. Legacy
+checkpoints must be regenerated. Rewards for error metrics use the shared positive
+mapping; reported fitness remains in original signed evaluator units.

@@ -37,3 +37,5 @@ logs/
 
 AGENTS.md
 *.pdf
+# Locally trained pretrained model weights and caches
+/checkpoints/pretrained/

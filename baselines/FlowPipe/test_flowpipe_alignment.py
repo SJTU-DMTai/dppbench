@@ -35,7 +35,7 @@ class FlowPipeAlignmentTest(unittest.TestCase):
             history = trainer.train(num_epochs=2)
         self.assertEqual(len(history), 2)
         self.assertEqual(len(trainer.candidates), 4)
-        self.assertEqual(trainer.policy_updates, 2)
+        self.assertEqual(trainer.optimizer_updates, 2)
         self.assertEqual(agent.sample_trajectory.call_count, 4)
         self.assertEqual(agent.learn_from_batch.call_count, 2)
 

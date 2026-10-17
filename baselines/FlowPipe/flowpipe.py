@@ -14,6 +14,7 @@ from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.state_features import primary_feature_frame
 from baselines.common.utils import get_data_ctx
+from baselines.common.training_utils import (validate_mode, pretrained_path, contract, load_pretrained, freeze_agent, resolved_model, isolate_training_data)
 from baselines.common.budget import BudgetExceededError
 
 from .agent import GFNAgent
@@ -23,6 +24,8 @@ from .trainer import FlowPipeTrainer
 
 
 CONFIG_KEYS = (
+    "training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs",
+    "finetune_eps_start", "finetune_eps_end",
     "checkpoint_path", "context_cache_dir", "llama_model_path", "llm_name", "ctx_dim",
     "hidden_dim", "learning_rate", "buffer_capacity", "failure_weight",
     "reward_temperature", "inference_samples", "inference_mode",
@@ -54,14 +57,27 @@ class FlowPipe:
         config_path: Optional[str] = None,
         train_epochs: Optional[int] = None, trajectories_per_epoch: Optional[int] = None,
         updates_per_epoch: Optional[int] = None, trajectory_batch_size: Optional[int] = None,
+        training_mode: Optional[str] = None, pretrained_dir: Optional[str] = None,
+        pretrained_checkpoint: Optional[str] = None, finetune_frames: Optional[int] = None,
+        finetune_epochs: Optional[int] = None,
     ) -> None:
         cfg = load_baseline_config(config_path or default_config_path(__file__), CONFIG_KEYS)
         def value(key, explicit):
             return resolve_config_value(cfg, key, explicit)
 
+        self.training_mode = validate_mode(training_mode or cfg["training_mode"])
+        self.pretrained_dir = pretrained_dir or os.environ.get("DPPBENCH_PRETRAINED_DIR") or cfg["pretrained_dir"]
+        self.pretrained_checkpoint = pretrained_checkpoint or cfg["pretrained_checkpoint"]
+        self.finetune_frames = int(cfg["finetune_frames"] if finetune_frames is None else finetune_frames)
+        self.finetune_epochs = int(cfg["finetune_epochs"] if finetune_epochs is None else finetune_epochs)
+        self.finetune_eps_start = float(cfg["finetune_eps_start"])
+        self.finetune_eps_end = float(cfg["finetune_eps_end"])
+        if self.finetune_frames <= 0 or self.finetune_epochs <= 0:
+            raise ValueError("Fine-tuning budgets must be positive")
         self.task_dir, self.data_name, self.data_dir = task_dir, data_name, data_dir
         self.checkpoint_path = str(value("checkpoint_path", checkpoint_path) or "")
         self.context_cache_dir = str(value("context_cache_dir", context_cache_dir))
+        self._explicit_context_cache = context_cache_dir is not None
         configured_llama_path = cfg.get("llama_model_path")
         if llama_model_path == DEFAULT_LLAMA_MODEL_PATH and configured_llama_path:
             llama_model_path = configured_llama_path
@@ -99,6 +115,7 @@ class FlowPipe:
             model_name=self.model_name, verbose=self.verbose,
         )
         evaluator.set_evaluate_std_test(False)
+        isolate_training_data(evaluator)
         if self.fast_train:
             evaluator.set_fast_mode(True)
         return evaluator
@@ -145,6 +162,10 @@ class FlowPipe:
                 "best_pipeline_yaml": None,
                 "duration_seconds": time.time() - started,
             }
+        if not self._explicit_context_cache and self.training_mode != "scratch":
+            self.context_cache_dir = os.path.join(os.path.dirname(pretrained_path(
+                "FlowPipe", resolved_model(evaluator), self.pretrained_checkpoint or self.checkpoint_path,
+                self.pretrained_dir)), "context_cache")
         ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
         env = FlowPipeEnv(evaluator, ctx, max_steps=self.max_steps, seed=self.seed)
         context = SemanticContextLoader(
@@ -157,7 +178,20 @@ class FlowPipe:
             buffer_capacity=self.buffer_capacity, failure_weight=self.failure_weight,
             reward_temperature=self.reward_temperature, device=self.device,
         )
-        # Fresh task-specific policy; no cross-task checkpoint is loaded.
+        model_name = resolved_model(evaluator)
+        agent.checkpoint_metadata = contract("FlowPipe", env, model_name,
+            {"path": os.path.realpath(self.llama_model_path), "name": self.llm_name, "dim": self.ctx_dim})
+        source_path = pretrained_path("FlowPipe", model_name,
+                                  self.pretrained_checkpoint or self.checkpoint_path, self.pretrained_dir)
+        if self.training_mode != "scratch" and os.path.realpath(source_path) == os.path.realpath(os.path.join(self.output_dir, "gfn.pt")):
+            raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
+        source_provenance = {}
+        if self.training_mode != "scratch":
+            source_provenance = load_pretrained(agent, source_path, agent.checkpoint_metadata)
+        agent.provenance = {"mode": self.training_mode, "target_task": self.data_name,
+                            "source_checkpoint": source_path if self.training_mode != "scratch" else None,
+                            "source_provenance": source_provenance,
+                            "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}
         agent.set_context(context)
         agent.model.train()
         trainer = FlowPipeTrainer(
@@ -167,15 +201,18 @@ class FlowPipe:
             trajectory_batch_size=self.trajectory_batch_size, seed=self.seed,
         )
         budget_error = None
+        training_started = time.monotonic()
         try:
-            trainer.train(num_epochs=self.train_epochs)
+            if self.training_mode != "pretrained":
+                trainer.train(num_epochs=self.finetune_epochs if self.training_mode == "finetune" else self.train_epochs)
         except BudgetExceededError as exc:
             budget_error = str(exc)
+        training_seconds = time.monotonic() - training_started if self.training_mode != "pretrained" else 0.0
         agent.save(os.path.join(self.output_dir, 'gfn.pt'))
         self.checkpoint_path = os.path.join(self.output_dir, 'gfn.pt')
-        agent.model.eval()
+        freeze_agent(agent)
 
-        candidates = list(trainer.candidates)
+        candidates = []
         count = self.inference_samples if self.inference_mode == "sample" else self.inference_top_n
         for index in range(max(1, count)):
             env.reset()
@@ -199,7 +236,7 @@ class FlowPipe:
                     and check_pipeline(item['pipeline'], ctx).valid]
         if not eligible:
             with open(os.path.join(self.output_dir, 'flowpipe_log.json'), 'w') as handle:
-                json.dump({'training_mode': 'per_task', 'policy_updates': trainer.policy_updates,
+                json.dump({'training_mode': 'per_task', 'optimizer_updates': trainer.optimizer_updates,
                            'training_history': trainer.history, 'budget_error': budget_error,
                            'candidates': [{k: v for k, v in item.items() if k != 'pipeline'} for item in candidates]},
                           handle, indent=2, default=str)
@@ -215,11 +252,11 @@ class FlowPipe:
             json.dump({
                 "official_commit": "265a4e91af6eaaf0a734619cb71e183c0788334f",
                 "checkpoint_path": self.checkpoint_path,
-                "training_mode": "per_task",
+                "training_mode": self.training_mode,
                 "metric_name": evaluator.metric_key,
                 "reward_mapping": "reciprocal_error_scale_1_or_bounded_score",
                 "training_history": trainer.history,
-                "policy_updates": trainer.policy_updates,
+                "optimizer_updates": trainer.optimizer_updates,
                 "budget_error": budget_error,
                 "llama_model_path": self.llama_model_path,
                 "llm_name": self.llm_name,
@@ -241,7 +278,9 @@ class FlowPipe:
             "output_dir": self.output_dir,
             "checkpoint_path": self.checkpoint_path,
             "task_checkpoint_path": os.path.join(self.output_dir, 'gfn.pt'),
-            "training_stats": {"policy_updates": trainer.policy_updates, "epochs_completed": len(trainer.history)},
+            "training_mode": self.training_mode, "training_provenance": agent.provenance,
+            "training_seconds": training_seconds,
+            "training_stats": {"optimizer_updates": trainer.optimizer_updates, "epochs_completed": len(trainer.history)},
             "context_cache_dir": self.context_cache_dir,
             "llama_model_path": self.llama_model_path,
         }

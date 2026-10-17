@@ -17,6 +17,7 @@ from baselines.common.config import (
 from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.utils import get_data_ctx
+from baselines.common.training_utils import (validate_mode, pretrained_path, contract, load_pretrained, freeze_agent, resolved_model, isolate_training_data)
 
 from .agent import DQNAgent
 from .env import PipelineEnv
@@ -26,6 +27,8 @@ from .trainer import CtxPipeTrainer
 
 
 CONFIG_KEYS = (
+    "training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs",
+    "finetune_eps_start", "finetune_eps_end",
     "frames",
     "max_steps",
     "small_n",
@@ -79,6 +82,9 @@ class CtxPipe:
         config_path: Optional[str] = None,
         gte_model_path: Optional[str] = None,
         context_cache_dir: Optional[str] = None,
+        training_mode: Optional[str] = None, pretrained_dir: Optional[str] = None,
+        pretrained_checkpoint: Optional[str] = None, finetune_frames: Optional[int] = None,
+        finetune_epochs: Optional[int] = None,
         **_legacy,
     ) -> None:
         cfg = load_baseline_config(
@@ -114,6 +120,15 @@ class CtxPipe:
             cfg, "context_cache_dir", context_cache_dir
         )
 
+        self.training_mode = validate_mode(training_mode or cfg["training_mode"])
+        self.pretrained_dir = pretrained_dir or os.environ.get("DPPBENCH_PRETRAINED_DIR") or cfg["pretrained_dir"]
+        self.pretrained_checkpoint = pretrained_checkpoint or cfg["pretrained_checkpoint"]
+        self.finetune_frames = int(cfg["finetune_frames"] if finetune_frames is None else finetune_frames)
+        self.finetune_epochs = int(cfg["finetune_epochs"] if finetune_epochs is None else finetune_epochs)
+        self.finetune_eps_start = float(cfg["finetune_eps_start"])
+        self.finetune_eps_end = float(cfg["finetune_eps_end"])
+        if self.finetune_frames <= 0 or self.finetune_epochs <= 0:
+            raise ValueError("Fine-tuning budgets must be positive")
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
@@ -167,6 +182,7 @@ class CtxPipe:
             model_name=self.model_name,
         )
         train_evaluator.set_evaluate_std_test(False)
+        isolate_training_data(train_evaluator)
         if self.fast_train:
             train_evaluator.set_fast_mode(True)
 
@@ -219,13 +235,26 @@ class CtxPipe:
                   f"action_dims={env.component_action_dims}  "
                   f"ops={len(env.op_names)}  gte={self.gte_model_path}")
 
-        # 4. Train.
+        model_name = resolved_model(train_evaluator)
+        agent.checkpoint_metadata = contract("CtxPipe", env, model_name,
+                                         {"path": os.path.realpath(self.gte_model_path), "dim": 4096})
+        source_path = pretrained_path("CtxPipe", model_name, self.pretrained_checkpoint, self.pretrained_dir)
+        if self.training_mode != "scratch" and os.path.realpath(source_path) == os.path.realpath(os.path.join(self.output_dir, "q_network.pt")):
+            raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
+        source_provenance = {}
+        if self.training_mode != "scratch":
+            source_provenance = load_pretrained(agent, source_path, agent.checkpoint_metadata)
+        agent.provenance = {"mode": self.training_mode, "target_task": self.data_name,
+                            "source_checkpoint": source_path if self.training_mode != "scratch" else None,
+                            "source_provenance": source_provenance,
+                            "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}
+        # 4. Train only in scratch/fine-tuning modes.
         trainer = CtxPipeTrainer(
             env=env,
             agent=agent,
-            frames=self.frames,
-            eps_start=self.eps_start,
-            eps_end=self.eps_end,
+            frames=self.finetune_frames if self.training_mode == "finetune" else self.frames,
+            eps_start=self.finetune_eps_start if self.training_mode == "finetune" else self.eps_start,
+            eps_end=self.finetune_eps_end if self.training_mode == "finetune" else self.eps_end,
             eps_decay=self.eps_decay,
             batch_size=self.batch_size,
             logical_batch_size=self.logical_batch_size,
@@ -234,7 +263,14 @@ class CtxPipe:
             output_dir=self.output_dir,
             verbose=self.verbose,
         )
-        train_out = trainer.train()
+        train_out = {"history": [], "training_stats": {"frames": 0, "component_optimizer_steps": 0,
+                     "logical_optimizer_steps": 0}}
+        training_started = time.monotonic()
+        if self.training_mode != "pretrained":
+            train_out = trainer.train()
+        training_seconds = time.monotonic() - training_started if self.training_mode != "pretrained" else 0.0
+        freeze_agent(agent)
+        train_out["training_stats"]["training_mode"] = self.training_mode
         import json
         with open(os.path.join(self.output_dir, 'training_stats.json'), 'w') as handle:
             json.dump(train_out['training_stats'], handle, indent=2)
@@ -256,6 +292,7 @@ class CtxPipe:
                 model_name=self.model_name,
             )
             full_eval.set_evaluate_std_test(False)
+            isolate_training_data(full_eval)
 
         test_out = tester.run(agent=agent, env=env, eval_full_with=full_eval)
         final_pipeline = test_out["pipeline"]
@@ -323,6 +360,8 @@ class CtxPipe:
             "best_fitness": best_fitness,
             "best_metrics": best_metrics,
             "training_stats": train_out['training_stats'],
+            "training_mode": self.training_mode, "training_provenance": agent.provenance,
+            "training_seconds": training_seconds,
             "final_pipeline_ops": [s.op for s in best_pipeline.steps],
             "is_legal": check_pipeline(best_pipeline, data_ctx).valid,
             "eval_error": eval_error,

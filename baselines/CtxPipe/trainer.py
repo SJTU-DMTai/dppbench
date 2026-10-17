@@ -39,7 +39,11 @@ class CtxPipeTrainer:
         verbose: bool = True,
         **_compat,
     ) -> None:
-        self.env = env
+        self.environments = list(env) if isinstance(env, (list, tuple)) else [env]
+        if not self.environments:
+            raise ValueError("CtxPipe needs source environments")
+        self.env = self.environments[0]
+        self.episode_index = 0
         self.agent = agent
         self.frames = int(frames)
         self.eps_start = float(eps_start)
@@ -59,6 +63,8 @@ class CtxPipeTrainer:
         )
 
     def _start_episode(self, epsilon: float):
+        self.env = self.environments[self.episode_index % len(self.environments)]
+        self.episode_index += 1
         self.env.reset(0)
         raw_context = self.env.context_embedding()
         logical_id, _ = self.agent.select_logical(
@@ -85,7 +91,7 @@ class CtxPipeTrainer:
                 component = self.env.current_component_id()
             state = self.env.get_state()
             replay_context = self.env.context_embedding()
-            tried: list[int] = []
+            tried: list[int] = list(self.env.invalid_actions(component))
             while True:
                 action, used_model = self.agent.select_component(
                     component, state, replay_context, epsilon, tried,
@@ -109,6 +115,8 @@ class CtxPipeTrainer:
                     next_component=next_component,
                     logical_pipeline_id=episode["logical_id"],
                     context=replay_context,
+                    next_context=self.env.context_embedding() if not done else None,
+                    next_invalid_actions=tuple(self.env.invalid_actions(next_component)) if next_component else (),
                 )
             episode["steps"] += 1
             episode["trace"].append({

@@ -182,7 +182,7 @@ def test_score_pretrain_and_checkpoint_round_trip(tmp_path):
         assert torch.equal(output, restored(torch.ones(1, 4), torch.tensor([[1, 2, 0]])))
 
 
-def test_old_policy_checkpoint_is_rejected_before_loading_weights(tmp_path):
+def test_old_pretrained_checkpoint_is_rejected_before_loading_weights(tmp_path):
     import torch
     from .agent import HAIPipeAgent
     import pytest
@@ -265,7 +265,7 @@ def test_policy_round_trip_and_inference_disables_dropout(monkeypatch, tmp_path)
     action = agent.select_component("one", state)
     assert modes == [False]
     assert agent.models["one"].training
-    path = tmp_path / "policy.pt"
+    path = tmp_path / "checkpoint.pt"
     provenance = {"training_tasks": ["train"], "held_out_tasks": ["test"]}
     agent.save(str(path), provenance)
     restored = module.HAIPipeAgent(**options, seed=99)
@@ -373,7 +373,7 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
     assert provenance["training_tasks"] == ["task"]
     assert provenance["model_name"] == "LightGBM"
     assert result["training_mode"] == "per_task_model"
-    assert result["policy_training"]["frames"] == 56000
+    assert result["agent_training"]["frames"] == 56000
 
 
 def test_container_features_remain_finite():

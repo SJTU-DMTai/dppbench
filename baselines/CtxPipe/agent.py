@@ -23,6 +23,8 @@ class Transition:
     next_component: Optional[str]
     logical_pipeline_id: int
     context: np.ndarray
+    next_context: np.ndarray | None = None
+    next_invalid_actions: tuple[int, ...] = ()
 
 
 class ReplayBuffer:
@@ -177,9 +179,10 @@ class DQNAgent:
             next_model = self.models[sample.next_component]
             next_q = next_model(
                 self._tensor(sample.next_state, self.device).unsqueeze(0),
-                self._tensor(sample.context, self.device).unsqueeze(0),
+                self._tensor(sample.next_context if sample.next_context is not None else sample.context, self.device).unsqueeze(0),
                 mode,
             )
+            next_q[:, list(sample.next_invalid_actions)] = -torch.inf
             next_values.append(float(next_q.max(1)[0].detach().item()))
         expected = rewards + self._tensor(next_values, self.device)
         return F.mse_loss(q_value, expected.detach())
@@ -234,6 +237,8 @@ class DQNAgent:
 
     def save(self, path: str) -> None:
         torch.save({
+            "checkpoint_metadata": getattr(self, "checkpoint_metadata", None),
+            "provenance": getattr(self, "provenance", {}),
             "component_models": {
                 name: model.network.state_dict() for name, model in self.models.items()
             },
@@ -243,7 +248,7 @@ class DQNAgent:
         }, path)
 
     def load(self, path: str) -> None:
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         if checkpoint["component_ids"] != self.component_ids:
             raise ValueError("checkpoint category layout does not match")
         for name, state in checkpoint["component_models"].items():

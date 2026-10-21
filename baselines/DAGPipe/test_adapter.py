@@ -119,6 +119,10 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(summary['trials']), 9)
         self.assertTrue(all(t['success'] for t in summary['trials']))
         self.assertEqual(self.pipeline.hash(), before)
+        deltas = [t['transform_cache_delta']['cpu'] for t in summary['trials']]
+        # Real evaluator/executor lifecycle with 9 HPO trials: repeated train
+        # and validation content must produce hits; std-test remains unread.
+        self.assertTrue(all(d['hits'] >= 2 and d['misses'] == 0 for d in deltas[1:]))
         try:
             result = evaluator.evaluate(self.pipeline)
             self.assertTrue(result.success, result.error)
@@ -135,6 +139,64 @@ class AdapterTests(unittest.TestCase):
     def test_too_short_budget(self):
         with self.assertRaisesRegex(ValueError, 'max_pipeline_len'):
             DAGPipe(**self.kwargs, max_pipeline_len=1)
+
+    def test_diagnostic_is_bounded_and_preserves_formal_artifacts(self):
+        root = Path(self.tmp.name)/'diagnostic_output'
+        root.mkdir(exist_ok=True)
+        (root/'best_pipeline.yaml').write_text('formal result', encoding='utf-8')
+        runner = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=root)
+        runner.cfg.update(batch_size=16, epochs=200, profile_steps=1)
+        # Constructor normally reads diagnostic_steps from a dedicated config.
+        config = root/'diagnostic_config.yaml'
+        import yaml
+        runner.cfg['diagnostic_steps'] = 2
+        config.write_text(yaml.safe_dump(runner.cfg), encoding='utf-8')
+        runner = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=root, config_path=config)
+        result = runner.run()
+        self.assertTrue(result['diagnostic_only'])
+        self.assertEqual(result['architecture_steps'], 2)
+        self.assertFalse(hasattr(runner, 'best_pipeline'))
+        self.assertEqual((root/'best_pipeline.yaml').read_text(), 'formal result')
+        self.assertFalse(list(runner.output_dir.glob('*.yaml')))
+        self.assertTrue((runner.output_dir/'training_trace.json').exists())
+        self.assertEqual(result['measurements']['finite_check']['calls'], 2)
+
+    def test_nonfinite_gradient_rejected_before_optimizer_step(self):
+        import baselines.DAGPipe.dagpipe as module
+        original = module.make_model
+        def poisoned(*args, **kwargs):
+            model = original(*args, **kwargs)
+            next(model.parameters()).register_hook(lambda grad: torch.full_like(grad, float('nan')))
+            return model
+        runner = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'poison')
+        runner.cfg['epochs'] = 1
+        with patch.object(module, 'make_model', side_effect=poisoned), patch.object(torch.optim.Adam, 'step') as step:
+            with self.assertRaisesRegex(RuntimeError, 'non-finite'):
+                runner.run()
+            step.assert_not_called()
+
+    def test_sync_ablation_preserves_cpu_checkpoint(self):
+        runner = DAGPipe(**self.kwargs, max_pipeline_len=10, output_dir=Path(self.tmp.name)/'legacy_sync')
+        runner.cfg.update(epochs=2, sync_mode='legacy')
+        runner.legacy_sync = True
+        result = runner.run()
+        self.assertEqual(result['best_pipeline_yaml'], self.result['best_pipeline_yaml'])
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA unavailable')
+    def test_cuda_diagnostic_stream_events(self):
+        import yaml
+        root = Path(self.tmp.name)/'gpu_diagnostic'
+        root.mkdir()
+        config = dict(self.runner.cfg, diagnostic_steps=2, profile_steps=0, batch_size=16)
+        path = root/'config.yaml'
+        path.write_text(yaml.safe_dump(config), encoding='utf-8')
+        kwargs = dict(self.kwargs, device='cuda:0')
+        runner = DAGPipe(**kwargs, max_pipeline_len=10, output_dir=root, config_path=path)
+        result = runner.run()
+        self.assertEqual(result['architecture_steps'], 2)
+        for stats in result['measurements'].values():
+            self.assertGreaterEqual(stats['cuda_stream_elapsed_ms'], 0)
+            self.assertEqual(stats['calls'], 2)
 
 
 if __name__ == '__main__':

@@ -830,7 +830,10 @@ class RecData(BaseData):
                 group = group.drop(columns="__split__")
                 transformed = op.transform(group)
                 if split_name == "train":
-                    transformed_train = transformed.copy()
+                    transformed_train = transformed
+                # Wide encoders can return one block per column. Consolidate
+                # before inserting split metadata to avoid fragmentation warnings.
+                transformed = transformed.copy()
                 transformed["__split__"] = split_name
                 parts.append(transformed)
             if deferred_std_test is not None:

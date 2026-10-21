@@ -78,12 +78,6 @@ class HierarchicalDAGPipe(nn.Module):
         return layer_outputs[-1]
 
     def dag_penalty(self):
-        layer_adj = torch.triu(torch.sigmoid(self.layer_adj_logits), diagonal=1)
-        layer_penalty = acyclicity_constraint(layer_adj)
-
-        intra_penalties = []
-        for layer_idx in range(self.num_layers):
-            intra_adj = torch.triu(torch.sigmoid(self.intra_adj_logits[layer_idx]), diagonal=1)
-            intra_penalties.append(acyclicity_constraint(intra_adj))
-
-        return layer_penalty + sum(intra_penalties)
+        # All forward edges are strictly upper triangular, so tr(exp(A*A))-K
+        # and its parameter gradient are identically zero. Keep API compatibility.
+        return 0.0 * (self.layer_adj_logits.sum() + sum(a.sum() for a in self.intra_adj_logits))

@@ -15,6 +15,8 @@ class OneHotEncode(BaseOp):
         self.cols_to_encode_ = []
         self.output_columns_ = None
         self.fitted_ = False
+        self.output_col_types = {}
+        self.drop_col_types = []
 
     def get_op_description(self):
         description = """Operator name: OneHotEncode
@@ -96,6 +98,12 @@ dag:
         )
         if self.output_columns_ is None:
             self.output_columns_ = encoded.columns.tolist()
+            retained_columns = set(df.columns) - set(cols_to_encode)
+            self.output_col_types = {
+                col: "numeric" for col in encoded.columns
+                if col not in retained_columns
+            }
+            self.drop_col_types = list(cols_to_encode)
         else:
             encoded = encoded.reindex(columns=self.output_columns_, fill_value=0)
         return encoded

@@ -6,7 +6,7 @@ EXPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_1_1}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_1_cost}"
 GPU_ID="${GPU_ID:-1}"
 CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
@@ -114,7 +114,7 @@ TASKS="${TASKS:-${DEFAULT_TASKS}}"
 # DEFAULT_BASELINES="DiffPrep"
 
 # baselines based on LLMs
-DEFAULT_BASELINES="BAT DeepPrep CtxPipe FlowPipe"
+DEFAULT_BASELINES="AlphaClean Random DiffPrep DAGPipe"
 
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 

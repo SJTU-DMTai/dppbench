@@ -9,7 +9,21 @@ hidden: 64
 reference_rows: 16
 # Original RobustScaler can overflow float32 gradients on tied categorical values.
 dtype: float64
-transform_cache_entries: 2
+transform_cache_entries: 3
+# Per frozen model/device; bounds RETAINED outputs, not all process memory.
+transform_cache_max_mb: 512
+# Preserve previous stopping semantics unless explicitly testing another budget.
+min_delta: 0.0
+data_placement: cpu
+gpu_reserve_mb: 4096
+gpu_data_fraction: 0.5
+transform_batch_size: 1024
+# A short profiling run is diagnostic; exclude it from benchmark timings.
+profile_steps: 0
+diagnostic_steps: 0
+# Resource enforcement remains cooperative; full checks at phase boundaries.
+resource_check_interval_s: 0.1
+sync_mode: optimized
 # Task contract documented in dppbench/tasks/TASKS_SUMMARY.md: cnt=casual+registered.
 exclude_columns:
   bike_sharing: [casual, registered]

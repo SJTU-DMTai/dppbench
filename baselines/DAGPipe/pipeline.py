@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 import yaml
 
@@ -16,6 +17,7 @@ class DAGPipePipeline:
     def __init__(self, payload):
         self.payload = payload
         self._transforms = {}
+        self._transform_signature = None
         self.validate()
 
     def validate(self):
@@ -52,6 +54,18 @@ class DAGPipePipeline:
 
     def transform(self, frame, device='cpu'):
         from .runtime import FrozenTransform
+        identity_started = time.perf_counter()
+        signature = self.hash()
+        if signature != self._transform_signature:
+            # Public payload edits must never retain an old model / cache.
+            self.validate()
+            self._transforms.clear()
+            self._transform_signature = signature
         if device not in self._transforms:
             self._transforms[device] = FrozenTransform(self.payload, device)
-        return self._transforms[device].transform(frame)
+        transform = self._transforms[device]
+        transform.stats['checkpoint_identity_seconds'] = transform.stats.get('checkpoint_identity_seconds', 0) + time.perf_counter()-identity_started
+        return transform.transform(frame)
+
+    def performance_stats(self):
+        return {str(device): dict(transform.stats) for device, transform in self._transforms.items()}

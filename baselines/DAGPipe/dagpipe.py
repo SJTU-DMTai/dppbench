@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import random
 import time
+import uuid
 
 import numpy as np
 import torch
@@ -19,19 +20,8 @@ from .pipeline import DAGPipePipeline
 from .tabular_adapter import tabular_adapter, augment_splits
 from .runtime import InputEncoder, limited_layers, make_model, check_resources, reference_forward
 from .task_adapter import rec_adapter, rec_splits, fit_rec_schema, graph_splits
-
-
-def clip_gradients(parameters):
-    """Same L2 clip at 1, with float64 norm to avoid float32 square overflow."""
-    grads = [p.grad for p in parameters if p.grad is not None]
-    if any(not torch.isfinite(g).all() for g in grads):
-        raise RuntimeError('DAGPipe encountered non-finite gradients')
-    norm = torch.stack([torch.linalg.vector_norm(g.double()) for g in grads]).norm()
-    if not torch.isfinite(norm):
-        raise RuntimeError('DAGPipe encountered non-finite gradient norm')
-    factor = min(1.0, 1.0/(norm.item()+1e-6))
-    for grad in grads:
-        grad.mul_(factor)
+from .performance import (clip_gradients, legacy_clip_gradients, TrainingData, ProfileWindow,
+                          StepMeasurements, ResourceGuard)
 
 
 class DAGPipe:
@@ -53,6 +43,16 @@ class DAGPipe:
             if int(self.cfg[key]) < (2 if key in ('batch_size', 'reference_rows') else 1):
                 raise ValueError(f'Invalid DAGPipe config {key}={self.cfg[key]}')
         self.eval_full = eval_full  # Final evaluation is owned by the harness.
+        if float(self.cfg.get('min_delta', 0)) < 0 or int(self.cfg.get('profile_steps', 0)) < 0:
+            raise ValueError('min_delta and profile_steps must be nonnegative')
+        self.legacy_sync = self.cfg.get('sync_mode', 'optimized') == 'legacy'
+        if self.cfg.get('sync_mode', 'optimized') not in ('legacy', 'optimized'):
+            raise ValueError('sync_mode must be legacy or optimized')
+        self.diagnostic_steps = int(self.cfg.get('diagnostic_steps', 0))
+        if self.diagnostic_steps < 0:
+            raise ValueError('diagnostic_steps must be nonnegative')
+        if self.diagnostic_steps:
+            self.output_dir = self.output_dir/'diagnostics'/uuid.uuid4().hex
 
     def run(self):
         started = time.monotonic()
@@ -62,6 +62,7 @@ class DAGPipe:
         if str(self.device).startswith('cuda'):
             if not torch.cuda.is_available():
                 raise RuntimeError('DAGPipe CUDA requested but unavailable')
+            torch.cuda.set_device(self.device)
             torch.cuda.manual_seed_all(self.seed)
         budget = get_active_budget()
         check_resources()
@@ -142,6 +143,8 @@ class DAGPipe:
         finally:
             executor.cleanup()
 
+        preparation_seconds = time.monotonic()-started
+
         fixed_steps = 1 + len(adapter.get('ops', []))
         if self.max_len <= fixed_steps:
             raise ValueError(f'DAGPipe {task_type} needs max_pipeline_len >= {fixed_steps + 1} '
@@ -157,61 +160,132 @@ class DAGPipe:
         # Fixed before optimization and reused by validation and deployment.
         reference_idx = torch.randperm(len(x_train), generator=generator)[:int(self.cfg['reference_rows'])]
         reference = x_train[reference_idx].to(self.device)
+        training_data = TrainingData((x_train, y_train, x_val, y_val), self.device, self.cfg, budget,
+                                     parameters=list(model.parameters())+list(predictor.parameters()))
+        print('[DAGPipe memory plan] ' + json.dumps(training_data.report))
         epochs = int(self.cfg['epochs'])
         best_loss, best_state, stale, updates = float('inf'), None, 0, 0
+        stopping_loss = float('inf')
         history = []
 
         def task_loss(z, y):
             return nn.functional.mse_loss(z.squeeze(-1), y) if regression else nn.functional.cross_entropy(z, y)
 
         batch_size = int(self.cfg['batch_size'])
-        for epoch in range(epochs):
-            check_resources()
-            model.train(); predictor.train()
-            perm = torch.randperm(len(x_train), generator=generator)
-            total_train = 0.0
-            for idx in perm.split(batch_size):
-                check_resources()
-                x, y = x_train[idx].to(self.device), y_train[idx].to(self.device)
-                predictions = predictor(reference_forward(model, x, reference))
-                loss = task_loss(predictions, y)
-                penalty = model.dag_penalty()/(model.num_layers+1)
-                sparse = torch.triu(torch.sigmoid(model.layer_adj_logits), diagonal=1).sum()
-                sparse = sparse + sum(torch.triu(torch.sigmoid(a), diagonal=1).sum() for a in model.intra_adj_logits)
-                loss = loss + float(self.cfg['lambda_dag'])*penalty + float(self.cfg['lambda_sparse'])*sparse
-                if not torch.isfinite(loss):
-                    raise RuntimeError(f'DAGPipe non-finite training loss at epoch {epoch+1}')
-                optimizer.zero_grad()
-                loss.backward()
-                clip_gradients(model.parameters())
-                clip_gradients(predictor.parameters())
-                optimizer.step()
-                updates += 1
-                total_train += loss.item()*len(y)
-            # Same train-only reference protocol as final downstream evaluation.
-            model.eval(); predictor.eval()
-            total_val = 0.0
-            with torch.no_grad():
-                for start in range(0, len(x_val), batch_size):
-                    check_resources()
-                    x = x_val[start:start+batch_size].to(self.device)
-                    y = y_val[start:start+batch_size].to(self.device)
-                    loss = task_loss(predictor(reference_forward(model, x, reference)), y)
-                    if not torch.isfinite(loss):
-                        raise RuntimeError(f'DAGPipe non-finite validation loss at epoch {epoch+1}')
-                    total_val += loss.item()*len(y)
-            value = total_val/len(x_val)
-            scheduler.step(value)
-            history.append({'epoch': epoch+1, 'train_loss': total_train/len(x_train), 'validation_task_loss': value})
-            if value < best_loss:
-                best_loss, best_state, stale = value, copy.deepcopy(model.state_dict()), 0
-                best_epoch = epoch+1
-            else:
-                stale += 1
-            if self.verbose:
-                print(f'[DAGPipe] epoch={epoch+1}/{epochs} val_loss={value:.6g}')
-            if stale >= int(self.cfg['patience']):
-                break
+        profiler = ProfileWindow(self.cfg.get('profile_steps', 0), self.device, self.output_dir)
+        measurements = StepMeasurements(self.device, bool(self.diagnostic_steps or self.cfg.get('profile_steps', 0)))
+        resources = ResourceGuard(check_resources, float(self.cfg.get('resource_check_interval_s', .1)))
+
+        def diagnostic_result():
+            # No validation sweep, checkpoint serialization, downstream fit or HPO.
+            profiler.close()
+            result = {'diagnostic_only': True, 'architecture_steps': updates,
+                      'requested_steps': self.diagnostic_steps, 'memory_plan': training_data.report,
+                      'preparation_wall_seconds': preparation_seconds,
+                      'timing_kind': 'host wall / CUDA stream elapsed; not pure kernel time',
+                      'measurements': measurements.summary(),
+                      'profile_enabled': bool(self.cfg.get('profile_steps', 0))}
+            result['total_wall_seconds'] = time.monotonic()-started
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            (self.output_dir/'diagnostic.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+            result['output_dir'] = str(self.output_dir)
+            return result
+
+        try:
+            for epoch in range(epochs):
+                if str(self.device).startswith('cuda'):
+                    torch.cuda.synchronize(self.device)
+                epoch_started = time.monotonic()
+                resources(force=True)
+                model.train(); predictor.train()
+                perm = training_data.indices(torch.randperm(len(x_train), generator=generator))
+                total_train = torch.zeros((), dtype=torch.float64, device=self.device)
+                for idx in perm.split(batch_size):
+                    measurements.enabled = bool(self.diagnostic_steps or profiler.profiler is not None)
+                    with measurements.scope('resource_check'):
+                        resources()
+                    with measurements.scope('batch_transfer'):
+                        x, y = training_data.batch(False, idx)
+                    with measurements.scope('forward'):
+                        predictions = predictor(reference_forward(model, x, reference))
+                        loss = task_loss(predictions, y)
+                        sparse = torch.triu(torch.sigmoid(model.layer_adj_logits), diagonal=1).sum()
+                        sparse = sparse + sum(torch.triu(torch.sigmoid(a), diagonal=1).sum() for a in model.intra_adj_logits)
+                        loss = loss + float(self.cfg['lambda_sparse'])*sparse
+                        if self.legacy_sync and not torch.isfinite(loss):
+                            raise RuntimeError('DAGPipe non-finite loss')
+                    with measurements.scope('backward'):
+                        optimizer.zero_grad()
+                        loss.backward()
+                    with measurements.scope('gradient_norm_and_clip'):
+                        if self.legacy_sync:
+                            legacy_clip_gradients(model.parameters())
+                            legacy_clip_gradients(predictor.parameters())
+                        else:
+                            model_finite = clip_gradients(model.parameters(), check=False, instrument=measurements.enabled)
+                            predictor_finite = clip_gradients(predictor.parameters(), check=False, instrument=measurements.enabled)
+                    with measurements.scope('finite_check'):
+                        # Deliberately retain ONE host check before every update.
+                        # Removing it would delay detection until after parameter mutation.
+                        if not self.legacy_sync and not bool(torch.isfinite(loss.detach()) & model_finite & predictor_finite):
+                            raise RuntimeError(f'DAGPipe non-finite training loss/gradient at epoch {epoch+1}')
+                    with measurements.scope('optimizer'):
+                        optimizer.step()
+                    updates += 1
+                    total_train += (loss.item() if self.legacy_sync else loss.detach().double())*len(y)
+                    profiler.step()
+                    if self.diagnostic_steps and updates >= self.diagnostic_steps:
+                        resources(force=True)
+                        return diagnostic_result()
+                train_loss = total_train.item()/len(x_train)
+                if str(self.device).startswith('cuda'):
+                    torch.cuda.synchronize(self.device)
+                training_seconds = time.monotonic()-epoch_started
+                # Diagnostic runs only measure bounded train steps, no full validation.
+                if self.diagnostic_steps:
+                    continue
+                validation_started = time.monotonic()
+                model.eval(); predictor.eval()
+                total_val = torch.zeros((), dtype=torch.float64, device=self.device)
+                val_finite = torch.ones((), dtype=torch.bool, device=self.device)
+                with torch.no_grad():
+                    for start in range(0, len(x_val), batch_size):
+                        resources()
+                        x, y = training_data.batch(True, slice(start, start+batch_size))
+                        loss = task_loss(predictor(reference_forward(model, x, reference)), y)
+                        if self.legacy_sync and not torch.isfinite(loss):
+                            raise RuntimeError('DAGPipe non-finite validation loss')
+                        val_finite &= torch.isfinite(loss)
+                        total_val += (loss.item() if self.legacy_sync else loss.double())*len(y)
+                if not bool(val_finite):
+                    raise RuntimeError(f'DAGPipe non-finite validation loss at epoch {epoch+1}')
+                value = total_val.item()/len(x_val)
+                if str(self.device).startswith('cuda'):
+                    torch.cuda.synchronize(self.device)
+                validation_seconds = time.monotonic()-validation_started
+                resources(force=True)
+                scheduler.step(value)
+                history.append({'epoch': epoch+1, 'train_loss': train_loss, 'validation_task_loss': value,
+                                'training_wall_seconds': training_seconds, 'validation_wall_seconds': validation_seconds,
+                                'profile_enabled': bool(self.cfg.get('profile_steps', 0))})
+                if value < best_loss:
+                    best_loss, best_state = value, copy.deepcopy(model.state_dict())
+                    best_epoch = epoch+1
+                if value < stopping_loss-float(self.cfg.get('min_delta', 0)):
+                    stopping_loss, stale = value, 0
+                else:
+                    stale += 1
+                if self.verbose:
+                    print(f'[DAGPipe] epoch={epoch+1}/{epochs} val_loss={value:.12g} '
+                          f'train_wall_s={training_seconds:.3f} val_wall_s={validation_seconds:.3f}')
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                (self.output_dir/'training_progress.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
+                if stale >= int(self.cfg['patience']):
+                    break
+            if self.diagnostic_steps:
+                return diagnostic_result()
+        finally:
+            profiler.close()
         if best_state is None:
             raise RuntimeError('DAGPipe produced no valid checkpoint')
         payload = {
@@ -224,6 +298,8 @@ class DAGPipe:
             'state_dict': {k: v.detach().cpu().tolist() for k,v in best_state.items()},
             'reference': x_train[reference_idx].tolist(),
             'cache_entries': int(self.cfg['transform_cache_entries']),
+            'cache_max_mb': float(self.cfg.get('transform_cache_max_mb', 512)),
+            'transform_batch_size': int(self.cfg.get('transform_batch_size', 1024)),
             'selection': {'epoch': best_epoch, 'validation_loss': best_loss},
         }
         pipeline = DAGPipePipeline(payload)
@@ -240,6 +316,10 @@ class DAGPipe:
                'evaluation_semantics': 'downstream_pipeline_evaluations_excluding_final_hpo',
                'ops': pipeline.op_names(), 'history': history,
                'construct_time_s': time.monotonic()-started,
+               'preparation_seconds': preparation_seconds, 'memory_plan': training_data.report,
+               'profile_steps': int(self.cfg.get('profile_steps', 0)),
+               'step_measurements': measurements.summary(),
+               'timing_kind': 'synchronized phase wall time; includes Python/resource/statistics/profiler overhead',
                'search_metric': 'negative_normalized_mse' if regression else 'negative_cross_entropy',
                'budget': budget.snapshot() if budget else None}
         if input_diagnostics is not None:

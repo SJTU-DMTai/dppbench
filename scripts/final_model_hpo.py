@@ -193,6 +193,7 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
     path = Path(output_dir) / "final_hpo.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     for params in candidate_configs(kwargs["model_name"]):
+        cache_before = pipeline.performance_stats() if hasattr(pipeline, 'performance_stats') else {}
         evaluator = evaluator_class(**kwargs, model_config=params)
         try:
             evaluator.set_evaluate_std_test(False)
@@ -206,6 +207,11 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
                 and value is not None
                 and math.isfinite(float(value))
             )
+            cache_after = pipeline.performance_stats() if hasattr(pipeline, 'performance_stats') else {}
+            cache_delta = {device: {key: value-cache_before.get(device, {}).get(key, 0)
+                                   for key, value in stats.items()
+                                   if key not in ('cached_bytes', 'peak_cached_bytes')}
+                           for device, stats in cache_after.items()}
             trials.append({
                 "params": params,
                 "metric": metric,
@@ -213,6 +219,8 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
                 "success": valid,
                 "error": result.error,
                 "seconds": result.duration_seconds,
+                "transform_cache": cache_after,
+                "transform_cache_delta": cache_delta,
             })
             if valid:
                 minimize = metric in {"rmse", "mse", "mae", "logloss"}

@@ -288,6 +288,8 @@ def parse_args():
     parser.add_argument("--resume_pipeline", default=None,
                         help="DAGPipe checkpoint path; supports {task} and {model}. Skips search; requires existing frozen data.")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
+    parser.add_argument("--baseline_config_path", default=None,
+                        help="Explicit baseline YAML (e.g. short DAGPipe profiler run).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output_dir", type=str,
@@ -462,6 +464,10 @@ def _run_baseline_and_eval(
     conf = BASELINE_CONFIGS[baseline_name]
     cls = _load_class(conf["cls_path"])
     kwargs = dict(conf["kwargs"])
+    if getattr(args, 'baseline_config_path', None):
+        if 'config_path' not in inspect.signature(cls).parameters:
+            raise ValueError(f'{baseline_name} does not support config_path')
+        kwargs['config_path'] = args.baseline_config_path
     _apply_baseline_model_paths(baseline_name, kwargs, args)
     if conf["supports_eval_full"]:
         kwargs["eval_full"] = False
@@ -534,6 +540,9 @@ def _run_baseline_and_eval(
         raise RuntimeError(error)
 
     pipeline_yaml = result.get("best_pipeline_yaml")
+    if result.get('diagnostic_only'):
+        raise ValueError('Diagnostic-only DAGPipe run ended safely; no final HPO/test was run. '
+                         f"Results: {result.get('output_dir')}. Use scripts/profile_dagpipe_performance.py.")
     if not pipeline_yaml:
         raise RuntimeError(
             f"{baseline_name} did not produce best_pipeline_yaml for {task_name}"
@@ -774,7 +783,7 @@ def _canonical_baseline_name(name: str) -> str:
 
 def _resume_path(args, task, model):
     template = getattr(args, "resume_pipeline", None)
-    return os.path.abspath(template.format(task=task, model=model)) if template else None
+    return os.path.abspath(template.replace('{task}', task).replace('{model}', model)) if template else None
 
 
 def main():

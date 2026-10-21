@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -154,26 +155,72 @@ class FrozenTransform:
             raise ValueError('DAGPipe checkpoint has non-finite parameters')
         self.cache = OrderedDict()
         self.cache_entries = int(payload.get('cache_entries', 2))
+        self.cache_max_bytes = int(float(payload.get('cache_max_mb', 512))*1024**2)
+        self.cache_bytes = 0
+        self.batch_size = int(payload.get('transform_batch_size', 1024))
+        if self.cache_entries < 0 or self.cache_max_bytes < 0 or self.batch_size < 1:
+            raise ValueError('Invalid DAGPipe transform cache/batch size')
+        self.stats = {'hits': 0, 'misses': 0, 'evictions': 0, 'seconds': 0.0,
+                      'encoding_seconds': 0.0, 'hash_seconds': 0.0,
+                      'model_transform_wall_seconds': 0.0, 'cache_copy_seconds': 0.0,
+                      'cached_bytes': 0, 'peak_cached_bytes': 0, 'oversize_skips': 0}
 
     def transform(self, frame):
+        started = time.perf_counter()
         check_resources()
+        encoding_started = time.perf_counter()
         x = self.encoder.transform(frame)
-        key = (x.shape, hashlib.sha256(x.tobytes()).hexdigest())
+        encoding_seconds = time.perf_counter()-encoding_started
+        hash_started = time.perf_counter()
+        # Hash the contiguous buffer directly; tobytes() would allocate another
+        # full matrix even on a hit. Schema is fixed by this frozen encoder.
+        key = (x.shape, x.dtype.str, hashlib.sha256(memoryview(x).cast('B') if x.size else b'').hexdigest())
+        hash_seconds = time.perf_counter()-hash_started
+        self.stats['encoding_seconds'] += encoding_seconds
+        self.stats['hash_seconds'] += hash_seconds
         if key in self.cache:
             self.cache.move_to_end(key)
-            return self.cache[key].copy()
+            self.stats['hits'] += 1
+            copy_started = time.perf_counter()
+            result = self.cache[key].copy()
+            self.stats['cache_copy_seconds'] += time.perf_counter()-copy_started
+            self.stats['seconds'] += time.perf_counter()-started
+            print(f'[DAGPipe transform] cache=hit rows={len(x)} encode_s={encoding_seconds:.6f} hash_s={hash_seconds:.6f}')
+            check_resources()
+            return result
+        self.stats['misses'] += 1
         out = np.empty_like(x)
+        transform_started = time.perf_counter()
         with torch.no_grad():
-            for start in range(0, len(x), 1024):
+            for start in range(0, len(x), self.batch_size):
                 check_resources()
-                query = torch.as_tensor(x[start:start+1024], device=self.reference.device, dtype=self.reference.dtype)
+                query = torch.as_tensor(x[start:start+self.batch_size], device=self.reference.device, dtype=self.reference.dtype)
                 value = reference_forward(self.model, query, self.reference)
                 if not torch.isfinite(value).all():
                     raise ValueError(f'DAGPipe non-finite transform at query row {start}')
                 out[start:start+len(query)] = value.cpu().numpy()
-        if self.cache_entries:
+        transform_seconds = time.perf_counter()-transform_started
+        self.stats['model_transform_wall_seconds'] += transform_seconds
+        if self.cache_entries and self.cache_max_bytes and out.nbytes <= self.cache_max_bytes:
+            # Evict BEFORE making a copy, keeping retained cache bytes bounded.
+            while self.cache and (len(self.cache) >= self.cache_entries or
+                                  self.cache_bytes+out.nbytes > self.cache_max_bytes):
+                _, removed = self.cache.popitem(last=False)
+                self.cache_bytes -= removed.nbytes
+                del removed
+                self.stats['evictions'] += 1
+            copy_started = time.perf_counter()
             self.cache[key] = out.copy()
-            while len(self.cache) > self.cache_entries:
-                self.cache.popitem(last=False)
+            self.stats['cache_copy_seconds'] += time.perf_counter()-copy_started
+            self.cache_bytes += out.nbytes
+            self.stats['cached_bytes'] = self.cache_bytes
+            self.stats['peak_cached_bytes'] = max(self.stats['peak_cached_bytes'], self.cache_bytes)
+        elif self.cache_entries and out.nbytes > self.cache_max_bytes:
+            self.stats['oversize_skips'] += 1
         check_resources()
+        elapsed = time.perf_counter()-started
+        self.stats['seconds'] += elapsed
+        print(f'[DAGPipe transform] cache=miss rows={len(x)} encode_s={encoding_seconds:.6f} '
+              f'hash_s={hash_seconds:.6f} transform_wall_s={transform_seconds:.6f} '
+              f'cached_bytes={self.cache_bytes} total_wall_s={elapsed:.6f}')
         return out

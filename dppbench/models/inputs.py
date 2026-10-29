@@ -282,6 +282,12 @@ def _target_to_array(df, cfg):
 
 
 def df_to_input(df, feature_columns, cfg):
+    from dppbench.memory import require_memory_headroom
+    # Separate typed columns are retained; batches are assembled in BaseModel.
+    bytes_per_row = sum((fc.maxlen + 1) * 8 if isinstance(fc, VarLenSparseFeat)
+                        else 8 if isinstance(fc, SparseFeat) else 4
+                        for fc in feature_columns) + 4
+    require_memory_headroom(len(df) * bytes_per_row, "df_to_input")
     feat_cfg = cfg["feature"]
     seq_max_len = feat_cfg["seq_max_len"]
     target_col = feat_cfg["target_col"]

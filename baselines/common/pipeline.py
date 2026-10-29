@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from baselines.common.data_ctx import DataContext
+from baselines.common.data_ctx import DataContext, is_internal_column
 from baselines.common.budget import Budget, get_active_budget
 from baselines.common.op_spec import (
     CATALOG, OpCategory, is_mandatory, operators_for_task, valid_targets_for,
@@ -400,6 +400,34 @@ def _param_space_value_errors(op_name: str, params: dict) -> list[str]:
     return errors
 
 
+def _internal_column_errors(op_name: str, params: dict) -> list[str]:
+    """Reject explicit metadata inputs/outputs, including YAML/LLM proposals.
+
+Inspect column selectors/maps, not arbitrary literal strings such as fill_value
+or replacement. This validates declarative parameters, not custom Python code.
+"""
+    def names(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield from names(key)
+                yield from names(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from names(item)
+
+    selectors = {"col", "cols", "columns", "by", "subset", "on", "left_on",
+                 "right_on", "col_dtypes", "boundaries", "rename_map"}
+    errors = []
+    for key, value in params.items():
+        if key in selectors or key.endswith(("_col", "_cols")):
+            reserved = sorted({name for name in names(value) if is_internal_column(name)})
+            if reserved:
+                errors.append(f"{op_name} parameter {key!r} references reserved internal columns: {reserved}")
+    return errors
+
+
 def validate_step_params(
     op_name: str,
     params: dict | None,
@@ -417,7 +445,7 @@ def validate_step_params(
     params = params or {}
     if op_name not in CATALOG:
         return [f"unknown operator {op_name}"]
-    errors: list[str] = []
+    errors: list[str] = _internal_column_errors(op_name, params)
     missing = _missing_required_params(op_name, params)
     if missing:
         errors.append(f"{op_name} missing required params: {missing}")
@@ -805,6 +833,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if ctx.task_type != "tabular" or not ctx.target_col or not numeric_cols:
             return None
         p["label_col"] = ctx.target_col
+        p["task"] = "regression" if ctx.prediction_task == "regression" else "classification"
+        p["exclude_cols"] = [ctx.id_col] if ctx.id_col else []
         p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
         return p
 

@@ -5,6 +5,14 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 
 
+def is_internal_column(name: object) -> bool:
+    """Execution metadata is not part of the baseline's feature schema."""
+    return isinstance(name, str) and (
+        name in {"__split__", "__source_row__", "__row_idx__"}
+        or name.startswith("__dppbench_")
+    )
+
+
 @dataclass
 class TableContext:
     """Schema metadata for one source table exposed to baselines."""
@@ -21,13 +29,19 @@ class TableContext:
     configured_id_col: str | None = None
     configured_time_col: str | None = None
 
+    def __post_init__(self) -> None:
+        # Also cover contexts constructed directly by adapters/tests, not just
+        # infer_data_context(). Copy mappings; never mutate the source frame.
+        self.dtypes = {c: dtype for c, dtype in self.dtypes.items() if not is_internal_column(c)}
+        self.semantic_types = {c: kind for c, kind in self.semantic_types.items() if not is_internal_column(c)}
+
     @property
     def columns(self) -> list[str]:
-        return list(self.dtypes.keys())
+        return [c for c in self.dtypes if not is_internal_column(c)]
 
     @property
     def dtypes_summary(self) -> dict[str, int]:
-        return dict(Counter(self.dtypes.values()))
+        return dict(Counter(self.dtypes[c] for c in self.columns))
 
     @property
     def null_ratio(self) -> float:
@@ -35,9 +49,9 @@ class TableContext:
 
     @property
     def numeric_cols(self) -> list[str]:
-        return [c for c, dtype in self.dtypes.items()
+        return [c for c in self.columns
                 if self.semantic_types.get(c) == "numeric"
-                or (c not in self.semantic_types and _is_numeric_dtype(dtype))]
+                or (c not in self.semantic_types and _is_numeric_dtype(self.dtypes[c]))]
 
     @property
     def categorical_cols(self) -> list[str]:
@@ -218,11 +232,11 @@ def _profile_table(
 ) -> TableContext:
     if df is None:
         return TableContext(name=name, role=role)
-    columns = list(df.columns)
+    columns = [c for c in df.columns if not is_internal_column(c)]
     return TableContext(
         name=name,
         role=role,
-        shape=tuple(df.shape),
+        shape=(len(df), len(columns)),
         dtypes={c: str(df[c].dtype) for c in columns},
         join_keys_to_primary=join_keys_to_primary or [],
         configured_target_col=target_col,

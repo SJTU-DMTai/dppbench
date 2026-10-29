@@ -105,13 +105,20 @@ class Repair:
 # ---------------------------------------------------------------------------
 def repairs_to_pipeline(reps: List[Repair], ctx: DataContext,
                         rng: Optional[_random.Random] = None) -> Pipeline:
-    pipe = Pipeline(steps=[r.to_pipeline_step() for r in reps])
-    repair_pipeline(pipe, ctx.task_type, ctx)
+    # The common contract allows one instance per operator. A newly sampled
+    # repair must update that instance, otherwise parameter/join-table search
+    # is silently discarded by common repair()'s first-occurrence deduplication.
+    steps = {}
+    for r in reps:
+        steps[r.op_name] = r.to_pipeline_step()
+    rng = rng if rng is not None else _random.Random(0)
+    pipe = Pipeline(steps=list(steps.values()))
+    repair_pipeline(pipe, ctx.task_type, ctx, rng=rng)
     if ctx.task_type in ("tabular", "graph"):
         # Newly proposed transformations must precede the model-input tail.
         tail = [s for s in pipe.steps if s.op in {"LabelEncode", "HandleMV"}]
         pipe.steps = [s for s in pipe.steps if s.op not in {"LabelEncode", "HandleMV"}] + tail
-    assign_dag_structure(pipe, ctx, rng or _random.Random())
+    assign_dag_structure(pipe, ctx, rng)
     return pipe
 
 

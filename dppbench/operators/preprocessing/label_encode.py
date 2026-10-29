@@ -64,12 +64,12 @@ dag:
             if self.cols is None:
                 # Multi-valued categories are encoded token-wise by RecData.
                 # Treating a complete sequence as one category loses its meaning.
-                # cols = [c for c in df.columns if df[c].dtype == object]
                 cols = [c for c in df.columns
                         if (df[c].dtype == object or pd.api.types.is_string_dtype(df[c].dtype))
                         and not df[c].map(lambda v: isinstance(v, (list, tuple, np.ndarray))).any()]
             else:
                 cols = [c for c in self.cols if c in df.columns]
+            cols = [c for c in cols if c not in getattr(self, "exclude_cols", ())]
             self.cols_ = cols
             self.mapping_ = {}
             for col in cols:
@@ -80,6 +80,8 @@ dag:
             cols = [c for c in (self.cols_ or []) if c in df.columns]
 
         for col in cols:
+            if col in getattr(self, "exclude_cols", ()):
+                continue
             df[col] = df[col].map(self.mapping_.get(col, {})).fillna(-1).astype(np.int64)
 
         return df

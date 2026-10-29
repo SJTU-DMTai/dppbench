@@ -22,6 +22,7 @@ import os
 import random as _random
 import time
 import warnings
+import yaml
 from typing import Optional, Tuple
 
 import numpy as np
@@ -68,6 +69,7 @@ CONFIG_KEYS = (
     "gumbel_tau",
     "hard_sample",
     "seed",
+    "join_overrides",
 )
 
 
@@ -247,10 +249,16 @@ class DiffPrep:
         device: str = "cpu",
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        join_overrides: Optional[dict] = None,
     ) -> None:
-        cfg = load_baseline_config(
-            config_path or default_config_path(__file__), CONFIG_KEYS
-        )
+        path = config_path or default_config_path(__file__)
+        # New optional key must not invalidate existing server config files.
+        with open(path, encoding='utf-8') as f:
+            declared = yaml.safe_load(f)
+        keys = CONFIG_KEYS if isinstance(declared, dict) and 'join_overrides' in declared else tuple(
+            k for k in CONFIG_KEYS if k != 'join_overrides')
+        cfg = load_baseline_config(path, keys)
+        cfg.setdefault('join_overrides', {})
         n_epochs = resolve_config_value(cfg, "n_epochs", n_epochs)
         small_n = resolve_config_value(cfg, "small_n", small_n)
         lr_w = resolve_config_value(cfg, "lr_w", lr_w)
@@ -278,6 +286,9 @@ class DiffPrep:
         gumbel_tau = resolve_config_value(cfg, "gumbel_tau", gumbel_tau)
         hard_sample = resolve_config_value(cfg, "hard_sample", hard_sample)
         seed = resolve_config_value(cfg, "seed", seed)
+        self.join_overrides = resolve_config_value(cfg, 'join_overrides', join_overrides)
+        if not isinstance(self.join_overrides, dict):
+            raise ValueError('DiffPrep join_overrides must map dataset names to join configurations')
 
         self.task_dir = task_dir
         self.data_name = data_name
@@ -341,6 +352,16 @@ class DiffPrep:
         train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
+        structural_steps = []
+        join_config = self.join_overrides.get(self.data_name)
+        if join_config is not None and task_type != 'tabular':
+            raise ValueError('Explicit DiffPrep joins currently support tabular tasks only')
+        if task_type == "tabular":
+            from .data_protocol import prepare_tabular_search
+            splits, ctx, structural_steps = prepare_tabular_search(
+                data, train_evaluator._executor.get_model_config(), ctx,
+                self.seed, self.small_n, join_config=join_config,
+            )
 
         if self.verbose:
             print("=" * 60)
@@ -437,9 +458,6 @@ class DiffPrep:
         else:
             # Use the task's frozen training pool and its own split protocol.
             # In particular, time-series validation must remain chronological.
-            from .data_protocol import tabular_search_splits
-            splits = tabular_search_splits(data, train_evaluator._executor.get_model_config(),
-                                          self.seed, self.small_n)
             train_frame, val_frame = splits["train"], splits["val"]
             if train_frame.empty or val_frame.empty:
                 raise ValueError("DiffPrep requires nonempty training and validation partitions")
@@ -526,13 +544,21 @@ class DiffPrep:
 
         # 5) Discretise
         rng = _random.Random(self.seed)
-        pipe = discretize(cont, slots, ctx, rng=rng)
+        pipe = discretize(cont, slots, ctx, rng=rng, structural_steps=structural_steps)
+        if task_type == 'tabular':
+            from .data_protocol import assert_join_replay
+            assert_join_replay(structural_steps, pipe)
         pipe.metadata['diffprep_search_contract'] = {
-            'version': 2,
+            'version': 3,
             'structural_operations': 'fixed_seeded_adapters_not_differentiably_optimized',
+            'structural_replay': 'same_join_params_in_search_and_export',
+            'search_joins': [s.params for s in structural_steps],
             'search_feature_columns': list(cont.feature_names),
             'exported_joins': [s.params for s in pipe.steps if s.op == 'JoinTable'],
         }
+        if task_type == 'tabular':
+            pipe.metadata['diffprep_search_contract']['join_selection'] = data._diffprep_join_selection
+            pipe.metadata['diffprep_search_contract']['join_replay_checked'] = True
         discrete_slot_order = slot_order(cont)
         check_report = check_pipeline(pipe, ctx)
         if not check_report.valid:

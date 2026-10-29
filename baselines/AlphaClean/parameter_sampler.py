@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import random as _random
+from dataclasses import replace
 from typing import List, Optional
 
 from baselines.common.data_ctx import DataContext
@@ -58,6 +59,21 @@ class ParameterSampler:
     def sample_for_op(self, op_name: str) -> Optional[Repair]:
         return self._sample_one(op_name)
 
+    def join_seeds(self) -> List[Repair]:
+        """Cover legal auxiliary relations before pruning the initial beam."""
+        if self.ctx.task_type == "rec":
+            return []
+        out = []
+        for name in sorted(self.ctx.secondary_tables):
+            table = self.ctx.tables.get(name)
+            if table is None or not table.join_keys_to_primary:
+                continue
+            context = replace(self.ctx, secondary_tables=[name])
+            step = make_step("JoinTable", context, self.rng)
+            if step is not None:
+                out.append(Repair.from_pipeline_step(step))
+        return out
+
     # ------------------------------------------------------------------
     def _sample_one(self, op_name: str) -> Optional[Repair]:
         step = make_step(op_name, self.ctx, self.rng)
@@ -69,14 +85,12 @@ class ParameterSampler:
             # compatible actions/repairs, as in SAGA's physical search.
             params = sample_handle_error_params(params, self.rng)
             return Repair(op_name=op_name, target=step.target, params=params)
-        if op_name == "JoinTable" and self.ctx.task_type != "rec" and self.ctx.aux_dfs:
-            aux = self.rng.choice(self.ctx.aux_dfs)
-            params["aux_df"] = f"${aux}"
-            join_keys = self.ctx.tables.get(aux).join_keys_to_primary if aux in self.ctx.tables else []
-            params["key_col"] = join_keys[0]["primary"] if join_keys else self.ctx.id_col
-            if params.get("prefix"):
-                params["prefix"] = aux.upper()[:8]
-        elif op_name == "ConcatTable" and self.ctx.aux_dfs:
+        if op_name == "JoinTable":
+            # The common factory couples table, key and key uniqueness.
+            # Perturbing those independently can turn a history aggregation
+            # into a row-multiplying lookup or select an unjoinable table.
+            return Repair(op_name=op_name, target=step.target, params=params)
+        if op_name == "ConcatTable" and self.ctx.aux_dfs:
             aux = self.rng.choice(self.ctx.aux_dfs)
             params["other_dfs"] = [f"${aux}"]
         param_space = get_param_space(get_op(op_name), self.ctx, params)

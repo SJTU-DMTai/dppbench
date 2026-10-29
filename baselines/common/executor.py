@@ -801,6 +801,7 @@ class TrainingExecutor:
         return result
 
     def _run_rec_training(self):
+        from baselines.common.budget import memory_checkpoint
         from dppbench.utils import get_model
         from dppbench.models import build_feature_columns, df_to_input
 
@@ -817,8 +818,11 @@ class TrainingExecutor:
         try:
             data = self._make_configured_data_instance()
             cfg = self.get_model_config()
+            memory_checkpoint("rec.before_load")
             data.load_data()
+            memory_checkpoint("rec.loaded")
             data.run_pre_process(os.path.abspath(self._working_yaml))
+            memory_checkpoint("rec.preprocessed")
             result["execution_data"] = self._execution_profile(data)
             splits = data.split()
 
@@ -828,13 +832,22 @@ class TrainingExecutor:
             frames_for_features = [splits["train"]]
             if self._evaluate_std_test and "test" in splits:
                 frames_for_features.append(splits["test"])
-            all_df = pd.concat(frames_for_features, ignore_index=True)
+            if len(frames_for_features) > 1:
+                from dppbench.memory import require_memory_headroom
+                require_memory_headroom(sum(int(frame.memory_usage(index=False, deep=False).sum())
+                                            for frame in frames_for_features), "rec.feature_schema")
+            all_df = (frames_for_features[0] if len(frames_for_features) == 1
+                      else pd.concat(frames_for_features, ignore_index=True))
             feature_columns = build_feature_columns(all_df, cfg, col_types=data.col_types)
             used_features = [fc.name for fc in feature_columns]
             ignored = [c for c in all_df.columns if c not in used_features and c not in {"__split__", cfg["feature"]["target_col"]}]
             print(f"[model inputs] features={used_features} ignored={ignored}")
 
+            del all_df, frames_for_features
             model = get_model(feature_columns, cfg)
+            memory_checkpoint("rec.model_built")
+            if os.environ.get("DPPBENCH_MEMORY_TRACE") == "1":
+                print(f"[memory] model_parameters={sum(p.numel() for p in model.parameters())}", flush=True)
 
             train_cfg = cfg.get("train", {})
             history, test_results = model.train_and_evaluate(
@@ -842,6 +855,7 @@ class TrainingExecutor:
                 feature_columns, cfg,
                 evaluate_test=self._evaluate_std_test,
             )
+            memory_checkpoint("rec.trained")
 
             result["success"] = True
             result["metrics"] = self._rec_validation_metrics(history, train_cfg)

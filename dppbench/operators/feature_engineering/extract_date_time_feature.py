@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from ..base_op import TabularOp
 
@@ -71,7 +72,14 @@ dag:
                 continue
             series = df[col]
             if pd.api.types.is_numeric_dtype(series):
-                ts = pd.to_datetime(series, unit="s", errors="coerce")
+                # Promote float32 before pandas' seconds-to-nanoseconds
+                # arithmetic; errors='coerce' alone does not prevent a NumPy
+                # floating point overflow inside that conversion.
+                seconds = series.astype("float64")
+                lo = np.ceil(pd.Timestamp.min.value / 1e9)
+                hi = np.floor(pd.Timestamp.max.value / 1e9)
+                seconds = seconds.where(np.isfinite(seconds) & seconds.between(lo, hi))
+                ts = pd.to_datetime(seconds, unit="s", errors="coerce")
             else:
                 ts = pd.to_datetime(series, errors="coerce")
             if "year" in self.features:

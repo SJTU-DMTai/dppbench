@@ -4,17 +4,27 @@ from ..base_op import TabularOp
 
 
 class AugmentMixup(TabularOp):
-    """Append Mixup synthetic samples for numeric columns."""
+    """Append numeric Mixup rows, retaining the anchor's other columns.
+
+    Classification mixes within a class to preserve discrete labels;
+    regression interpolates labels. The dataset supplies the task and
+    protected row identifier, including for existing YAML pipelines.
+    """
 
     APPLIES_TO_STD_TEST = False
     RANDOM_STATE = 42
 
-    def __init__(self, label_col, cols=None, alpha=0.2, n_samples=None):
+    def __init__(self, label_col, cols=None, alpha=0.2, n_samples=None,
+                 task="regression", exclude_cols=None):
         super().__init__(name="AugmentMixup")
         self.label_col = label_col
         self.cols = cols if (cols is None or isinstance(cols, list)) else [cols]
         self.alpha = float(alpha)
         self.n_samples = n_samples
+        if task not in {"classification", "regression"}:
+            raise ValueError("Mixup task must be classification or regression")
+        self.task = task
+        self.exclude_cols = list(exclude_cols or [])
 
     def get_op_description(self):
         description = """Operator name: AugmentMixup
@@ -75,18 +85,31 @@ dag:
             df.select_dtypes(include=[np.number]).columns.tolist()
             if self.cols is None else [c for c in self.cols if c in df.columns]
         )
-        cols = [c for c in cols if c != self.label_col]
+        cols = [c for c in cols if c != self.label_col and c not in self.exclude_cols]
         if not cols:
             return df
         n = int(self.n_samples or len(df))
         i = rng.randint(0, len(df), size=n)
         j = rng.randint(0, len(df), size=n)
+        if self.task == "classification":
+            # Downstream classifiers/resamplers require discrete labels.
+            # Mix within each class instead of creating fractional targets.
+            codes, _ = pd.factorize(df[self.label_col], sort=False)
+            if (codes < 0).any():
+                raise ValueError("Classification Mixup requires non-missing labels")
+            for code in np.unique(codes):
+                selected = codes[i] == code
+                j[selected] = rng.choice(np.flatnonzero(codes == code), selected.sum())
         lam = rng.beta(self.alpha, self.alpha, size=n)
-        synthetic = pd.DataFrame(columns=df.columns)
+        # Preserve IDs, categorical context and untouched features from the
+        # anchor training row. Empty columns used to corrupt ID dtypes and
+        # become -1 in LabelEncode, colliding with held-out unknown IDs.
+        synthetic = df.iloc[i].copy().reset_index(drop=True)
         x1 = df.iloc[i][cols].to_numpy(dtype=float)
         x2 = df.iloc[j][cols].to_numpy(dtype=float)
         synthetic[cols] = lam[:, None] * x1 + (1.0 - lam[:, None]) * x2
         y1 = pd.to_numeric(df.iloc[i][self.label_col], errors="coerce").to_numpy()
         y2 = pd.to_numeric(df.iloc[j][self.label_col], errors="coerce").to_numpy()
-        synthetic[self.label_col] = lam * y1 + (1.0 - lam) * y2
+        if self.task == "regression":
+            synthetic[self.label_col] = lam * y1 + (1.0 - lam) * y2
         return pd.concat([df, synthetic], ignore_index=True)

@@ -35,3 +35,12 @@ gumbel_tau: 0.1
 hard_sample: false
 # seed (default: 42): Random seed for training and discretization.
 seed: 42
+# Enabled Berka experiment adapter. Unlisted datasets retain legacy seeded draws.
+# Set join_overrides: {} to restore the legacy strategy for every dataset.
+join_overrides:
+  berka:
+    table: order
+    key_col: account_id
+    method: agg
+    prefix: null
+    max_cols: null

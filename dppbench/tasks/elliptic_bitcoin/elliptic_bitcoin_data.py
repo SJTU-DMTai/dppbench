@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ...dataset import TabularData
+from ...csv_io import read_csv_retry
 
 
 class EllipticBitcoinData(TabularData):
@@ -217,13 +218,13 @@ class EllipticBitcoinData(TabularData):
         edge_path = os.path.join(self.data_dir, "elliptic_txs_edgelist.csv")
 
         # features: header-less; first col = txId, second = time_step, rest = feat_*
-        feats = pd.read_csv(feat_path, header=None)
+        feats = read_csv_retry(feat_path, header=None)
         n_feat = feats.shape[1] - 2
         col_names = ["txId", "time_step"] + [f"feat_{i}" for i in range(n_feat)]
         feats.columns = col_names
         self._normalize_tx_id_column(feats, "txId")
 
-        classes = pd.read_csv(cls_path)
+        classes = read_csv_retry(cls_path)
         self._normalize_tx_id_column(classes, "txId")
         # Supervision belongs to the primary frame, never a feature branch.
         # Keep the original labels privately for legacy frozen-frame restoration.
@@ -234,7 +235,7 @@ class EllipticBitcoinData(TabularData):
         self._attach_class_labels(feats)
         self.train_df = feats
 
-        edges = pd.read_csv(edge_path)
+        edges = read_csv_retry(edge_path)
         self._normalize_tx_id_column(edges, "txId1")
         self._normalize_tx_id_column(edges, "txId2")
         edges = edges.drop_duplicates(subset=["txId1", "txId2"]).reset_index(drop=True)
@@ -281,6 +282,8 @@ class EllipticBitcoinData(TabularData):
 
         # Build txId -> dense node index.
         node_ids = df["txId"].astype(str).tolist()
+        if df["txId"].isna().any() or len(set(node_ids)) != len(node_ids):
+            raise ValueError("Graph requires unique nonmissing txId values; row augmentation must define new nodes and edges")
         node_to_idx = {tx: i for i, tx in enumerate(node_ids)}
         num_nodes = len(node_to_idx)
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import inspect
+import hashlib
 import json
 import math
 import os
@@ -82,6 +83,13 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
+    "LLM-AutoDP-Adapted": {
+        "cls_path": "baselines.LLMAutoDP.llm_autodp.LLMAutoDP",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
     "DAGPipe": {
         "cls_path": "baselines.DAGPipe.dagpipe.DAGPipe",
         "pipeline_cls": "baselines.DAGPipe.pipeline.DAGPipePipeline",
@@ -286,7 +294,7 @@ def parse_args():
         ),
     )
     parser.add_argument("--resume_pipeline", default=None,
-                        help="DAGPipe checkpoint path; supports {task} and {model}. Skips search; requires existing frozen data.")
+                        help="Saved pipeline path for any baseline; supports {task} and {model}. Never searches or rebuilds frozen data.")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--baseline_config_path", default=None,
                         help="Explicit baseline YAML (e.g. short DAGPipe profiler run).")
@@ -462,20 +470,10 @@ def _run_baseline_and_eval(
     """
     baseline_name = _canonical_baseline_name(baseline_name)
     conf = BASELINE_CONFIGS[baseline_name]
-    cls = _load_class(conf["cls_path"])
-    kwargs = dict(conf["kwargs"])
-    if getattr(args, 'baseline_config_path', None):
-        if 'config_path' not in inspect.signature(cls).parameters:
-            raise ValueError(f'{baseline_name} does not support config_path')
-        kwargs['config_path'] = args.baseline_config_path
-    _apply_baseline_model_paths(baseline_name, kwargs, args)
-    if conf["supports_eval_full"]:
-        kwargs["eval_full"] = False
     max_pipeline_len = (
         budget.max_pipeline_length if budget is not None
         else args.max_pipeline_len
     )
-    _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
 
     task_dir = os.path.join(_ROOT, "dppbench", "tasks", task_name)
     task_data_dir = _task_data_dir(task_name, args.data_dir)
@@ -484,9 +482,6 @@ def _run_baseline_and_eval(
         out_root, baseline_name, task_name, model_name
     )
     os.makedirs(runner_output_dir, exist_ok=True)
-
-    if "model_name" in inspect.signature(cls).parameters:
-        kwargs["model_name"] = model_name
 
     # ---- Phase 1: construct preprocessing pipeline ---------------------
     resume_path = _resume_path(args, task_name, model_name)
@@ -497,21 +492,39 @@ def _run_baseline_and_eval(
         if not args.quiet:
             _print_json({"dagpipe_preflight": report})
     if resume_path:
-        if baseline_name != "DAGPipe":
-            raise ValueError("--resume_pipeline currently supports DAGPipe only")
         from pathlib import Path
-        from baselines.DAGPipe.pipeline import DAGPipePipeline
         source = Path(resume_path)
         if source.parent.resolve() == Path(runner_output_dir).resolve():
             raise ValueError("Resume requires a separate --output_dir to preserve the original run")
         pipeline_text = source.read_text(encoding="utf-8")
-        saved = DAGPipePipeline.from_yaml(pipeline_text)
-        if saved.payload["task"] != task_name or saved.payload["seed"] != args.seed:
-            raise ValueError("Resume checkpoint task/seed does not match requested task/seed")
+        payload = yaml.safe_load(pipeline_text)
+        if not isinstance(payload, dict):
+            raise ValueError("Saved pipeline must be a YAML mapping")
+        if baseline_name == "DAGPipe":
+            from baselines.DAGPipe.pipeline import DAGPipePipeline
+            saved = DAGPipePipeline.from_yaml(pipeline_text)
+            if saved.payload["task"] != task_name or saved.payload["seed"] != args.seed:
+                raise ValueError("Resume checkpoint task/seed does not match requested task/seed")
+        elif not ("dag" in payload or "pipeline" in payload) or "format" in payload:
+            raise ValueError("Expected a common pipeline YAML (dag or pipeline), not a model checkpoint")
         result = {"best_pipeline_yaml": pipeline_text, "is_legal": True}
         search_budget_snapshot = None
         construct_time = None
     else:
+        # Search implementations (including LLM/checkpoint dependencies) are
+        # never imported or instantiated in replay mode.
+        cls = _load_class(conf["cls_path"])
+        kwargs = dict(conf["kwargs"])
+        if getattr(args, "baseline_config_path", None):
+            if "config_path" not in inspect.signature(cls).parameters:
+                raise ValueError(f"{baseline_name} does not support config_path")
+            kwargs["config_path"] = args.baseline_config_path
+        _apply_baseline_model_paths(baseline_name, kwargs, args)
+        if conf["supports_eval_full"]:
+            kwargs["eval_full"] = False
+        _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
+        if "model_name" in inspect.signature(cls).parameters:
+            kwargs["model_name"] = model_name
         t0 = time.time()
         if budget is not None:
             budget.start()
@@ -566,12 +579,13 @@ def _run_baseline_and_eval(
             f"{baseline_name} produced pipeline length {len(pipeline)} "
             f"> max_pipeline_len={max_pipeline_len}"
         )
+    pipeline_sha256 = hashlib.sha256(pipeline.to_yaml().encode("utf-8")).hexdigest()
     if resume_path:
         # Keep recovery provenance even if a later HPO trial fails.
-        pipeline.save(os.path.join(runner_output_dir, "best_pipeline.yaml"))
+        Path(runner_output_dir, "best_pipeline.yaml").write_text(pipeline_yaml, encoding="utf-8")
         with open(os.path.join(runner_output_dir, "resume.json"), "w", encoding="utf-8") as f:
             json.dump({"pipeline_reused": True, "pipeline_source": resume_path,
-                       "pipeline_sha256": pipeline.hash(), "seed": args.seed,
+                       "pipeline_sha256": pipeline_sha256, "seed": args.seed,
                        "task": task_name, "model": model_name,
                        "original_search_seconds": None}, f, indent=2)
     evaluator = evaluator_class(
@@ -595,9 +609,11 @@ def _run_baseline_and_eval(
             output_dir=runner_output_dir,
         )
     eval_t0 = time.time()
-    ev = evaluator.evaluate(pipeline, scoring_method="full_train")
-    eval_time = time.time() - eval_t0
-    evaluator._executor.cleanup()
+    try:
+        ev = evaluator.evaluate(pipeline, scoring_method="full_train")
+        eval_time = time.time() - eval_t0
+    finally:
+        evaluator._executor.cleanup()
 
     metrics = ev.metrics or {}
     std_test_metrics = {
@@ -656,7 +672,7 @@ def _run_baseline_and_eval(
         "budget": search_budget_snapshot,
         "pipeline_reused": bool(resume_path),
         "pipeline_source": resume_path,
-        "pipeline_sha256": pipeline.hash(),
+        "pipeline_sha256": pipeline_sha256,
         "search_fitness": (
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
@@ -793,8 +809,6 @@ def main():
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     args.device = _resolve_device(args.gpu_id)
-    if args.resume_pipeline and args.baseline != "DAGPipe":
-        raise SystemExit("--resume_pipeline currently supports DAGPipe only")
 
     if args.data_names:
         tasks = [s.strip() for s in args.data_names.split(",") if s.strip()]

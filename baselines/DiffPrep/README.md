@@ -4,6 +4,45 @@ Differentiable preprocessing pipeline search inspired by *DiffPrep: Differentiab
 
 ## Method
 
+### Explicit relational adapter (optional)
+
+In `baselines/DiffPrep/config.yaml`, replace `join_overrides: {}` with:
+
+```yaml
+join_overrides:
+  berka:
+    table: order
+    key_col: account_id
+    method: agg
+    prefix: null
+    max_cols: null
+```
+
+This is an explicit experiment configuration, not a default recommendation for
+every dataset. For account use `table: account, method: key`. `table`, `key_col`
+and `method` are required; `prefix` and `max_cols` are optional. Only left joins
+are supported. The selected table must have a direct join key in the context;
+key joins require a unique right key. Invalid overrides fail rather than silently
+falling back to a random table. Overrides currently support tabular tasks only.
+
+Unlisted datasets retain the previous independent `Random(seed)` adapter draw
+and candidate ordering. Old custom config files without the new key still work.
+Python callers can supply the same mapping as `DiffPrep(join_overrides=...)`.
+The candidate operators, gradient optimizer, split, sampling and model settings
+are unchanged. The existing evaluation command reads this configuration without
+additional CLI flags. Use a fresh output directory/search; reused old YAMLs do
+not apply new adapter configuration.
+
+The adapter executes before search and is copied into the exported pipeline.
+Before saving, checks compare its parameters and the serialized YAML source
+wiring with the search adapter. `search_contract.json` retains version 3 and adds
+`join_selection` (mode, seed, candidate order, actual parameters, partition row
+counts and added columns) and `join_replay_checked: true`. This asserts join
+replay only, not equivalence of all soft operators and their real counterparts.
+
+Sync `data_protocol.py`, `diffprep.py`, and `config.yaml` for runtime changes;
+also sync this README and `test_explicit_join.py` for documentation and tests.
+
 DiffPrep relaxes discrete pipeline search into continuous architecture parameters:
 
 - **Feature-wise β / tau**: each operator-family slot has per-feature logits over candidate operators, matching the original DiffPrep design. During search, soft operators are mixed as `x_i = Σ_j β_ij · f_ij(x_{i-1})`.

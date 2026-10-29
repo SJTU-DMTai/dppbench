@@ -62,7 +62,7 @@ class YelpData(RecData):
         return extract_dir
 
     @staticmethod
-    def _load_json_lines(filepath, fields=None):
+    def _load_json_lines(filepath, fields=None, id_field=None, keep_ids=None):
         records = []
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -70,10 +70,12 @@ class YelpData(RecData):
                 if not line:
                     continue
                 obj = json.loads(line)
+                if keep_ids is not None and obj.get(id_field) not in keep_ids:
+                    continue
                 if fields:
                     obj = {k: obj.get(k) for k in fields}
                 records.append(obj)
-        return pd.DataFrame(records)
+        return pd.DataFrame(records, columns=fields)
 
     @staticmethod
     def _find_file(directory, filename):
@@ -84,18 +86,33 @@ class YelpData(RecData):
 
     def load_data(self):
         extract_dir = self._download_and_extract()
-
-        review_path = self._find_file(extract_dir, "yelp_academic_dataset_review.json")
-        self.interaction_df = self._load_json_lines(review_path, self.INTERACTION_FIELDS)
-        self.interaction_df = self.interaction_df.rename(columns=self.INTERACTION_RENAME)
-        self.interaction_df["timestamp"] = (
-            pd.to_datetime(self.interaction_df["date"], errors="coerce")
-            .astype("int64") // 10**9
-        )
-        self.interaction_df = self.interaction_df.drop(columns=["date"])
+        search = getattr(self, "_search_small_n", 0) > 0
+        side_scope = os.environ.get("DPPBENCH_YELP_SIDE_TABLE_SCOPE", "full")
+        if search and side_scope not in {"full", "sampled"}:
+            raise ValueError("DPPBENCH_YELP_SIDE_TABLE_SCOPE must be full or sampled")
+        trim_sides = search and side_scope == "sampled"
+        if search:
+            print(f"[Yelp search] side_table_scope={side_scope}", flush=True)
+            from .search_data import load_frozen_search_interactions
+            self.interaction_df = load_frozen_search_interactions(
+                self, self._search_small_n, self._search_seed,
+            )
+            self._has_std_test = True
+        else:
+            review_path = self._find_file(extract_dir, "yelp_academic_dataset_review.json")
+            self.interaction_df = self._load_json_lines(review_path, self.INTERACTION_FIELDS)
+            self.interaction_df = self.interaction_df.rename(columns=self.INTERACTION_RENAME)
+            self.interaction_df["timestamp"] = (
+                pd.to_datetime(self.interaction_df["date"], errors="coerce")
+                .astype("int64") // 10**9
+            )
+            self.interaction_df = self.interaction_df.drop(columns=["date"])
 
         user_path = self._find_file(extract_dir, "yelp_academic_dataset_user.json")
-        self.user_df = self._load_json_lines(user_path, self.USER_FIELDS)
+        self.user_df = self._load_json_lines(
+            user_path, self.USER_FIELDS, "user_id",
+            set(self.interaction_df.user_id) if trim_sides else None,
+        )
         user_rename = {col: f"user_{col}" for col in self.user_df.columns if col != "user_id"}
         self.user_df = self.user_df.rename(columns=user_rename)
         self.user_df["user_yelping_since"] = (
@@ -104,7 +121,10 @@ class YelpData(RecData):
         )
 
         item_path = self._find_file(extract_dir, "yelp_academic_dataset_business.json")
-        self.item_df = self._load_json_lines(item_path, self.ITEM_FIELDS)
+        self.item_df = self._load_json_lines(
+            item_path, self.ITEM_FIELDS, "business_id",
+            set(self.interaction_df.item_id) if trim_sides else None,
+        )
         self.item_df = self.item_df.rename(columns=self.ITEM_RENAME)
         self.item_df["item_categories"] = self.item_df["item_categories"].apply(
             lambda x: [c.strip() for c in x.split(",")] if isinstance(x, str) else []
@@ -146,6 +166,7 @@ class YelpData(RecData):
             "item_categories": self.CATEGORICAL_LIST,
         })
 
-        self._apply_configured_label_rule("stars")
+        if not search:
+            self._apply_configured_label_rule("stars")
 
         return self.interaction_df, self.user_df, self.item_df

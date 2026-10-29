@@ -1,53 +1,87 @@
-cd /home/jiaqinyi/code/dppbench
-
-mkdir -p logs/exp_1_1
-
-bash <<'BASH' > logs/exp_1_1/exp1_cost_nollm_43.log 2>&1
+#!/usr/bin/env bash
 set -euo pipefail
 
-FAILED_TASKS=()
-SUCCESS_TASKS=()
+cd "$(dirname "$0")/../.."
 
-for task in \
-  amazon_beauty kuairec movielens yelp elliptic_bitcoin \
-  beijing_air_quality berka bike_sharing citibike_jc_hourly \
-  default_credit fraud_detection home_credit nyc_taxi_hourly \
+# 加载公共配置
+source scripts/exps/common.sh
+
+# 实验配置
+SEED_LIST="42"
+
+TASK_LIST=(
+  amazon_beauty
+  kuairec
+  movielens
+  elliptic_bitcoin
+  beijing_air_quality
+  berka
+  bike_sharing
+  default_credit
+  fraud_detection
+  home_credit
   polish_bankruptcy
-do
-  echo "============================================================"
-  echo "[START] task=$task seed=43 time=$(date)"
-  echo "============================================================"
+)
 
-  if TASKS="$task" \
-     OUTPUT_ROOT="/mnt/sdb/jiaqinyi/dppbench/output/exps_1_1/$task" \
-     SEEDS=43 \
-     bash scripts/exps/01_exp1_1_cost_effectiveness.sh
-  then
-    echo "[SUCCESS] task=$task seed=43 time=$(date)"
-    SUCCESS_TASKS+=("$task")
-  else
-    exit_code=$?
+BASELINES=(
+  SAGA 
+  AutoPrep 
+  Learn2Clean 
+  AlphaClean
+  Random
+  DiffPrep
+  DAGPipe
+)
 
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo "[FAILED] task=$task seed=43 exit_code=$exit_code"
-    echo "[FAILED] time=$(date)"
-    echo "[WARNING] Skipping failed task and continuing..."
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+# TASK_LIST=(
+#   fraud_detection
+# )
 
-    FAILED_TASKS+=("$task")
-  fi
+HARD_MEMORY_GIB=85
 
-  echo
+LOG_DIR="logs/exp_1_1/seed42"
+mkdir -p "$LOG_DIR"
+
+FAILED=()
+
+for seed in $SEED_LIST; do
+  for task in "${TASK_LIST[@]}"; do
+    for baseline in "${BASELINES[@]}"; do
+
+      # 每个实验单独保存日志
+      LOG="${LOG_DIR}/${task}_${baseline}_seed${seed}.log"
+
+      echo "=================================================="
+      echo "[START] task=$task baseline=$baseline seed=$seed"
+      echo "[LOG] $LOG"
+      echo "[TIME] $(date)"
+
+      # 每次执行都会启动新的 Python 进程
+      if TASKS="$task" \
+         SEEDS="$seed" \
+         BASELINES="$baseline" \
+         DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
+         python scripts/run_memory_limited.py \
+           --memory-gib "$HARD_MEMORY_GIB" -- \
+           bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
+           > "$LOG" 2>&1
+      then
+        echo "[SUCCESS] task=$task baseline=$baseline seed=$seed"
+      else
+        code=$?
+        echo "[FAILED] task=$task baseline=$baseline seed=$seed exit=$code"
+        FAILED+=("$task $baseline seed=$seed exit=$code")
+      fi
+
+    done
+  done
 done
 
-echo "============================================================"
+echo "=================================================="
 echo "[ALL DONE] $(date)"
-echo "[SUMMARY] Success: ${#SUCCESS_TASKS[@]}"
-echo "[SUMMARY] Failed: ${#FAILED_TASKS[@]}"
+echo "[FAILED COUNT] ${#FAILED[@]}"
 
-if ((${#FAILED_TASKS[@]} > 0)); then
-  printf '[FAILED TASK] %s\n' "${FAILED_TASKS[@]}"
+if ((${#FAILED[@]} > 0)); then
+  printf '[FAILED] %s\n' "${FAILED[@]}"
+  exit 1
 fi
-
-echo "============================================================"
-BASH

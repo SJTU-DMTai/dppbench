@@ -43,6 +43,12 @@ def reference_operation(op, x, reference_rows):
         scale = ref.max(0, keepdim=True).values - center
     else:
         raise ValueError(f'Unsupported inductive DAGPipe operator: {type(op).__name__}')
+    # A nearly degenerate IQR/range may exceed the absolute epsilon yet
+    # amplify rare values by millions. Use training spread as a relative
+    # floor; never estimate this safeguard from validation/query rows.
+    spread = ref.std(0, keepdim=True, unbiased=False)
+    floor = torch.maximum(spread * 1e-6, torch.full_like(spread, 1e-8))
+    scale = torch.where(scale.abs() <= floor, spread, scale)
     scale = torch.where(scale.abs() <= 1e-8, torch.ones_like(scale), scale)
     return (x-center)/scale
 
@@ -200,6 +206,7 @@ class FrozenTransform:
                     raise ValueError(f'DAGPipe non-finite transform at query row {start}')
                 out[start:start+len(query)] = value.cpu().numpy()
         transform_seconds = time.perf_counter()-transform_started
+        self.stats['output_abs_max'] = float(np.max(np.abs(out))) if out.size else 0.0
         self.stats['model_transform_wall_seconds'] += transform_seconds
         if self.cache_entries and self.cache_max_bytes and out.nbytes <= self.cache_max_bytes:
             # Evict BEFORE making a copy, keeping retained cache bytes bounded.
@@ -222,5 +229,6 @@ class FrozenTransform:
         self.stats['seconds'] += elapsed
         print(f'[DAGPipe transform] cache=miss rows={len(x)} encode_s={encoding_seconds:.6f} '
               f'hash_s={hash_seconds:.6f} transform_wall_s={transform_seconds:.6f} '
-              f'cached_bytes={self.cache_bytes} total_wall_s={elapsed:.6f}')
+              f'cached_bytes={self.cache_bytes} total_wall_s={elapsed:.6f} '
+              f'output_abs_max={self.stats["output_abs_max"]:.6g}')
         return out

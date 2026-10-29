@@ -118,12 +118,6 @@ def soft_target_encode(x: torch.Tensor) -> torch.Tensor:
     return soft_standard_scale(x)
 
 
-def soft_datetime_features(x: torch.Tensor) -> torch.Tensor:
-    # Without a real datetime column we mimic the "extract subfields" effect
-    # by emitting a sin/cos pair averaged into the column.
-    return 0.5 * (torch.sin(x) + torch.cos(x))
-
-
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -142,7 +136,8 @@ SOFT_OP_FNS = {
     "CustomProcess": soft_identity,
     "FrequencyEncode": soft_frequency_encode,
     "TargetEncode":  soft_target_encode,
-    "ExtractDateTimeFeature": soft_datetime_features,
+    # Calendar extraction expands columns and requires timestamp semantics.
+    # It has no faithful same-shape numeric relaxation; exclude it from search.
 }
 
 
@@ -210,7 +205,6 @@ __all__ = [
     "soft_label_encode",
     "soft_frequency_encode",
     "soft_target_encode",
-    "soft_datetime_features",
     "SOFT_OP_FNS",
     "has_soft_impl",
     "apply_soft_op",

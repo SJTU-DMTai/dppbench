@@ -18,6 +18,24 @@ from .inputs import (
 from .layers import PredictionLayer
 
 
+class _ColumnBatchCollator:
+    """Assemble only the requested batch, retaining NumPy's original promotion."""
+    def __init__(self, columns, target=None):
+        size = len(columns[0])
+        if any(len(column) != size for column in columns) or (
+                target is not None and len(target) != size):
+            raise ValueError("Feature and target arrays must have matching row counts")
+        self.columns = columns
+        self.target = target
+
+    def __call__(self, indices):
+        batch = torch.from_numpy(np.concatenate(
+            [column[indices] for column in self.columns], axis=-1))
+        if self.target is None:
+            return (batch,)
+        return batch, torch.from_numpy(self.target[indices])
+
+
 class BaseModel(nn.Module):
     def __init__(self, seed=1024, task='binary', device='cpu'):
         super().__init__()
@@ -70,11 +88,8 @@ class BaseModel(nn.Module):
             if len(x[i].shape) == 1:
                 x[i] = np.expand_dims(x[i], axis=1)
 
-        train_tensor = Data.TensorDataset(
-            torch.from_numpy(np.concatenate(x, axis=-1)),
-            torch.from_numpy(y),
-        )
-        train_loader = DataLoader(train_tensor, shuffle=shuffle, batch_size=batch_size)
+        train_loader = DataLoader(range(len(y)), shuffle=shuffle, batch_size=batch_size,
+                                  collate_fn=_ColumnBatchCollator(x, y))
 
         do_val = validation_data is not None
         if do_val:
@@ -91,6 +106,7 @@ class BaseModel(nn.Module):
             best_weights = None
 
         history = {"loss": []}
+        first_update = True
 
         for epoch in range(epochs):
             model = self.train()
@@ -102,7 +118,9 @@ class BaseModel(nn.Module):
                 x_batch = x_batch.to(self.device).float()
                 y_batch = y_batch.to(self.device).float()
 
-                y_pred = model(x_batch).squeeze()
+                # Keep the batch axis when a small search sample leaves a
+                # final batch of one row.
+                y_pred = model(x_batch).reshape(-1)
                 loss = self.loss_func(y_pred, y_batch, reduction='mean')
 
                 if hasattr(self, 'get_regularization_loss'):
@@ -110,7 +128,13 @@ class BaseModel(nn.Module):
 
                 self.optim.zero_grad()
                 loss.backward()
+                if first_update:
+                    from baselines.common.budget import memory_checkpoint
+                    memory_checkpoint("rec.first_backward")
                 self.optim.step()
+                if first_update:
+                    memory_checkpoint("rec.first_optimizer_step")
+                    first_update = False
 
                 loss_epoch += loss.item() * len(y_batch)
                 n_samples += len(y_batch)
@@ -122,15 +146,9 @@ class BaseModel(nn.Module):
                 val_result = self.evaluate(val_x, val_y, batch_size)
                 for k, v in val_result.items():
                     history.setdefault(f"val_{k}", []).append(v)
-
             if verbose > 0:
                 elapsed = int(time.time() - start)
                 msg = f"Epoch {epoch + 1}/{epochs} - {elapsed}s - loss: {avg_loss:.4f}"
-                # if do_val:
-                #     val_result = self.evaluate(val_x, val_y, batch_size)
-                #     for k, v in val_result.items():
-                #         # msg += f" - val_{k}: {v:.4f}"
-                #         history.setdefault(f"val_{k}", []).append(v)
                 print(msg)
 
             if use_es:
@@ -171,8 +189,8 @@ class BaseModel(nn.Module):
             if len(x[i].shape) == 1:
                 x[i] = np.expand_dims(x[i], axis=1)
 
-        tensor_data = Data.TensorDataset(torch.from_numpy(np.concatenate(x, axis=-1)))
-        loader = DataLoader(tensor_data, batch_size=batch_size, shuffle=False)
+        loader = DataLoader(range(len(x[0])), batch_size=batch_size, shuffle=False,
+                            collate_fn=_ColumnBatchCollator(x))
 
         was_training = self.training
         self.eval()
@@ -190,12 +208,6 @@ class BaseModel(nn.Module):
 
     def train_and_evaluate(self, train_df, test_df, feature_columns, cfg, evaluate_test=True):
         """Train the model on ``train_df`` and evaluate on ``test_df``.
-
-        # Validation rows are sliced out of ``train_df`` here (rather than via
-        # a preprocessing operator) so baselines cannot reshape the train/val
-        # split. ``train.val_ratio`` (default ``0.1``) and ``train.seed``
-        # (default ``42``) in the model config control the slice; for rec
-        # tasks we use a stratified split on the binary label when available.
 
         Consume the train/validation marker fixed before preprocessing.
         Direct callers without markers retain the legacy stratified split
@@ -225,10 +237,6 @@ class BaseModel(nn.Module):
             train_split, val_split = train_test_split(
                 train_df, test_size=val_ratio, random_state=seed, stratify=stratify,
             )
-
-        # train_split, val_split = train_test_split(
-        #     train_df, test_size=val_ratio, random_state=seed, stratify=stratify,
-        # )
         train_split = train_split.reset_index(drop=True)
         val_split = val_split.reset_index(drop=True)
 

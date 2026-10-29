@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from ..base_op import BaseOp
 
 
@@ -65,7 +66,6 @@ dag:
         return description.strip()
 
     def transform(self, df):
-        df = df.copy()
         if not self.fitted_:
             cols_to_encode = []
             for c in self.cols:
@@ -85,12 +85,15 @@ dag:
             cols_to_encode = [c for c in self.cols_to_encode_ if c in df.columns]
         if not cols_to_encode:
             if self.fitted_ and self.output_columns_ is not None:
-                return df.reindex(columns=self.output_columns_, fill_value=0)
-            return df
+                return self._align_output(df)
+            return df.copy(deep=False)
 
-        df_for_dummies = df.copy()
+        df_for_dummies = df.copy(deep=False)
         for c in cols_to_encode:
             df_for_dummies[c] = df_for_dummies[c].astype("category")
+        from dppbench.memory import require_memory_headroom
+        width = sum(len(df_for_dummies[c].cat.categories) for c in cols_to_encode)
+        require_memory_headroom(len(df) * width * 3, "OneHotEncode")
         encoded = pd.get_dummies(
             df_for_dummies,
             columns=cols_to_encode,
@@ -105,5 +108,15 @@ dag:
             }
             self.drop_col_types = list(cols_to_encode)
         else:
-            encoded = encoded.reindex(columns=self.output_columns_, fill_value=0)
+            encoded = self._align_output(encoded)
+        return encoded
+
+    def _align_output(self, encoded):
+        encoded = encoded.reindex(columns=self.output_columns_, fill_value=np.int8(0))
+        # reindex creates absent dummy columns as int64. Without this cast,
+        # concatenating holdout partitions promotes training's int8 columns
+        # to int64 as well (8x storage for otherwise identical 0/1 values).
+        for col in self.output_col_types:
+            if encoded[col].dtype != np.dtype("int8"):
+                encoded[col] = encoded[col].astype("int8")
         return encoded

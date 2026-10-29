@@ -69,7 +69,7 @@ SLOT_KIND: Dict[str, str] = {
     "CreatePolynomialFeature": "soft",
     "CrossFeature": "soft",
     "AggregateGroupFeature": "soft",
-    "ExtractDateTimeFeature": "soft",
+    "ExtractDateTimeFeature": "hard",
     "SelectFeature": "soft",
     "ReduceDimension": "soft",
     "ExtractTextFeature": "soft",

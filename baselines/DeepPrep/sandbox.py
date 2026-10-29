@@ -103,12 +103,21 @@ class Sandbox:
     # ------------------------------------------------------------------
     def reset(self) -> ExecutionResult:
         """(Re)load the original data and return the initial observation."""
+        cache_key = (self.small_n, self.seed, os.environ.get("DPPBENCH_YELP_SIDE_TABLE_SCOPE", "full"))
+        if (self.data_name == "yelp" and self.small_n > 0 and self._initial_snapshot is not None
+                and getattr(self, "_yelp_snapshot_key", None) == cache_key):
+            obs = self.restore(self._initial_snapshot)
+            return ExecutionResult(success=True, obs=obs, snapshot=self._initial_snapshot)
         data = self._executor._make_configured_data_instance()
+        if self.data_name == "yelp" and self.small_n > 0:
+            data._search_small_n = self.small_n
+            data._search_seed = self.seed
         data.load_data()
         # run_pre_process() loads frozen std-test lazily and may replace the
         # sampled training frame with the full frozen frame. Load it first so
         # the sandbox's small-N sample is the frame actually executed.
-        data.load_std_test_frozen()
+        if not getattr(data, "_has_std_test", False):
+            data.load_std_test_frozen()
         if self.small_n > 0:
             subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)
         # Fix train/validation partitions before any tree edge (also for RecData).
@@ -118,6 +127,7 @@ class Sandbox:
         self.data = data
         self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
         self._initial_snapshot = self.snapshot()
+        self._yelp_snapshot_key = cache_key
         obs = self._observe()
         return ExecutionResult(success=True, obs=obs, snapshot=self._initial_snapshot)
 

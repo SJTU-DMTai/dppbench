@@ -372,6 +372,7 @@ class BaseData:
         edges = self._relation_dag_edges_from_prev(spec, ops, source_ids)
         order, incoming = self._toposort_relation_dag(op_ids, source_ids, edges)
         values = dict(source_tables)
+        del source_tables, available_sources
         remaining_uses = {}
         for src, _ in edges:
             remaining_uses[src] = remaining_uses.get(src, 0) + 1
@@ -535,6 +536,14 @@ class RecData(BaseData):
 
     def _remap_ids(self):
         import numpy as np
+        # DIN sequences and their referenced IDs must share one vocabulary.
+        # Without this, a sequence containing only a subset of items is
+        # independently numbered as a categorical list below.
+        for sequence, reference in (self.model_cfg.get("feature", {}).get("seq_cols", {}) or {}).items():
+            if reference == self._item_id_col and sequence not in self._item_id_related_cols:
+                self._item_id_related_cols.append(sequence)
+            elif reference == self._user_id_col and sequence not in self._user_id_related_cols:
+                self._user_id_related_cols.append(sequence)
         for id_col, related_cols in [
             (self._user_id_col, self._user_id_related_cols),
             (self._item_id_col, self._item_id_related_cols),
@@ -814,7 +823,7 @@ class RecData(BaseData):
             new_df = op.transform(df)
         elif "__split__" in df.columns:
             parts = []
-            std_test_pre = df[df["__split__"] == "std_test"]
+            std_test_count = int((df["__split__"] == "std_test").sum())
             deferred_std_test = None
             transformed_train = None
             for split_name in ["train", "val", "test", "std_test"]:
@@ -823,18 +832,24 @@ class RecData(BaseData):
                     continue
                 if split_name != "train" and not applies_to_std_test:
                     if split_name != "std_test":
-                        parts.append(group.copy())
+                        parts.append(group)
                         continue
-                    deferred_std_test = group.copy()
+                    deferred_std_test = group
                     continue
-                group = group.drop(columns="__split__")
+                # Boolean selection already owns this partition. Removing only
+                # metadata avoids copying every feature again via drop().
+                group.pop("__split__")
                 transformed = op.transform(group)
-                if split_name == "train":
+                if split_name == "train" and getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False):
                     transformed_train = transformed
-                # Wide encoders can return one block per column. Consolidate
-                # before inserting split metadata to avoid fragmentation warnings.
-                transformed = transformed.copy()
-                transformed["__split__"] = split_name
+                # Avoid consolidating the whole wide table just to add metadata.
+                transformed = transformed.copy(deep=False)
+                # Fragmentation is intentional here: consolidation would duplicate
+                # every dummy column. Adding one metadata column is inexpensive.
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
+                    transformed["__split__"] = split_name
                 parts.append(transformed)
             if deferred_std_test is not None:
                 if (
@@ -845,18 +860,24 @@ class RecData(BaseData):
                         deferred_std_test, transformed_train, op_name, op
                     )
                 parts.append(deferred_std_test)
+            from dppbench.memory import require_memory_headroom
+            require_memory_headroom(sum(int(part.memory_usage(index=False, deep=False).sum())
+                                        for part in parts), "rec.partition_concat")
             new_df = pd.concat(parts, ignore_index=True)
+            parts.clear()
+            transformed_train = deferred_std_test = None
+            group = transformed = None
             if (
-                len(std_test_pre) > 0
+                std_test_count > 0
                 and (new_df["__split__"] == "std_test").sum() == 0
                 and not getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
             ):
                 print(
                     f"  [std_test] op {op_name} would drop all "
-                    f"{len(std_test_pre)} std_test rows; "
+                    f"{std_test_count} std_test rows; "
                     "preserving them untouched."
                 )
-                new_df = pd.concat([new_df, std_test_pre.copy()], ignore_index=True)
+                new_df = pd.concat([new_df, df[df["__split__"] == "std_test"]], ignore_index=True)
         else:
             new_df = op.transform(df)
 
@@ -1091,6 +1112,17 @@ class TabularData(BaseData):
 
     def _transform_tabular_dag_df(self, df, op, op_name):
         self._protect_aggregate_target(df, op, op_name)
+        if op_name == "AugmentMixup":
+            task = (getattr(self, "model_cfg", {}) or {}).get("model_params", {}).get("task", "classification")
+            op.task = "regression" if task == "regression" else "classification"
+            op.exclude_cols = list(dict.fromkeys([
+                *getattr(op, "exclude_cols", []), getattr(self, "id_col", None),
+            ]))
+        if op_name == "LabelEncode":
+            # Row identity is bookkeeping, not a categorical model feature.
+            op.exclude_cols = list(dict.fromkeys([
+                *getattr(op, "exclude_cols", []), getattr(self, "id_col", None),
+            ]))
         if op_name == "SelectFeature":
             # Dataset contract also covers existing YAMLs and other baseline
             # adapters, which may not have supplied graph metadata exclusions.

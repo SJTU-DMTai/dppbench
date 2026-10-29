@@ -71,16 +71,20 @@ dag:
         return description.strip()
 
     def transform(self, df):
-        df = df.copy()
+        df = df.copy(deep=False)
         cols = [c for c in self.cols if c in df.columns]
         if not cols or self.n_copies <= 0:
             return df
         rng = np.random.RandomState(self.RANDOM_STATE)
         stds = {c: float(pd.to_numeric(df[c], errors="coerce").std() or 1.0)
                 for c in cols}
+        from dppbench.memory import require_memory_headroom
+        require_memory_headroom(
+            int(df.memory_usage(index=False, deep=False).sum()) * (self.n_copies + 1)
+            + len(df) * len(cols) * 8 * self.n_copies, "AugmentNoise")
         copies = [df]
         for _ in range(self.n_copies):
-            cp = df.copy()
+            cp = df.copy(deep=False)
             for c in cols:
                 v = pd.to_numeric(cp[c], errors="coerce").fillna(0).values
                 scale = stds[c] * self.noise_scale

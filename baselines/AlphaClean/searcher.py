@@ -90,17 +90,21 @@ class AlphaCleanSearcher:
         # Start with the empty pipeline (which repair() will populate with
         # mandatory ops) and one fully-random pipeline of length 3 to spice
         # up the initial beam.
-        empty = repairs_to_pipeline([], self.ctx)
+        empty = repairs_to_pipeline([], self.ctx, rng=self.sampler.rng)
         seeds = [empty]
+        seeds.extend(repairs_to_pipeline([r], self.ctx, rng=self.sampler.rng)
+                     for r in self.sampler.join_seeds())
 
         warm_len = min(3, self.max_pipeline_len or 3)
         warm_reps = self.sampler.sample(warm_len)
         if warm_reps:
-            seeds.append(repairs_to_pipeline(warm_reps, self.ctx))
+            seeds.append(repairs_to_pipeline(warm_reps, self.ctx, rng=self.sampler.rng))
 
         scored: List[ScoredPipeline] = []
         seen = set()
         for p in seeds:
+            if self.max_pipeline_len is not None and len(p.steps) > self.max_pipeline_len:
+                continue
             h = p.hash()
             if h in seen:
                 continue
@@ -150,13 +154,8 @@ class AlphaCleanSearcher:
             seen = {sp.hash() for sp in self.frontier}
             for sp in base_beam:
                 base_repairs = [Repair.from_pipeline_step(s) for s in sp.pipeline.steps]
-                if (
-                    self.max_pipeline_len is not None
-                    and len(base_repairs) >= self.max_pipeline_len
-                ):
-                    continue
                 for r in kept_reps:
-                    new_pipe = repairs_to_pipeline(base_repairs + [r], self.ctx)
+                    new_pipe = repairs_to_pipeline(base_repairs + [r], self.ctx, rng=self.sampler.rng)
                     if (
                         self.max_pipeline_len is not None
                         and len(new_pipe.steps) > self.max_pipeline_len

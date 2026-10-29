@@ -168,6 +168,8 @@ class DAGPipe:
         stopping_loss = float('inf')
         history = []
 
+        from baselines.common.search_cost import measured_call, record_work
+
         def task_loss(z, y):
             return nn.functional.mse_loss(z.squeeze(-1), y) if regression else nn.functional.cross_entropy(z, y)
 
@@ -207,8 +209,10 @@ class DAGPipe:
                     with measurements.scope('batch_transfer'):
                         x, y = training_data.batch(False, idx)
                     with measurements.scope('forward'):
-                        predictions = predictor(reference_forward(model, x, reference))
-                        loss = task_loss(predictions, y)
+                        loss = measured_call('proxy_train.joint', lambda:
+                            task_loss(predictor(reference_forward(model, x, reference)), y))
+                        record_work('proxy_work.train', supervised_rows=len(y),
+                                    forwarded_rows=len(y) + len(reference))
                         sparse = torch.triu(torch.sigmoid(model.layer_adj_logits), diagonal=1).sum()
                         sparse = sparse + sum(torch.triu(torch.sigmoid(a), diagonal=1).sum() for a in model.intra_adj_logits)
                         loss = loss + float(self.cfg['lambda_sparse'])*sparse
@@ -216,7 +220,7 @@ class DAGPipe:
                             raise RuntimeError('DAGPipe non-finite loss')
                     with measurements.scope('backward'):
                         optimizer.zero_grad()
-                        loss.backward()
+                        measured_call('gradient.backward', loss.backward)
                     with measurements.scope('gradient_norm_and_clip'):
                         if self.legacy_sync:
                             legacy_clip_gradients(model.parameters())
@@ -230,7 +234,7 @@ class DAGPipe:
                         if not self.legacy_sync and not bool(torch.isfinite(loss.detach()) & model_finite & predictor_finite):
                             raise RuntimeError(f'DAGPipe non-finite training loss/gradient at epoch {epoch+1}')
                     with measurements.scope('optimizer'):
-                        optimizer.step()
+                        measured_call('optimizer.joint', optimizer.step)
                     updates += 1
                     total_train += (loss.item() if self.legacy_sync else loss.detach().double())*len(y)
                     profiler.step()
@@ -252,7 +256,10 @@ class DAGPipe:
                     for start in range(0, len(x_val), batch_size):
                         resources()
                         x, y = training_data.batch(True, slice(start, start+batch_size))
-                        loss = task_loss(predictor(reference_forward(model, x, reference)), y)
+                        loss = measured_call('proxy_val.selection', lambda:
+                            task_loss(predictor(reference_forward(model, x, reference)), y))
+                        record_work('proxy_work.val', supervised_rows=len(y),
+                                    forwarded_rows=len(y) + len(reference))
                         if self.legacy_sync and not torch.isfinite(loss):
                             raise RuntimeError('DAGPipe non-finite validation loss')
                         val_finite &= torch.isfinite(loss)

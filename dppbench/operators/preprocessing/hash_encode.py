@@ -18,8 +18,12 @@ class HashEncode(BaseOp):
         self.op_type = "basic op"
         self.cols = cols if isinstance(cols, list) else [cols]
         self.n_buckets = int(n_buckets)
+        if self.n_buckets < 1:
+            raise ValueError("n_buckets must be positive")
         self.prefix = prefix
         self.drop_original = bool(drop_original)
+        self.output_col_types = {}
+        self.drop_col_types = []
 
     def get_op_description(self):
         description = """Operator name: HashEncode
@@ -84,7 +88,9 @@ dag:
                 continue
             out = df[c].apply(lambda v: self._hash_to_bucket(v, self.n_buckets))
             df[f"{self.prefix}{c}"] = out.astype("int32")
+            self.output_col_types[f"{self.prefix}{c}"] = "categorical"
             if self.drop_original:
                 df = df.drop(columns=[c])
+                self.drop_col_types.append(c)
             print(f"  [HashEncode] '{c}' -> '{self.prefix}{c}' ({self.n_buckets} buckets)")
         return df

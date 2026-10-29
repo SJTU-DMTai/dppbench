@@ -5,6 +5,7 @@ class ExtractGraphFeature(TabularOp):
     """Extract simple graph structural features from an edge table."""
 
     PREFIX = "graph_"
+    FIT_ON_TRAIN_ONLY = True
 
     def __init__(self, source_col="src", target_col="dst", features=None,
                  directed=False):
@@ -13,6 +14,8 @@ class ExtractGraphFeature(TabularOp):
         self.target_col = target_col
         self.features = features or ["degree", "pagerank"]
         self.directed = bool(directed)
+        self.output_col_types = {}
+        self.statistics_ = None
 
     def get_op_description(self):
         description = """Operator name: ExtractGraphFeature
@@ -65,21 +68,26 @@ dag:
         if self.source_col not in df.columns or self.target_col not in df.columns:
             return df
         df = df.copy()
-        try:
-            import networkx as nx
-            graph = nx.DiGraph() if self.directed else nx.Graph()
-            graph.add_edges_from(df[[self.source_col, self.target_col]].dropna().itertuples(index=False, name=None))
-            degree = dict(graph.degree()) if "degree" in self.features else {}
-            pagerank = nx.pagerank(graph) if "pagerank" in self.features and len(graph) else {}
-        except Exception as exc:
-            print(f"  [ExtractGraphFeature] networkx unavailable, using counts: {exc}")
-            src_counts = df[self.source_col].value_counts()
-            dst_counts = df[self.target_col].value_counts()
-            degree = (src_counts.add(dst_counts, fill_value=0)).to_dict()
-            pagerank = {}
+        if self.statistics_ is None:
+            try:
+                import networkx as nx
+                graph = nx.DiGraph() if self.directed else nx.Graph()
+                graph.add_edges_from(df[[self.source_col, self.target_col]].dropna().itertuples(index=False, name=None))
+                degree = dict(graph.degree()) if "degree" in self.features else {}
+                pagerank = nx.pagerank(graph) if "pagerank" in self.features and len(graph) else {}
+            except Exception as exc:
+                print(f"  [ExtractGraphFeature] networkx unavailable, using counts: {exc}")
+                src_counts = df[self.source_col].value_counts()
+                dst_counts = df[self.target_col].value_counts()
+                degree = (src_counts.add(dst_counts, fill_value=0)).to_dict()
+                pagerank = {}
+            self.statistics_ = degree, pagerank
+        degree, pagerank = self.statistics_
         for node_col in (self.source_col, self.target_col):
             if "degree" in self.features:
                 df[f"{self.PREFIX}{node_col}_degree"] = df[node_col].map(degree).fillna(0)
+                self.output_col_types[f"{self.PREFIX}{node_col}_degree"] = "numeric"
             if "pagerank" in self.features:
                 df[f"{self.PREFIX}{node_col}_pagerank"] = df[node_col].map(pagerank).fillna(0.0)
+                self.output_col_types[f"{self.PREFIX}{node_col}_pagerank"] = "numeric"
         return df

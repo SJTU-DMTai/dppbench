@@ -16,6 +16,7 @@ class ReduceDimension(TabularOp):
             raise ValueError("method must be pca/svd/kernel_pca/lda/umap")
         self.cols = cols
         self.method = method
+        self.output_col_types = {}
         self.n_components = int(n_components)
         self.target_col = target_col
         self.prefix = prefix or f"{method}_"
@@ -138,4 +139,5 @@ dag:
             return df
         for i in range(projected.shape[1]):
             df[f"{self.prefix}{i}"] = projected[:, i]
+            self.output_col_types[f"{self.prefix}{i}"] = "numeric"
         return df

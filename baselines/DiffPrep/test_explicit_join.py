@@ -98,13 +98,15 @@ def test_config_file_scopes_override_to_dataset_and_old_config_still_loads(tmp_p
 
 
 def test_full_search_receives_explicit_adapter_and_records_replay(tmp_path, monkeypatch):
-    import functools
     import json
     from baselines.DiffPrep import diffprep
     from baselines.DiffPrep.test_search_protocol import test_berka_search_reproducible_without_reading_std_test
-    monkeypatch.setattr(diffprep, 'DiffPrep', functools.partial(
-        diffprep.DiffPrep, join_overrides={'berka': {
-            'table': 'account', 'key_col': 'account_id', 'method': 'key'}}))
+    original = diffprep.DiffPrep
+    def explicit_model(*args, **kwargs):
+        kwargs['join_overrides'] = {'berka': {
+            'table': 'account', 'key_col': 'account_id', 'method': 'key'}}
+        return original(*args, **kwargs)
+    monkeypatch.setattr(diffprep, 'DiffPrep', explicit_model)
     test_berka_search_reproducible_without_reading_std_test(tmp_path, monkeypatch)
     contract = json.loads((tmp_path / 'first/search_contract.json').read_text(encoding='utf-8'))
     assert contract['join_replay_checked'] is True

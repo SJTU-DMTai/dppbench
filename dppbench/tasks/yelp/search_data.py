@@ -40,6 +40,22 @@ def load_frozen_search_interactions(data, small_n, seed):
     import pyarrow.parquet as pq
 
     directory = data._std_test_dir(data.data_dir)
+    if not getattr(data, '_search_include_std_test', True):
+        path = os.path.join(directory, 'interaction_frozen.parquet')
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f'Yelp search requires frozen training data: {path}')
+        names = pq.ParquetFile(path).schema_arrow.names
+        cols = [c for c in ('user_id', 'timestamp', '__split__') if c in names]
+        metadata = pd.read_parquet(path, columns=cols)
+        if '__split__' in metadata and not metadata['__split__'].eq('train').all():
+            raise ValueError('Frozen Yelp training file contains held-out partitions')
+        metadata['__source_row__'] = np.arange(len(metadata))
+        from baselines.common.search_evaluator import _subsample_rec_train_frame
+        selected = _subsample_rec_train_frame(metadata, small_n, seed)
+        result = read_selected_rows(path, selected['__source_row__']).reset_index(drop=True)
+        result['__split__'] = 'train'
+        data._rec_frozen_train_only = True
+        return result
     paths = [os.path.join(directory, name) for name in
              ("interaction_frozen.parquet", "std_test.parquet")]
     for path in paths:

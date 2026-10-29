@@ -67,6 +67,17 @@ class BaseData:
         self.model_cfg = cfg or {}
 
     def _protect_aggregate_target(self, df, op, op_name):
+        from dppbench.feature_contracts import target_feature_errors
+        configured_target = getattr(self, "target_col", None) or getattr(self, "model_cfg", {}).get("feature", {}).get("target_col")
+        if op_name in {"CreateLagFeature", "CreateRollingFeature"} and op.target_col == configured_target:
+            raise ValueError(f"{op_name} cannot read supervised targets under batch held-out evaluation")
+        errors = target_feature_errors(op_name, vars(op), configured_target)
+        if errors:
+            raise ValueError("; ".join(errors))
+        if op_name == "LabelEncode" and op.cols is None:
+            op.exclude_cols = list(dict.fromkeys([*getattr(op, "exclude_cols", ()), configured_target,
+                getattr(self, '_user_id_col', None), getattr(self, '_item_id_col', None),
+                *[c for c, kind in getattr(self, 'col_types', {}).items() if kind == 'timestamp']]))
         target = getattr(self, "target_col", None) or getattr(self, "model_cfg", {}).get("feature", {}).get("target_col")
         if op_name in {"CreateLagFeature", "CreateRollingFeature"} and op.target_col == target:
             raise ValueError(f"{op_name} cannot read supervised targets under batch held-out evaluation")
@@ -535,125 +546,8 @@ class RecData(BaseData):
         )
 
     def _remap_ids(self):
-        import numpy as np
-        # DIN sequences and their referenced IDs must share one vocabulary.
-        # Without this, a sequence containing only a subset of items is
-        # independently numbered as a categorical list below.
-        for sequence, reference in (self.model_cfg.get("feature", {}).get("seq_cols", {}) or {}).items():
-            if reference == self._item_id_col and sequence not in self._item_id_related_cols:
-                self._item_id_related_cols.append(sequence)
-            elif reference == self._user_id_col and sequence not in self._user_id_related_cols:
-                self._user_id_related_cols.append(sequence)
-        for id_col, related_cols in [
-            (self._user_id_col, self._user_id_related_cols),
-            (self._item_id_col, self._item_id_related_cols),
-        ]:
-            unique_vals = set()
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None:
-                    continue
-                if id_col in df.columns:
-                    unique_vals.update(df[id_col].dropna().unique())
-                for rel_col in related_cols:
-                    if rel_col in df.columns:
-                        for val_list in df[rel_col]:
-                            if isinstance(val_list, (list, np.ndarray)):
-                                unique_vals.update(val_list)
-
-            if not unique_vals:
-                continue
-
-            mapping = {val: idx + 1 for idx, val in enumerate(sorted(unique_vals, key=str))}
-
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None:
-                    continue
-                if id_col in df.columns:
-                    df[id_col] = df[id_col].map(mapping)
-                for rel_col in related_cols:
-                    if rel_col in df.columns:
-                        df[rel_col] = df[rel_col].apply(
-                            lambda x: [mapping.get(v, 0) for v in x] if isinstance(x, (list, np.ndarray)) else x
-                        )
-
-        already_remapped = set(self._item_id_related_cols + self._user_id_related_cols)
-        for col, col_type in list(self.col_types.items()):
-            if col_type != self.CATEGORICAL_LIST or col in already_remapped:
-                continue
-            has_list = False
-            list_sample_is_str = False
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                for val in df[col]:
-                    if isinstance(val, (list, np.ndarray)) and len(val) > 0:
-                        has_list = True
-                        if not isinstance(val[0], (int, np.integer)):
-                            list_sample_is_str = True
-                        break
-                if has_list:
-                    break
-            if not has_list or not list_sample_is_str:
-                continue
-            all_tokens = set()
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                for val in df[col]:
-                    if isinstance(val, (list, np.ndarray)):
-                        all_tokens.update(val)
-            tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                df[col] = df[col].apply(
-                    lambda x: [tok2idx.get(v, 0) for v in x] if isinstance(x, (list, np.ndarray)) else x
-                )
-
-        id_cols = {self._user_id_col, self._item_id_col}
-        for col, col_type in list(self.col_types.items()):
-            if col_type != self.CATEGORICAL or col in id_cols:
-                continue
-            need_remap = False
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                non_null = df[col].dropna()
-                if len(non_null) == 0:
-                    continue
-                all_integer = non_null.map(
-                    lambda value: isinstance(value, (int, np.integer))
-                ).all()
-                if not all_integer:
-                    need_remap = True
-                    break
-                col_min = int(non_null.min())
-                col_max = int(non_null.max())
-                col_nunique = int(non_null.nunique())
-                if col_max - col_min + 1 > col_nunique * 2 + 10:
-                    need_remap = True
-                    break
-            if not need_remap:
-                continue
-
-            all_tokens = set()
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                all_tokens.update(df[col].dropna().unique())
-            tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                df[col] = df[col].map(tok2idx).fillna(0).astype("int64")
+        from .rec_protocol import remap_training_categories
+        remap_training_categories(self)
 
     def _resolve_param(self, value):
         if isinstance(value, str) and value.startswith("$"):
@@ -729,8 +623,13 @@ class RecData(BaseData):
         if not os.path.exists(frozen_path):
             raise FileNotFoundError(f"Frozen test requires disjoint training artifact: {frozen_path}")
         self.interaction_df = pd.read_parquet(frozen_path)
+        if "__split__" in self.interaction_df and not self.interaction_df["__split__"].eq("train").all():
+            raise ValueError("Frozen recommendation training file contains held-out partitions")
 
         std_df = pd.read_parquet(std_test_path).copy()
+        from .rec_protocol import assert_disjoint
+        self.split_audit_ = assert_disjoint(self.interaction_df, std_df, self._user_id_col, self._item_id_col,
+                                          self.model_cfg.get("feature", {}).get("time_col", "timestamp"))
         std_df["__split__"] = "std_test"
 
         base = self.interaction_df.copy()
@@ -817,9 +716,20 @@ class RecData(BaseData):
 
     def _transform_rec_dag_df(self, df, op, op_name):
         self._protect_aggregate_target(df, op, op_name)
+        if op_name == "RenameColumn":
+            op.output_col_types = {new: self.col_types[old] for old, new in op.rename_map.items() if old in self.col_types}
+            op.drop_col_types = list(op.rename_map)
         applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
         uses_train_history = getattr(op, "USES_TRAIN_HISTORY_FOR_STD_TEST", False)
-        if "__split__" in df.columns and uses_train_history:
+        if op_name in {"AggregateGroupFeature", "CreateLagFeature", "CreateRollingFeature"}:
+            from .rec_protocol import history_transform
+            time_col = getattr(op, "time_col", None) or self.model_cfg.get("feature", {}).get("time_col")
+            time_col = time_col or next((c for c, t in self.col_types.items() if t == self.TIMESTAMP and c in df), None)
+            new_df = history_transform(df, op, time_col)
+            op.output_col_types = {c: (self.col_types.get(op.target_col, self.NUMERIC)
+                                      if op_name == "CreateLagFeature" else self.NUMERIC)
+                                   for c in new_df if c not in df}
+        elif "__split__" in df.columns and uses_train_history:
             new_df = op.transform(df)
         elif "__split__" in df.columns:
             parts = []

@@ -189,12 +189,12 @@ def build_feature_columns(df, cfg, col_types=None):
 
     col_types = col_types or {}
 
-    exclude_cols = {"__split__", target_col}
+    exclude_cols = {"__split__", target_col, "sample_weight", f"{target_col}_corrected"}
 
     feature_columns = []
 
     for col in df.columns:
-        if col in exclude_cols:
+        if col in exclude_cols or str(col).startswith('__dppbench_'):
             continue
         col_type = col_types.get(col)
         if col_type is None:
@@ -202,6 +202,7 @@ def build_feature_columns(df, cfg, col_types=None):
 
         if col_type == "categorical":
             vocab_size = int(df[col].max()) + 1 if df[col].dtype.kind in ('i', 'u') else int(df[col].nunique()) + 1
+            vocab_size = int(feat_cfg.get('vocabulary_sizes', {}).get(col, vocab_size))
             feature_columns.append(
                 SparseFeat(col, vocabulary_size=vocab_size, embedding_dim=embedding_dim)
             )
@@ -296,15 +297,18 @@ def df_to_input(df, feature_columns, cfg):
     for fc in feature_columns:
         if isinstance(fc, SparseFeat):
             col_vals = df[fc.name]
-            if col_vals.dtype == object or col_vals.dtype.name == 'category':
-                x[fc.name] = col_vals.fillna("__UNK__").astype("category").cat.codes.values.astype(np.int64)
+            if not pd.api.types.is_numeric_dtype(col_vals):
+                raise ValueError(f"Categorical feature {fc.name!r} must use a train-fitted mapping; object fallback is forbidden")
             else:
                 vals = pd.to_numeric(col_vals, errors="coerce").fillna(0).values.astype(np.int64)
                 vals[vals < 0] = 0
                 vals[vals >= fc.vocabulary_size] = 0
                 x[fc.name] = vals
         elif isinstance(fc, DenseFeat):
-            x[fc.name] = pd.to_numeric(df[fc.name], errors="coerce").fillna(0).values.astype(np.float32)
+            values = pd.to_numeric(df[fc.name], errors="coerce")
+            if (values.isna() & df[fc.name].notna()).any():
+                raise ValueError(f"Numeric feature {fc.name!r} contains nonnumeric values")
+            x[fc.name] = values.fillna(0).values.astype(np.float32)
         elif isinstance(fc, VarLenSparseFeat):
             raw_seqs = df[fc.name].tolist()
             padded, lengths = pad_sequences(raw_seqs, fc.maxlen, padding_value=0)

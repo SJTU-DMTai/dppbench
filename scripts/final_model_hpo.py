@@ -214,6 +214,7 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
                            for device, stats in cache_after.items()}
             trials.append({
                 "params": params,
+                "rec_protocol": result.metrics.get('rec_protocol'),
                 "metric": metric,
                 "value": value,
                 "success": valid,
@@ -227,6 +228,7 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
                 score = -float(value) if minimize else float(value)
                 if score > best_score:
                     best_score, best = score, params
+                    summary['best_rec_protocol'] = result.metrics.get('rec_protocol')
         finally:
             evaluator._executor.cleanup()
         summary.update(
@@ -238,4 +240,8 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
         raise RuntimeError(f"All final HPO trials failed; see {path}")
     # Use a fresh model for final frozen-test evaluation. The standard test
     # was never evaluated by any candidate trial.
-    return evaluator_class(**kwargs, model_config=best), summary
+    final_evaluator = evaluator_class(**kwargs, model_config=best)
+    protocol = summary.get('best_rec_protocol') or {}
+    final_evaluator._executor.expected_rec_schema_sha256 = protocol.get('feature_schema_sha256')
+    final_evaluator._executor.expected_category_maps_sha256 = protocol.get('category_maps_sha256')
+    return final_evaluator, summary

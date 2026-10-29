@@ -16,6 +16,8 @@ class ExtractDateTimeFeature(TabularOp):
         self.cols = cols if isinstance(cols, list) else [cols]
         self.features = features or self.DEFAULT_FEATURES
         self.drop_original = bool(drop_original)
+        self.output_col_types = {}
+        self.drop_col_types = []
 
     def get_op_description(self):
         description = """Operator name: ExtractDateTimeFeature
@@ -67,6 +69,7 @@ dag:
 
     def transform(self, df):
         df = df.copy()
+        original_columns = set(df.columns)
         for col in self.cols:
             if col not in df.columns:
                 continue
@@ -107,4 +110,6 @@ dag:
                 df[f"{col}_days_since_epoch"] = (ts - epoch).dt.days.astype("Int32")
             if self.drop_original:
                 df = df.drop(columns=[col])
+                self.drop_col_types.append(col)
+        self.output_col_types.update({c: "numeric" for c in df if c not in original_columns})
         return df

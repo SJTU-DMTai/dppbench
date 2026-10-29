@@ -2,6 +2,7 @@ import copy
 import time
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,20 +21,24 @@ from .layers import PredictionLayer
 
 class _ColumnBatchCollator:
     """Assemble only the requested batch, retaining NumPy's original promotion."""
-    def __init__(self, columns, target=None):
+    def __init__(self, columns, target=None, sample_weight=None):
         size = len(columns[0])
         if any(len(column) != size for column in columns) or (
                 target is not None and len(target) != size):
             raise ValueError("Feature and target arrays must have matching row counts")
         self.columns = columns
         self.target = target
+        self.sample_weight = sample_weight
 
     def __call__(self, indices):
         batch = torch.from_numpy(np.concatenate(
             [column[indices] for column in self.columns], axis=-1))
         if self.target is None:
             return (batch,)
-        return batch, torch.from_numpy(self.target[indices])
+        result = (batch, torch.from_numpy(self.target[indices]))
+        if self.sample_weight is not None:
+            result += (torch.from_numpy(self.sample_weight[indices]),)
+        return result
 
 
 class BaseModel(nn.Module):
@@ -80,7 +85,7 @@ class BaseModel(nn.Module):
 
     def fit(self, x, y, batch_size=256, epochs=1, verbose=1,
             validation_data=None, shuffle=True,
-            early_stopping_monitor=None, early_stopping_patience=0):
+            early_stopping_monitor=None, early_stopping_patience=0, sample_weight=None):
         if isinstance(x, dict):
             x = [x[feat] for feat in self.feature_index]
 
@@ -88,8 +93,12 @@ class BaseModel(nn.Module):
             if len(x[i].shape) == 1:
                 x[i] = np.expand_dims(x[i], axis=1)
 
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=np.float32)
+            if len(sample_weight) != len(y) or not np.isfinite(sample_weight).all() or (sample_weight < 0).any():
+                raise ValueError('Training sample weights must be finite, nonnegative, and aligned')
         train_loader = DataLoader(range(len(y)), shuffle=shuffle, batch_size=batch_size,
-                                  collate_fn=_ColumnBatchCollator(x, y))
+                                  collate_fn=_ColumnBatchCollator(x, y, sample_weight))
 
         do_val = validation_data is not None
         if do_val:
@@ -114,14 +123,20 @@ class BaseModel(nn.Module):
             loss_epoch = 0
             n_samples = 0
 
-            for x_batch, y_batch in train_loader:
+            for batch in train_loader:
+                x_batch, y_batch = batch[:2]
                 x_batch = x_batch.to(self.device).float()
                 y_batch = y_batch.to(self.device).float()
 
                 # Keep the batch axis when a small search sample leaves a
                 # final batch of one row.
                 y_pred = model(x_batch).reshape(-1)
-                loss = self.loss_func(y_pred, y_batch, reduction='mean')
+                if sample_weight is None:
+                    loss = self.loss_func(y_pred, y_batch, reduction='mean')
+                else:
+                    weights = batch[2].to(self.device).float()
+                    losses = self.loss_func(y_pred, y_batch, reduction='none')
+                    loss = (losses * weights).sum() / weights.sum().clamp(min=1e-8)
 
                 if hasattr(self, 'get_regularization_loss'):
                     loss = loss + self.get_regularization_loss().squeeze()
@@ -268,6 +283,8 @@ class BaseModel(nn.Module):
             epochs=train_cfg.get("epochs", 10),
             verbose=1,
             validation_data=(val_x, val_y),
+            sample_weight=(pd.to_numeric(train_split['sample_weight'], errors='raise').fillna(1.).to_numpy()
+                           if 'sample_weight' in train_split else None),
             early_stopping_monitor=train_cfg.get("early_stopping_monitor"),
             early_stopping_patience=train_cfg.get("early_stopping_patience", 0),
         )

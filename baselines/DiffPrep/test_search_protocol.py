@@ -98,7 +98,8 @@ def test_berka_search_reproducible_without_reading_std_test(tmp_path, monkeypatc
     monkeypatch.setattr(pd, 'read_parquet', guarded)
     kwargs = dict(task_dir=str(Path(__file__).resolve().parents[2] / 'dppbench/tasks/berka'),
                   data_name='berka', data_dir=str(data_dir), seed=42, device='cpu',
-                  n_epochs=2, small_n=0, eval_full=False, max_pipeline_len=10, verbose=False)
+                  n_epochs=2, small_n=0, eval_full=False, max_pipeline_len=10, verbose=False,
+                  join_overrides={})  # Test legacy behavior independently of experiment config.
     first = DiffPrep(**kwargs, output_dir=str(tmp_path / 'first')).run()
     second = DiffPrep(**kwargs, output_dir=str(tmp_path / 'second')).run()
     assert first['best_pipeline_yaml'] == second['best_pipeline_yaml']

@@ -251,6 +251,16 @@ def _hpo_contract(kwargs, pipeline, model, overrides, tmp_path, monkeypatch, aut
     from scripts.final_model_hpo import tune_final_model
     monkeypatch.setattr('scripts.final_model_hpo.candidate_configs', lambda _: [overrides])
     before = pipeline.hash()
+    # Count held-out evaluations independently of file-read guards.
+    from dppbench.models.base_model import BaseModel
+    calls = []
+    original_evaluate = BaseModel.evaluate
+    def counted(instance, x, y, *args, **options):
+        if len(y) == 12:  # recommendation fixture: val=5, frozen test=12
+            calls.append(len(y))
+        return original_evaluate(instance, x, y, *args, **options)
+    if model == 'DIN':
+        monkeypatch.setattr(BaseModel, 'evaluate', counted)
     selection = {} if automatic else {'evaluator_class': DAGPipeEvaluator}
     with forbid_std_reads(), patch('baselines.common.evaluator.check_pipeline',
                                   side_effect=AssertionError('DAGPipe reached public operator validator')):
@@ -258,6 +268,8 @@ def _hpo_contract(kwargs, pipeline, model, overrides, tmp_path, monkeypatch, aut
             pipeline, **kwargs, model_name=model, **selection,
             output_dir=str(tmp_path),
         )
+    if model == 'DIN':
+        assert calls == [], 'HPO trial evaluated the standard test'
     try:
         assert isinstance(evaluator, DAGPipeEvaluator)
         assert len(summary['trials']) == 1
@@ -266,6 +278,8 @@ def _hpo_contract(kwargs, pipeline, model, overrides, tmp_path, monkeypatch, aut
         result = evaluator.evaluate(pipeline)
         assert result.success, result.error
         assert result.metrics['std_test_n_rows'] > 0
+        if model == 'DIN':
+            assert calls == [12], 'Final DAGPipe model must evaluate the test exactly once'
     finally:
         evaluator._executor.cleanup()
 

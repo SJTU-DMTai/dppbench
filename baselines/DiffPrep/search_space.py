@@ -103,6 +103,8 @@ class ContinuousPipeline(nn.Module):
     def beta(self) -> torch.Tensor:
         """Return ``[slots, features, max_candidates]`` softmax weights."""
         logits = self.tau + self._cand_mask
+        if hasattr(self, 'rec_candidate_mask'):
+            logits = logits + self.rec_candidate_mask
         beta = F.softmax(logits, dim=-1)
         forced = self._forced_index
         if (forced >= 0).any():
@@ -175,6 +177,8 @@ class ContinuousPipeline(nn.Module):
         hard_sample: bool = True,
     ) -> torch.Tensor:
         beta = self.beta()
+        if hasattr(self, 'rec_bank'):
+            return self.rec_bank.forward(x, beta, self.alpha() if self.flex else None)
         out = x
 
         if not self.flex:

@@ -22,6 +22,7 @@ class TransformPower(TabularOp):
         ) else [output_cols]
         self.output_distribution = output_distribution
         self.cols_ = []
+        self.output_col_types = {}
         self.transformer_ = None
 
     def get_op_description(self):
@@ -85,6 +86,7 @@ dag:
             else:
                 out = np.log(values + self.offset)
             df[self._target_col(i, col)] = out
+            self.output_col_types[self._target_col(i, col)] = "numeric"
         return df
 
     def transform(self, df):
@@ -108,6 +110,7 @@ dag:
                     output_distribution=self.output_distribution,
                 ).fit(sub)
             df[cols] = self.transformer_.transform(sub)
+            self.output_col_types.update({c: "numeric" for c in cols})
         except Exception as exc:
             print(f"  [TransformPower] sklearn quantile unavailable: {exc}")
         return df

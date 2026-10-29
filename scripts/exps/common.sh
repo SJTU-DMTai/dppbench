@@ -6,7 +6,7 @@ EXPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_1_cost}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps_1_new}"
 GPU_ID="${GPU_ID:-2}"
 CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
@@ -178,6 +178,13 @@ import sys
 
 source_dir, output_csv, columns_arg = sys.argv[1:4]
 columns = [c.strip() for c in columns_arg.split(",") if c.strip()]
+# Preserve typed search accounting in every experiment summary. Old CSVs
+# have no observations: leave these fields empty rather than inventing zeros.
+for column in ("search_cost", "search_pipeline_score_calls", "search_downstream_fit_calls",
+               "search_proxy_train_loss_calls", "search_proxy_val_loss_calls",
+               "search_gradient_calls", "search_optimizer_steps"):
+    if column not in columns:
+        columns.append(column)
 fields = ["source_csv"] + columns
 rows = []
 

@@ -244,7 +244,9 @@ class SAGA:
                 )
                 full_eval.set_evaluate_std_test(False)
                 full_eval.ctx = ctx
-                ev = full_eval.evaluate(best.pipeline)
+                from baselines.common.search_cost import cost_phase
+                with cost_phase('post_selection'):
+                    ev = full_eval.evaluate(best.pipeline)
                 if ev.success:
                     best_fitness = float(ev.fitness)
                     best_metrics = dict(ev.metrics or {})

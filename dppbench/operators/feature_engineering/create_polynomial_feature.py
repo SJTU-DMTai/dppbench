@@ -11,6 +11,7 @@ class CreatePolynomialFeature(TabularOp):
         super().__init__(name="CreatePolynomialFeature")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.degree = int(degree)
+        self.output_col_types = {}
         self.interaction_only = bool(interaction_only)
 
     def get_op_description(self):
@@ -83,4 +84,5 @@ dag:
                 continue
             new_name = "poly_" + name.replace(" ", "_").replace("^", "p")
             df[new_name] = out[:, j]
+            self.output_col_types[new_name] = "numeric"
         return df

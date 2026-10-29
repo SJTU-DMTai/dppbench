@@ -6,7 +6,7 @@ Differentiable preprocessing pipeline search inspired by *DiffPrep: Differentiab
 
 ### Explicit relational adapter (optional)
 
-In `baselines/DiffPrep/config.yaml`, replace `join_overrides: {}` with:
+The supplied `baselines/DiffPrep/config.yaml` now enables this Berka experiment:
 
 ```yaml
 join_overrides:
@@ -19,7 +19,8 @@ join_overrides:
 ```
 
 This is an explicit experiment configuration, not a default recommendation for
-every dataset. For account use `table: account, method: key`. `table`, `key_col`
+every dataset. Set `join_overrides: {}` to restore all legacy seeded choices.
+For account use `table: account, method: key`. `table`, `key_col`
 and `method` are required; `prefix` and `max_cols` are optional. Only left joins
 are supported. The selected table must have a direct join key in the context;
 key joins require a unique right key. Invalid overrides fail rather than silently

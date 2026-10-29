@@ -7,10 +7,10 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="44"
+SEED_LIST="42"
 
 TASK_LIST=(
-  yelp
+  amazon_beauty
 )
 
 # TASK_LIST=(
@@ -19,7 +19,7 @@ TASK_LIST=(
 
 HARD_MEMORY_GIB=85
 
-LOG_DIR="logs/exp_1_1/seed44"
+LOG_DIR="logs/exp_1_new/seed42"
 mkdir -p "$LOG_DIR"
 
 FAILED=()

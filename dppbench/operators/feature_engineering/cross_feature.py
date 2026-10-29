@@ -10,6 +10,7 @@ class CrossFeature(TabularOp):
         super().__init__(name="CrossFeature")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.output_col = output_col
+        self.output_col_types = {}
         self.separator = separator if separator is not None else self.SEPARATOR
 
     def get_op_description(self):
@@ -65,4 +66,5 @@ dag:
         out_col = self.output_col or self.separator.join(cols)
         values = df[cols].where(df[cols].notna(), "")
         df[out_col] = values.astype(str).agg(self.separator.join, axis=1)
+        self.output_col_types[out_col] = "categorical"
         return df

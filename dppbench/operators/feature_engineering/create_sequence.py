@@ -1,3 +1,4 @@
+import pandas as pd
 import numpy as np
 from ..base_op import RecOp
 
@@ -78,47 +79,31 @@ dag:
         return description.strip()
 
     def transform(self, df):
+        train = df.loc[df["__split__"].eq("train")] if "__split__" in df else df
+        return self.transform_with_history(df, train)
+
+    def transform_with_history(self, df, train):
+        """Query a separate, label-free training context without sampling it away."""
+        if "__split__" in train and not train["__split__"].eq("train").all():
+            raise ValueError('CreateSequence reference history must contain training events only')
+        # Events at the same timestamp are not assumed to have an observable order.
+        import bisect
         df = df.copy()
-        has_split = "__split__" in df.columns
-        if has_split:
-            df["__dppbench_seq_order__"] = np.arange(len(df))
-            # std-test candidates should be scored against training history
-            # only; they must not leak held-out positives into other candidates.
-            df["__dppbench_seq_rank__"] = (
-                # df["__split__"].astype(str).eq("std_test").astype(int)
-                df["__split__"].astype(str).ne("train").astype(int)
-            )
-            sort_cols = [self.user_col]
-            if self.time_col in df.columns:
-                sort_cols.append(self.time_col)
-            sort_cols.extend(["__dppbench_seq_rank__", "__dppbench_seq_order__"])
-            df = df.sort_values(sort_cols, na_position="last").reset_index(drop=True)
-        else:
-            df = df.sort_values([self.user_col, self.time_col]).reset_index(drop=True)
-
-        users = df[self.user_col].values
-        elements = df[self.item_col].values
-
-        sequences = [None] * len(df)
-        user_hist = {}
-
-        for i in range(len(df)):
-            uid = users[i]
-            hist = user_hist.get(uid)
-            if hist is None:
-                sequences[i] = []
-                user_hist[uid] = []
-            else:
-                sequences[i] = hist[-self.max_len:]
-            # if not (has_split and df.at[i, "__split__"] == "std_test"):
-            if not (has_split and df.at[i, "__split__"] != "train"):
-                user_hist[uid].append(elements[i])
-
+        sequences = [[] for _ in range(len(df))]
+        positions = {}
+        for pos, uid in enumerate(df[self.user_col]):
+            positions.setdefault(uid, []).append(pos)
+        for uid, history in train.groupby(self.user_col, sort=False, dropna=False):
+            history = history.sort_values(self.time_col, kind="stable")
+            if history[self.time_col].isna().any():
+                raise ValueError("CreateSequence requires non-null training timestamps")
+            times = history[self.time_col].tolist()
+            items = history[self.item_col].tolist()
+            for pos in positions.get(uid, []):
+                when = df[self.time_col].iloc[pos]
+                if pd.isna(when):
+                    continue
+                stop = bisect.bisect_left(times, when)
+                sequences[pos] = items[max(0, stop-self.max_len):stop]
         df[self.seq_col] = sequences
-        if has_split:
-            df = (
-                df.sort_values("__dppbench_seq_order__")
-                .drop(columns=["__dppbench_seq_order__", "__dppbench_seq_rank__"])
-                .reset_index(drop=True)
-            )
         return df.reset_index(drop=True)

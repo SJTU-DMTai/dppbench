@@ -112,6 +112,9 @@ class TrainingExecutor:
 
     def _make_configured_data_instance(self):
         data = self._make_data_instance()
+        data._search_include_std_test = self._evaluate_std_test
+        data._rec_training_only = (self.task_type == 'rec' and not self._evaluate_std_test
+                                   and not getattr(self, '_rec_adapter_owns_splits', False))
         if self.task_type == "graph" and not self._evaluate_std_test:
             original_load = data.load_data
             def load_graph_search_data(*args, **kwargs):
@@ -130,6 +133,32 @@ class TrainingExecutor:
                 return data.train_df, data.test_df
             data.load_data = load_graph_search_data
         return self._data_loader.configure_data_instance(data)
+
+    def _restrict_rec_training(self, data):
+        # Keep loaders as class methods: tree-search snapshots must remain picklable.
+        if not getattr(data, '_rec_training_only', False):
+            return
+        directory = data._std_test_dir(data.data_dir)
+        path = os.path.join(directory, 'interaction_frozen.parquet')
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f'Recommendation search requires frozen training data: {path}')
+        frame = (data.interaction_df if getattr(data, '_rec_frozen_train_only', False)
+                 else pd.read_parquet(path))
+        if '__split__' in frame and not frame['__split__'].eq('train').all():
+            raise ValueError('Frozen recommendation training file contains held-out partitions')
+        # Isolation audit reads identities, never held-out labels.
+        time_col = data.model_cfg.get('feature', {}).get('time_col', 'timestamp')
+        identity_cols = [data._user_id_col, data._item_id_col, time_col]
+        from dppbench.rec_protocol import assert_disjoint
+        heldout = pd.read_parquet(os.path.join(directory, 'std_test.parquet'), columns=identity_cols)
+        data.split_audit_ = assert_disjoint(frame, heldout, *identity_cols)
+        data.interaction_df = frame.assign(__split__='train')
+        data._skip_std_test_loading = True
+        data._has_std_test = False
+        small_n = getattr(data, '_search_small_n', 0)
+        if small_n:
+            from .search_evaluator import subsample_data_inplace
+            subsample_data_inplace(data, small_n, getattr(data, '_search_seed', 42))
 
     def get_current_yaml(self):
         with open(self._working_yaml, "r", encoding="utf-8") as f:
@@ -197,6 +226,7 @@ class TrainingExecutor:
         if self._data_loader._data is None:
             self._data_loader._data = self._make_configured_data_instance()
             self._data_loader._data.load_data()
+            self._restrict_rec_training(self._data_loader._data)
         return self._data_loader._data
 
     def clear_data_cache(self):
@@ -222,6 +252,7 @@ class TrainingExecutor:
         """
         data = self._make_configured_data_instance()
         data.load_data()
+        self._restrict_rec_training(data)
         data.run_pre_process(os.path.abspath(self._working_yaml))
         frame = self._primary_frame(data)
         return frame.copy(deep=True) if frame is not None else None
@@ -258,6 +289,7 @@ class TrainingExecutor:
         try:
             data = self._make_configured_data_instance()
             data.load_data()
+            self._restrict_rec_training(data)
             raw_df = self._drop_std_test_rows(self._primary_frame(data))
             raw_profile = self._quality_profile(raw_df, self._target_col_for_quality(data))
             raw_rows = int(len(raw_df)) if raw_df is not None else 0
@@ -552,6 +584,7 @@ class TrainingExecutor:
         try:
             data = self._make_configured_data_instance()
             data.load_data()
+            self._restrict_rec_training(data)
             data.run_pre_process(os.path.abspath(self._working_yaml))
             result["execution_data"] = self._execution_profile(data)
 
@@ -626,7 +659,9 @@ class TrainingExecutor:
                 X_val_num = X_val_num.fillna(0.0)
                 model_params = {**model_params, "device": self.device}
                 model = MODEL_MAP[model_name](**model_params)
-                model.fit(X_train_num, y_train, X_val=X_val_num, y_val=y_val)
+                from baselines.common.search_cost import measured_call
+                measured_call('downstream_fit.' + model_name, model.fit,
+                              X_train_num, y_train, X_val=X_val_num, y_val=y_val)
                 metrics = train_cfg.get(
                     "metrics", ["rmse"] if model_params.get("task") != "binary" else ["auc"],
                 )
@@ -642,7 +677,9 @@ class TrainingExecutor:
                 }
                 model_params = {**model_params, "device": self.device}
                 model = MODEL_MAP[model_name](**model_params)
-                model.fit(X_train, y_train, X_val=X_val, y_val=y_val)
+                from baselines.common.search_cost import measured_call
+                measured_call('downstream_fit.' + model_name, model.fit,
+                              X_train, y_train, X_val=X_val, y_val=y_val)
                 metrics = train_cfg.get(
                     "metrics", ["auc"] if model_params.get("task", "binary") == "binary" else ["rmse"],
                 )
@@ -655,7 +692,8 @@ class TrainingExecutor:
                         f"Unsupported tabular model '{model_name}' for {self.data_name}."
                     )
                 model = LightGBMModel(**model_params)
-                model.fit(
+                from baselines.common.search_cost import measured_call
+                measured_call('downstream_fit.' + model_name, model.fit,
                     X_train, y_train,
                     X_val=X_val, y_val=y_val,
                     sample_weight=train_sample_weight,
@@ -736,6 +774,7 @@ class TrainingExecutor:
         try:
             data = self._make_configured_data_instance()
             data.load_data()
+            self._restrict_rec_training(data)
             if self._evaluate_std_test:
                 data.load_std_test_frozen()
             data.run_pre_process(os.path.abspath(self._working_yaml))
@@ -765,7 +804,8 @@ class TrainingExecutor:
                 if k not in ("task", "epochs", "lr", "weight_decay", "seed")
             }
             model = MODEL_MAP[model_name](in_dim=graph["x"].shape[1], **ctor_kwargs)
-            graph_result = train_graph(
+            from baselines.common.search_cost import measured_call
+            graph_result = measured_call('downstream_fit.' + model_name, train_graph,
                 model, graph, model_params, train_cfg, device=self.device,
                 evaluate_test=self._evaluate_std_test,
             )
@@ -820,6 +860,7 @@ class TrainingExecutor:
             cfg = self.get_model_config()
             memory_checkpoint("rec.before_load")
             data.load_data()
+            self._restrict_rec_training(data)
             memory_checkpoint("rec.loaded")
             data.run_pre_process(os.path.abspath(self._working_yaml))
             memory_checkpoint("rec.preprocessed")
@@ -829,16 +870,34 @@ class TrainingExecutor:
             cfg.setdefault("model_params", {})["device"] = self.device
             self._apply_fast_overrides(cfg, cfg.get("model", "DIN"))
 
-            frames_for_features = [splits["train"]]
-            if self._evaluate_std_test and "test" in splits:
-                frames_for_features.append(splits["test"])
-            if len(frames_for_features) > 1:
-                from dppbench.memory import require_memory_headroom
-                require_memory_headroom(sum(int(frame.memory_usage(index=False, deep=False).sum())
-                                            for frame in frames_for_features), "rec.feature_schema")
-            all_df = (frames_for_features[0] if len(frames_for_features) == 1
-                      else pd.concat(frames_for_features, ignore_index=True))
+            # Feature schema is fitted on training rows in every phase, including
+            # final replay. Validation/test cannot resize model embeddings.
+            from dppbench.rec_protocol import training_rows, VERSION
+            frames_for_features = [training_rows(splits["train"])]
+            all_df = frames_for_features[0]
+            fitted_maps = getattr(data, 'category_maps_', None)
+            if fitted_maps is None and getattr(self, 'pipeline', None) is not None:
+                fitted_maps = self.pipeline.payload.get('adapter', {}).get('id_maps', {})
+            if fitted_maps is not None:
+                cfg.setdefault('feature', {})['vocabulary_sizes'] = {c: len(m)+1 for c, m in fitted_maps.items()}
             feature_columns = build_feature_columns(all_df, cfg, col_types=data.col_types)
+            result["rec_protocol"] = VERSION
+            import hashlib
+            schema = [(fc.name, type(fc).__name__, getattr(fc, "vocabulary_size", None),
+                       getattr(fc, "dimension", None), getattr(fc, "maxlen", None),
+                       getattr(fc, "embedding_dim", None)) for fc in feature_columns]
+            result["feature_schema_sha256"] = hashlib.sha256(json.dumps(schema).encode()).hexdigest()
+            maps = getattr(data, 'category_maps_', None)
+            if maps is None and getattr(self, 'pipeline', None) is not None:
+                maps = self.pipeline.payload.get('adapter', {}).get('id_maps', {})
+            result['category_maps_sha256'] = hashlib.sha256(json.dumps(maps or {}, sort_keys=True).encode()).hexdigest()
+            expected = getattr(self, 'expected_rec_schema_sha256', None)
+            if expected is not None and expected != result['feature_schema_sha256']:
+                raise ValueError('HPO/final recommendation feature schema mismatch')
+            expected_maps = getattr(self, 'expected_category_maps_sha256', None)
+            if expected_maps is not None and expected_maps != result['category_maps_sha256']:
+                raise ValueError('HPO/final recommendation category mapping mismatch')
+            print(f"[rec protocol] version={VERSION} schema_sha256={result['feature_schema_sha256']} category_maps_sha256={result['category_maps_sha256']}")
             used_features = [fc.name for fc in feature_columns]
             ignored = [c for c in all_df.columns if c not in used_features and c not in {"__split__", cfg["feature"]["target_col"]}]
             print(f"[model inputs] features={used_features} ignored={ignored}")
@@ -850,23 +909,30 @@ class TrainingExecutor:
                 print(f"[memory] model_parameters={sum(p.numel() for p in model.parameters())}", flush=True)
 
             train_cfg = cfg.get("train", {})
-            history, test_results = model.train_and_evaluate(
+            from baselines.common.search_cost import measured_call
+            history, _ = measured_call('downstream_fit.' + cfg.get('model', 'DIN'), model.train_and_evaluate,
                 splits["train"], splits["test"],
                 feature_columns, cfg,
-                evaluate_test=self._evaluate_std_test,
+                # This executor owns the single timed final-test evaluation.
+                # Validation/early stopping inside fit remain unchanged.
+                evaluate_test=False,
             )
             memory_checkpoint("rec.trained")
 
             result["success"] = True
             result["metrics"] = self._rec_validation_metrics(history, train_cfg)
+            from dppbench.rec_protocol import implementation_manifest
+            result['metrics']['rec_protocol'] = {'version': VERSION,
+                'implementation_sha256': implementation_manifest()['implementation_sha256'],
+                'feature_schema_sha256': result['feature_schema_sha256'],
+                'category_maps_sha256': result['category_maps_sha256'],
+                'split_audit': getattr(data, 'split_audit_', None)}
             if not result["metrics"]:
                 raise ValueError("Missing validation metrics; test metrics cannot replace validation fitness")
 
             std_test_df = splits.get("test")
             if self._evaluate_std_test and std_test_df is not None and len(std_test_df) > 0:
                 result["metrics"]["std_test_n_rows"] = int(len(std_test_df))
-                for k, v in (test_results or {}).items():
-                    result["metrics"][f"std_test_{k}"] = v
                 try:
                     std_x, std_y = df_to_input(std_test_df, feature_columns, cfg)
                     _t_inf = time.time()

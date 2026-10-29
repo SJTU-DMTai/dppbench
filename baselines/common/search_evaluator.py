@@ -95,7 +95,7 @@ class SearchPipelineEvaluator(PipelineEvaluator):
             # Yelp has a projected frozen-data loader. Cache unprocessed state,
             # never bound methods. Side tables are full by default for semantics.
             if self.data_name == "yelp":
-                key = (data.data_dir, small_n, seed,
+                key = (data.data_dir, small_n, seed, getattr(data, '_search_include_std_test', True),
                        os.environ.get("DPPBENCH_YELP_SIDE_TABLE_SCOPE", "full"),
                        json.dumps(data.model_cfg, sort_keys=True))
                 if self._search_snapshot_key != key:

@@ -97,7 +97,7 @@ class YelpData(RecData):
             self.interaction_df = load_frozen_search_interactions(
                 self, self._search_small_n, self._search_seed,
             )
-            self._has_std_test = True
+            self._has_std_test = getattr(self, '_search_include_std_test', True)
         else:
             review_path = self._find_file(extract_dir, "yelp_academic_dataset_review.json")
             self.interaction_df = self._load_json_lines(review_path, self.INTERACTION_FIELDS)

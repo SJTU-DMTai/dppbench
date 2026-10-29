@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from baselines.common.search_cost import record_work
 
 from dppbench.models.gnn import GNNModel, _build_undirected
 from dppbench.graph_input import validate_graph_training
@@ -35,6 +36,9 @@ def graph_search_inputs(data, max_features, device, hidden_dim, tau, hard_sample
     surrogate = GNNModel(len(names), hidden_dim=hidden_dim, num_layers=2,
                          dropout=0., model_type='sage').to(device)
 
+    train_rows = int(train_mask.sum())
+    val_rows = int(np.asarray(graph['val_mask'], dtype=bool).sum())
+
     def loss_for(continuous, model, selected):
         # All nodes participate in message passing, but transform statistics
         # are fitted exclusively on supervised training nodes.
@@ -42,6 +46,9 @@ def graph_search_inputs(data, max_features, device, hidden_dim, tau, hard_sample
         out = continuous(feat, mask, gumbel_tau=tau, hard_sample=hard_sample)
         logits = model(out, context).reshape(-1)
         loss = F.binary_cross_entropy_with_logits(logits[selected], labels[selected])
+        partition = 'train' if selected is tr else 'val'
+        record_work('proxy_work.' + partition, forwarded_rows=len(feat),
+                    supervised_rows=train_rows if selected is tr else val_rows)
         accuracy = ((logits[selected] >= 0) == labels[selected].bool()).float().mean()
         return loss, float(accuracy.detach().cpu())
 

@@ -471,33 +471,9 @@ def validate_step_params(
     return errors
 
 
-_FEATURE_INPUT_PARAMS = {
-    "CreateLagFeature": ("target_col",),
-    "CreateRollingFeature": ("target_col",),
-    "CreateFeature": ("source_cols",),
-    "CreatePolynomialFeature": ("cols",),
-    "CrossFeature": ("cols",),
-    "AggregateGroupFeature": ("group_cols", "agg_cols"),
-    "ReduceDimension": ("cols",),
-}
-
-
 def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
-    # Derived features must never directly consume the supervised target.
-    target = ctx.target_col
-    if not target:
-        return []
-    leaked_params = [
-        key
-        for key in _FEATURE_INPUT_PARAMS.get(op_name, ())
-        if target in set(_as_list((params or {}).get(key)))
-    ]
-    if not leaked_params:
-        return []
-    return [
-        f"{op_name} cannot use target column {target!r} as a feature input "
-        f"in params {leaked_params}"
-    ]
+    from dppbench.feature_contracts import target_feature_errors
+    return target_feature_errors(op_name, params or {}, ctx.target_col)
 
 
 def _selection_protected_cols(ctx: DataContext) -> list[str]:

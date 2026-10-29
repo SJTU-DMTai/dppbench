@@ -6,6 +6,8 @@ from ..base_op import TabularOp
 class CorrectLabel(TabularOp):
     """Correct suspected label errors using predicted probabilities."""
 
+    APPLIES_TO_STD_TEST = False
+
     def __init__(self, label_col, pred_probs=None, strategy="flip",
                  confidence_threshold=0.9):
         super().__init__(name="CorrectLabel")

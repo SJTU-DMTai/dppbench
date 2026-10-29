@@ -15,6 +15,7 @@ from typing import Optional
 
 from baselines.common.data_ctx import infer_data_context
 from baselines.common.budget import Budget, BudgetExceededError, get_active_budget
+from baselines.common.search_cost import measured_call, record_work
 from baselines.common.pipeline import Pipeline, PipelineCheckReport, check_pipeline
 
 # Ensure the repo root is importable so ``baselines.common.executor`` resolves
@@ -123,6 +124,7 @@ class PipelineEvaluator:
         method = scoring_method or self.scoring_method
         key = f"{method}:{pipeline.hash()}"
         if key in self._cache:
+            record_work('pipeline_cache_hit', calls=1)
             return self._cache[key]
 
         try:
@@ -158,7 +160,8 @@ class PipelineEvaluator:
 
         t0 = time.time()
         try:
-            result = self._run_scoring_method(method)
+            result = measured_call('pipeline_score.' + self._display_method(method),
+                                   self._run_scoring_method, method)
         except Exception as e:  # pragma: no cover - safety net
             result = {
                 "success": False,

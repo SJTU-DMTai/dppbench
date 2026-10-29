@@ -9,7 +9,9 @@ class SplitColumn(TabularOp):
     def __init__(self, col, output_cols=None, sep=None, regex=False):
         super().__init__(name="SplitColumn")
         self.col = col
+        self.output_col_types = {}
         self.output_cols = output_cols
+        self.output_columns_ = None
         self.sep = sep
         self.regex = bool(regex)
 
@@ -72,10 +74,11 @@ dag:
             expand=True,
             regex=self.regex,
         )
-        if self.output_cols is None:
-            output_cols = [f"{self.col}_{i}" for i in range(parts.shape[1])]
-        else:
-            output_cols = list(self.output_cols)
+        if self.output_columns_ is None:
+            self.output_columns_ = ([f"{self.col}_{i}" for i in range(parts.shape[1])]
+                                    if self.output_cols is None else list(self.output_cols))
+        output_cols = self.output_columns_
         for i, out_col in enumerate(output_cols):
             df[out_col] = parts.iloc[:, i] if i < parts.shape[1] else None
+            self.output_col_types[out_col] = "categorical"
         return df

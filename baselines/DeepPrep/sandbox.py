@@ -91,7 +91,9 @@ class Sandbox:
         self.data_dir = data_dir
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
-        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir)
+        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir, seed=self.seed)
+        if self._executor.task_type == 'rec':
+            self._executor.set_evaluate_std_test(False)
         self._tmpdir = tempfile.mkdtemp(prefix="deepprep_sandbox_")
         self.task_type: str = self._executor.task_type
         self.data = None  # populated by reset()
@@ -113,10 +115,11 @@ class Sandbox:
             data._search_small_n = self.small_n
             data._search_seed = self.seed
         data.load_data()
+        self._executor._restrict_rec_training(data)
         # run_pre_process() loads frozen std-test lazily and may replace the
         # sampled training frame with the full frozen frame. Load it first so
         # the sandbox's small-N sample is the frame actually executed.
-        if not getattr(data, "_has_std_test", False):
+        if not getattr(data, "_has_std_test", False) and not getattr(data, '_skip_std_test_loading', False):
             data.load_std_test_frozen()
         if self.small_n > 0:
             subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)

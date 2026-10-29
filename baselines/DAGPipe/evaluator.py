@@ -39,6 +39,10 @@ def training_splits(data, config, include_std_test=False):
 
 class DAGPipeExecutor(TrainingExecutor):
     pipeline = None
+    # The checkpoint adapter already owns frozen train-only splits and never
+    # reads held-out identities/schema during search/HPO. Do not wrap it in the
+    # generic public-DAG loader (which performs a projected identity audit).
+    _rec_adapter_owns_splits = True
 
     def _make_configured_data_instance(self):
         data = super()._make_configured_data_instance()
@@ -162,7 +166,9 @@ class DAGPipeEvaluator(PipelineEvaluator):
                 raise ValueError('; '.join(report.errors))
             self._executor.pipeline = pipeline
             self._executor.write_yaml(pipeline.to_yaml())
-            result = self._run_scoring_method(method)
+            from baselines.common.search_cost import measured_call
+            result = measured_call('pipeline_score.' + self._display_method(method),
+                                   self._run_scoring_method, method)
             metrics = dict(result.get('metrics') or {})
             report = self._check_pipeline(
                 pipeline, None, budget=self.budget,

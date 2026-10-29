@@ -62,6 +62,7 @@ from scripts.build_std_test import (  # noqa: E402
     run_for_task as build_std_test_for_task,
 )
 from baselines.common.budget import Budget, budget_scope  # noqa: E402
+from baselines.common.search_cost import SearchCost, search_cost_scope  # noqa: E402
 
 
 def _load_class(cls_path: str):
@@ -463,12 +464,14 @@ def _run_baseline_and_eval(
     args,
     out_root: str,
     budget: Budget | None = None,
+    search_cost: SearchCost | None = None,
 ) -> dict[str, Any]:
     """Run the baseline construction loop, then re-evaluate the produced
     pipeline end-to-end so the downstream model is trained and scored on
     the frozen std-test rows.
     """
     baseline_name = _canonical_baseline_name(baseline_name)
+    search_cost = search_cost if search_cost is not None else SearchCost(baseline_name)
     conf = BASELINE_CONFIGS[baseline_name]
     max_pipeline_len = (
         budget.max_pipeline_length if budget is not None
@@ -528,7 +531,7 @@ def _run_baseline_and_eval(
         t0 = time.time()
         if budget is not None:
             budget.start()
-        with budget_scope(budget):
+        with search_cost_scope(search_cost, runner_output_dir), budget_scope(budget):
             if budget is not None:
                 budget.check_resources()
             runner = cls(
@@ -663,6 +666,18 @@ def _run_baseline_and_eval(
         if final_inference_seconds is not None else None
     )
 
+    if evaluator.task_type == 'rec':
+        from dppbench.rec_protocol import implementation_manifest, frozen_file_manifest
+        from dppbench.dataset import RecData
+        manifest = dict(implementation_manifest())
+        manifest.update(effective_model_config=evaluator._executor.get_model_config(),
+                        evaluation_protocol=metrics.get('rec_protocol'), seed=args.seed)
+        directory = RecData._std_test_dir(evaluator._executor._resolved_data_dir())
+        manifest['frozen_files'] = frozen_file_manifest(directory) if directory else {}
+        os.makedirs(runner_output_dir, exist_ok=True)
+        with open(os.path.join(runner_output_dir, 'rec_protocol_manifest.json'), 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, default=str)
+
     return {
         "task": task_name,
         "baseline": baseline_name,
@@ -670,6 +685,7 @@ def _run_baseline_and_eval(
         "output_dir": runner_output_dir,
         "max_pipeline_len": max_pipeline_len,
         "budget": search_budget_snapshot,
+        **search_cost.fields(),
         "pipeline_reused": bool(resume_path),
         "pipeline_source": resume_path,
         "pipeline_sha256": pipeline_sha256,
@@ -677,6 +693,7 @@ def _run_baseline_and_eval(
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
         ),
+        "rec_protocol": metrics.get('rec_protocol'),
         "final_hpo_seconds": hpo_summary.get("seconds"),
         "final_hpo_best_params": json.dumps(hpo_summary.get("best_params")) if hpo_summary else None,
         "final_hpo_trials": len(hpo_summary.get("trials", [])),
@@ -751,7 +768,9 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
             "ops": row.get("ops"),
             "n_unique_evals": row.get("n_unique_evals"),
         },
+        "rec_protocol": row.get("rec_protocol"),
         "budget": row.get("budget"),
+        "search_cost": row.get("search_cost"),
         "error": row.get("error"),
     }
 
@@ -764,7 +783,7 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
         "task", "baseline", "model", "output_dir", "max_pipeline_len",
-        "pipeline_reused", "pipeline_source", "pipeline_sha256",
+        "pipeline_reused", "pipeline_source", "pipeline_sha256", "rec_protocol",
         "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",
         "final_val_fitness", "val_fitness", "std_test_metric_name",
         "val_metric_name", "val_metric",
@@ -775,6 +794,9 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "final_eval_seconds", "construct_time_s", "eval_time_s",
         "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
         "baseline_eval_error", "std_test_error", "budget", "error",
+        "search_cost", "search_pipeline_score_calls", "search_downstream_fit_calls",
+        "search_proxy_train_loss_calls", "search_proxy_val_loss_calls",
+        "search_gradient_calls", "search_optimizer_steps",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -785,6 +807,10 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
                 out["ops"] = "|".join(out["ops"])
             if isinstance(out.get("budget"), dict):
                 out["budget"] = json.dumps(out["budget"], ensure_ascii=False)
+            if isinstance(out.get('rec_protocol'), dict):
+                out['rec_protocol'] = json.dumps(out['rec_protocol'], ensure_ascii=False)
+            if isinstance(out.get('search_cost'), dict):
+                out['search_cost'] = json.dumps(out['search_cost'], ensure_ascii=False)
             writer.writerow({k: out.get(k) for k in fields})
 
 
@@ -866,10 +892,11 @@ def main():
             max_output_rows=args.max_output_rows,
             max_output_columns=args.max_output_columns,
         )
+        search_cost = SearchCost(args.baseline)
         try:
             _ensure_std_test(task_name, args.data_dir, args.skip_build or bool(args.resume_pipeline), args.quiet)
             row.update(_run_baseline_and_eval(
-                task_name, args.baseline, args, out_root, budget=budget
+                task_name, args.baseline, args, out_root, budget=budget, search_cost=search_cost
             ))
         except Exception as e:
             tb = traceback.format_exc()
@@ -898,6 +925,7 @@ def main():
                 "n_unique_evals": None,
                 "budget": budget.snapshot(),
                 "error": f"{type(e).__name__}: {e}",
+                **search_cost.fields(),
             })
         rows.append(row)
         _print_json({"run_result": _row_console_summary(row)})

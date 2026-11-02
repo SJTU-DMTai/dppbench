@@ -13,6 +13,7 @@ from baselines.common.pipeline import (
     Pipeline, assign_dag_structure, make_step, repair, truncate_optional_steps,
 )
 from baselines.common.utils import get_available_ops
+from baselines.common.data_ctx import context_for_frame
 
 from .context import GTEEmbedder, data_feature, feature_frame
 
@@ -69,8 +70,9 @@ class PipelineEnv:
         )
 
         specs = list(CATALOG.values())
-        applicable = {s.op_name for s in get_available_ops(self.task_type)}
-        self.applicable_ops = {n for n in applicable if self._can_make_step(n)}
+        self.task_ops = {s.op_name for s in get_available_ops(self.task_type)}
+        self.search_statistics = {"terminal_trajectories": 0, "repaired_trajectories": 0,
+                                  "skip_actions": 0, "prefix_failures": 0}
         self.op_names = [spec.op_name for spec in specs]
         self.op_gid = {name: index + 1 for index, name in enumerate(self.op_names)}
         self.components: dict[str, Component] = {}
@@ -115,11 +117,17 @@ class PipelineEnv:
         )
         if frame is None:
             raise ValueError("CtxPipe could not locate the task primary dataframe")
+        self._refresh_context(frame)
+        self.raw_ctx = self.current_ctx
         return feature_frame(frame, self.target_col)
+
+    def _refresh_context(self, frame):
+        self.current_ctx = context_for_frame(self.ctx, frame)
+        self.applicable_ops = {name for name in self.task_ops if self._can_make_step(name)}
 
     def _can_make_step(self, op_name: str) -> bool:
         return any(
-            make_step(op_name, self.ctx, _random.Random(10_000 + i)) is not None
+            make_step(op_name, self.current_ctx, _random.Random(10_000 + i)) is not None
             for i in range(3)
         )
 
@@ -130,6 +138,8 @@ class PipelineEnv:
     def reset(self, logical_pipeline_id: int = 0) -> np.ndarray:
         self.pipeline = Pipeline()
         self.current_frame = self.raw_frame.copy(deep=True)
+        self.current_ctx = self.raw_ctx
+        self.applicable_ops = {name for name in self.task_ops if self._can_make_step(name)}
         self.sequence_ids = np.zeros(self.n_components, dtype=np.int64)
         self.position = 0
         self.done = False
@@ -144,7 +154,9 @@ class PipelineEnv:
 
     def invalid_actions(self, component_id):
         component = self.components[component_id]
-        return [i for i, name in enumerate(component.candidates) if name not in self.applicable_ops]
+        return [i for i, name in enumerate(component.candidates)
+                if name not in self.applicable_ops
+                or (name == "AugmentMixup" and getattr(self.ctx, "prediction_task", None) != "regression")]
 
     def current_component_id(self) -> Optional[str]:
         if self.done or self.position >= self.n_components:
@@ -188,11 +200,12 @@ class PipelineEnv:
         if action in self.invalid_actions(component_id):
             return state, self.illegal_penalty, False, {**info, "error": "masked action", "retry": True}
         if action == component.skip_action:
+            self.search_statistics["skip_actions"] += 1
             info["action_name"] = "SKIP"
             info["reason"] = "skip"
         elif 0 <= action < len(component.candidates):
             op_name = component.candidates[action]
-            step = make_step(op_name, self.ctx, self.rng)
+            step = make_step(op_name, self.current_ctx, self.rng)
             if step is None:
                 return state, self.illegal_penalty, False, {
                     **info, "error": "operator has no valid parameters", "retry": True,
@@ -204,11 +217,15 @@ class PipelineEnv:
                 if processed is None:
                     raise ValueError("operator produced no dataframe")
             except Exception as exc:
+                self.search_statistics["prefix_failures"] += 1
                 return state, self.illegal_penalty, False, {
                     **info, "error": f"{type(exc).__name__}: {exc}", "retry": True,
                 }
             self.pipeline = candidate
             self.current_frame = feature_frame(processed, self.target_col)
+            self._refresh_context(processed)
+            info["params"] = dict(step.params)
+            info["output_shape"] = list(processed.shape)
             self.sequence_ids[self.position] = self.op_gid[op_name]
             info["op_added"] = op_name
             info["reason"] = op_name
@@ -228,22 +245,28 @@ class PipelineEnv:
         return next_state, float(reward), self.done, info
 
     def _finalize_pipeline(self) -> Pipeline:
-        repair(self.pipeline, self.task_type, self.ctx, sort_steps=False)
+        repair(self.pipeline, self.task_type, self.ctx, sort_steps=False, rng=self.rng)
         truncate_optional_steps(self.pipeline, self.task_type, self.max_steps)
-        repair(self.pipeline, self.task_type, self.ctx, sort_steps=False)
+        repair(self.pipeline, self.task_type, self.ctx, sort_steps=False, rng=self.rng)
         assign_dag_structure(self.pipeline, self.ctx, self.rng)
         return self.pipeline
 
     def _terminal_reward(self):
+        before = self.pipeline.hash()
         pipeline = self._finalize_pipeline()
+        diagnostics = {"pre_repair_hash": before, "final_hash": pipeline.hash(),
+                       "final_ops": pipeline.op_names()}
+        self.search_statistics["terminal_trajectories"] += 1
+        if before != diagnostics["final_hash"]:
+            self.search_statistics["repaired_trajectories"] += 1
         result = self.evaluator.evaluate(pipeline)
         if not result.success:
             return self.failure_reward, {
-                "success": False, "error": result.error, "metrics": result.metrics,
+                **diagnostics, "success": False, "error": result.error, "metrics": result.metrics,
             }
         from baselines.common.search_reward import fitness_to_reward
         return fitness_to_reward(result.fitness, self.evaluator.metric_key), {
-            "success": True, "fitness": float(result.fitness),
+            **diagnostics, "success": True, "fitness": float(result.fitness),
             "metrics": dict(result.metrics or {}),
         }
 
@@ -253,7 +276,7 @@ class PipelineEnv:
     def action_to_op(self, component_id: str, action: int) -> str:
         component = self.components[component_id]
         if action in self.invalid_actions(component_id):
-            return state, self.illegal_penalty, False, {**info, "error": "masked action", "retry": True}
+            raise ValueError(f"masked action {action} for {component_id}")
         if action == component.skip_action:
             return "SKIP"
         return component.candidates[action]

@@ -89,27 +89,56 @@ class FlowPipeAlignmentTest(unittest.TestCase):
                 if not report.valid:
                     raise ValueError(str(report.errors))
                 processed = frame.copy()
-                processed['item_id_seq'] = [[], [2]]
+                for step in pipeline.steps:
+                    if step.op == 'CreateFeature':
+                        processed[step.params['output_col']] = processed[step.params['source_cols']].mean(axis=1)
+                    elif step.op == 'CreateSequence':
+                        processed['item_id_seq'] = [[], [2]]
                 return processed
 
-        env = FlowPipeEnv(Evaluator(), ctx, max_steps=2)
+        evaluator = Evaluator()
+        evaluator.evaluate = lambda pipeline: SimpleNamespace(success=True, fitness=0.7, metrics={})
+        env = FlowPipeEnv(evaluator, ctx, max_steps=2)
         mask = env.get_action_mask()
         for i in np.flatnonzero(mask):
-            self.assertEqual(set(env.logical_pipelines[i][:2]),
-                             {OpCategory.INTEGRATION, OpCategory.FEATURE_ENGINEERING})
+            self.assertIn(OpCategory.INTEGRATION, env.logical_pipelines[i][:2])
         order_id = next(i for i in np.flatnonzero(mask)
-                        if env.logical_pipelines[i][0] == OpCategory.FEATURE_ENGINEERING)
+                        if env.logical_pipelines[i][:2] == (OpCategory.FEATURE_ENGINEERING, OpCategory.INTEGRATION))
         env.step(int(order_id))
-        action_mask = env.get_action_mask()
-        self.assertEqual(action_mask[env.skip_gid], 0)
-        sequence_gid = next(a.gid for a in env.actions if a.name == 'CreateSequence')
-        self.assertEqual(list(np.flatnonzero(action_mask)), [sequence_gid])
-        _, _, done, info = env.step(sequence_gid)
+        self.assertEqual(env.get_action_mask()[env.skip_gid], 1)
+        _, _, done, info = env.step(env.skip_gid)
         self.assertFalse(done, info)
-        self.assertEqual(info['err_code'], 0)
-        self.assertFalse(check_pipeline(env.current_pipeline(), ctx).valid)
         join_gid = next(a.gid for a in env.actions if a.name == 'JoinTable')
         self.assertEqual(list(np.flatnonzero(env.get_action_mask())), [join_gid])
+        _, _, done, info = env.step(join_gid)
+        self.assertTrue(done)
+        self.assertEqual(info['err_code'], 0)
+        self.assertTrue(info['auto_sequence'])
+        final = env.current_pipeline()
+        self.assertEqual(final.op_names(), ['JoinTable', 'CreateSequence'])
+        self.assertTrue(check_pipeline(final, ctx).valid)
+        self.assertEqual(final.hash(), info['final_hash'])
+        self.assertEqual(env.search_statistics['auto_sequence'], 1)
+
+        frame = frame.assign(score=1., value=2.)
+        env = FlowPipeEnv(evaluator, ctx, max_steps=3)
+        order_id = next(i for i in np.flatnonzero(env.get_action_mask())
+                        if env.logical_pipelines[i][:2] == (OpCategory.FEATURE_ENGINEERING, OpCategory.INTEGRATION))
+        env.step(int(order_id))
+        feature_gid = next(a.gid for a in env.actions if a.name == 'CreateFeature')
+        self.assertEqual(env.get_action_mask()[feature_gid], 1)
+        _, _, done, info = env.step(feature_gid)
+        self.assertFalse(done, info)
+        self.assertTrue(any(column.endswith('_mean') for column in env.current_ctx.numeric_cols))
+        _, _, done, info = env.step(join_gid)
+        self.assertFalse(done, info)
+        self.assertEqual(list(np.flatnonzero(env.get_action_mask())), [env.skip_gid])
+        _, _, done, info = env.step(env.skip_gid)
+        self.assertTrue(done)
+        self.assertEqual(info['err_code'], 0)
+        self.assertIn('CreateFeature', env.current_pipeline().op_names())
+        self.assertEqual(env.current_pipeline().op_names().count('CreateSequence'), 1)
+        self.assertEqual(len(env.current_pipeline()), 3)
 
     def test_film_starts_as_identity_modulation(self):
         layer = FiLMLayer(3, 5, 7)
@@ -141,6 +170,50 @@ class FlowPipeAlignmentTest(unittest.TestCase):
             torch.save(torch.arange(4), f"{path}/toy.pt")
             value = SemanticContextLoader(root, "Meta-Llama-3.1-8B", 4).load("toy")
             self.assertEqual(value.tolist(), [0.0, 1.0, 2.0, 3.0])
+
+    def test_context_precompute_reuses_encoder_and_skips_cached_tasks(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        class Tokens(dict):
+            def to(self, device):
+                return self
+
+        tokenizer = Mock(pad_token=None, eos_token="eos")
+        tokenizer.return_value = Tokens(attention_mask=torch.ones(1, 2, dtype=torch.long))
+        model = Mock(return_value=SimpleNamespace(hidden_states=(torch.arange(8).reshape(1, 2, 4),)))
+        factories = SimpleNamespace(
+            __version__="4.56.2", AutoTokenizer=Mock(), AutoModelForCausalLM=Mock())
+        factories.AutoTokenizer.from_pretrained.return_value = tokenizer
+        factories.AutoModelForCausalLM.from_pretrained.return_value = model
+        frame = pd.DataFrame({"x": [1, 2]})
+        ctx = SimpleNamespace(target_col=None, task_type="tabular")
+        with tempfile.TemporaryDirectory() as root, \
+                patch.dict("sys.modules", transformers=factories), \
+                patch("baselines.FlowPipe.context.require_accelerate"), \
+                patch("baselines.FlowPipe.context.fp8_quantization_config", return_value=None):
+            Path(root, "config.json").write_text("{}")
+            with SemanticContextLoader(root, "Qwen3-8B", 4, root) as loader:
+                for task in ("first", "second"):
+                    loader.precompute(task, frame, ctx, device="cpu")
+                    self.assertEqual(loader.load(task).tolist(), [4, 5, 6, 7])
+                loader.precompute("first", frame, ctx, device="cpu", overwrite=True)
+                factories.AutoTokenizer.from_pretrained.assert_called_once()
+                factories.AutoModelForCausalLM.from_pretrained.assert_called_once()
+                self.assertEqual(model.call_count, 3)
+            self.assertIsNone(loader._model)
+            self.assertIsNone(loader._tokenizer)
+            with SemanticContextLoader(root, "Qwen3-8B", 4, root) as cached:
+                cached.precompute("first", frame, ctx, device="cpu")
+                self.assertIsNone(cached._model)
+            factories.AutoModelForCausalLM.from_pretrained.assert_called_once()
+            with self.assertRaisesRegex(RuntimeError, "forward failed"):
+                with SemanticContextLoader(root, "Qwen3-8B", 4, root) as failed:
+                    model.side_effect = RuntimeError("forward failed")
+                    failed.precompute("third", frame, ctx, device="cpu")
+            self.assertIsNone(failed._model)
+            self.assertIsNone(failed._tokenizer)
 
 
 if __name__ == "__main__":

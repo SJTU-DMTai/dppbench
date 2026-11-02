@@ -27,6 +27,7 @@ def contract(baseline, env, model, encoder=None):
         "version": 1, "baseline": baseline, "model": model,
         "operators": list(CATALOG), "reward": "bounded_score_or_reciprocal_error_v1",
         "encoder": encoder,
+        "search_semantics": "primary_schema_random_subset_rec_optional_fe_v2",
     }
     if baseline == "CtxPipe":
         result.update(actions={k: list(v.candidates) for k, v in env.components.items()},

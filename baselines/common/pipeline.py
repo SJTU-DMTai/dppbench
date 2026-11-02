@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from baselines.common.data_ctx import DataContext
+from baselines.common.data_ctx import DataContext, RESERVED_COLUMNS
 from baselines.common.budget import Budget, get_active_budget
 from baselines.common.op_spec import (
     CATALOG, OpCategory, is_mandatory, operators_for_task, valid_targets_for,
@@ -283,7 +283,7 @@ class PipelineCheckReport:
 # Default-params builder for individual operators (context aware)
 # -----------------------------------------------------------------------------
 def _exclude_special(cols: list[str], ctx: DataContext) -> list[str]:
-    bad = {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
+    bad = RESERVED_COLUMNS | {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
     return [c for c in cols if c not in bad]
 
 
@@ -499,10 +499,11 @@ def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> l
 
 
 def _pick_some(cols: list[str], rng: _random.Random, lo: int = 1, hi: int = 3) -> list[str]:
+    cols = list(dict.fromkeys(cols))
     if not cols:
         return []
     n = min(len(cols), rng.randint(lo, hi))
-    return cols[:n]
+    return rng.sample(cols, n)
 
 
 def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) -> dict | None:
@@ -524,7 +525,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 
     numeric_cols = _exclude_special(ctx.numeric_cols, ctx)
     categorical_cols = _exclude_special(ctx.categorical_cols, ctx)
-    text_cols = list(ctx.text_cols)
+    text_cols = _exclude_special(ctx.text_cols, ctx)
 
     # ---- JOIN ----
     if op_name == "JoinTable":
@@ -575,8 +576,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         cols = _exclude_special(ctx.categorical_cols, ctx)
         if len(cols) < 2:
             return None
-        p["cols"] = cols[:2]
-        p["output_col"] = "_".join(cols[:2]) + "_combo"
+        p["cols"] = _pick_some(cols, rng, 2, 2)
+        p["output_col"] = "_".join(p["cols"]) + "_combo"
         return p
 
     # ---- FILTER_ROW ----
@@ -812,14 +813,14 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
     if op_name == "CreateFeature":
         if len(numeric_cols) < 2:
             return None
-        p["source_cols"] = numeric_cols[:2]
-        p["output_col"] = f"{numeric_cols[0]}_mean"
+        p["source_cols"] = _pick_some(numeric_cols, rng, 2, 2)
+        p["output_col"] = "_".join(p["source_cols"]) + "_mean"
         p["method"] = "mean"
         return p
     if op_name == "CreatePolynomialFeature":
         if len(numeric_cols) < 2:
             return None
-        p["cols"] = numeric_cols[:5]
+        p["cols"] = _pick_some(numeric_cols, rng, 2, 5)
         return p
     if op_name == "ExtractDateTimeFeature":
         if not ctx.time_col:
@@ -1292,7 +1293,7 @@ def get_param_space(op, ctx: DataContext, current_params: dict | None = None) ->
     elif name in {"ParseDate", "ExtractDateTimeFeature"} and ctx.time_col:
         space.setdefault("cols", [ctx.time_col])
     elif name in {"ParseNumber", "CorrectTypo", "ExtractTextFeature", "ExtractTextEmbedding"}:
-        space.setdefault("cols", ctx.text_cols or categorical_cols)
+        space.setdefault("cols", _exclude_special(ctx.text_cols, ctx) or categorical_cols)
     elif name in {"DropColumns"}:
         space.setdefault("cols", all_cols)
 

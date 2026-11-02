@@ -98,7 +98,8 @@ class HAIPipe:
             ctx, random.Random(self.seed), task_dir=self.task_dir,
             max_len=self.max_pipeline_len, hi_source=self.hi_source,
         )
-        env = HAIPipeEnv(evaluator, ctx, model_name=self.model_name, seed=self.seed)
+        policy_model = "LightGBM" if ctx.task_type == "rec" and self.training_mode != "scratch" else self.model_name
+        env = HAIPipeEnv(evaluator, ctx, model_name=policy_model, seed=self.seed)
         aipipe_path = os.path.join(self.output_dir, "aipipe.pt")
         trainer = CrossTaskPretrainer(
             [env], frames=self.finetune_frames if self.training_mode == "finetune" else self.frames, learning_rate=self.learning_rate,
@@ -111,8 +112,8 @@ class HAIPipe:
         )
         model_name = resolved_model(evaluator)
         agent = trainer.agent
-        agent.checkpoint_metadata = contract("HAIPipe", env, model_name)
-        source_path = pretrained_path("HAIPipe", model_name, self.pretrained_checkpoint, self.pretrained_dir,
+        agent.checkpoint_metadata = contract("HAIPipe", env, policy_model)
+        source_path = pretrained_path("HAIPipe", policy_model, self.pretrained_checkpoint, self.pretrained_dir,
                                   filename="aipipe.pt")
         if self.training_mode != "scratch" and os.path.realpath(os.path.dirname(source_path)) == os.path.realpath(self.output_dir):
             raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
@@ -120,6 +121,9 @@ class HAIPipe:
         if self.training_mode != "scratch":
             source_provenance = load_pretrained(agent, source_path, agent.checkpoint_metadata)
         provenance = {"mode": self.training_mode, "target_task": self.data_name,
+                      "source_model": policy_model, "target_model": model_name,
+                      "policy_model_vocabulary": list(env.model_vocabulary),
+                      "cross_model_transfer": policy_model != model_name,
                       "source_checkpoint": source_path if self.training_mode != "scratch" else None,
                       "source_provenance": source_provenance,
                       "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}

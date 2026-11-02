@@ -98,29 +98,8 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
-    "SPIO": {
-        "cls_path": "baselines.SPIO.spio.SPIO",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
-    "ReAct": {
-        "cls_path": "baselines.ReAct.react.ReAct",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_chain_len",
-        "kwargs": {},
-    },
-    "DataMaster": {
-        "cls_path": "baselines.DataMaster.data_master.DataMaster",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
         "max_len_arg": "max_chain_len",
@@ -293,6 +272,9 @@ def parse_args():
     parser.add_argument("--pretrained_checkpoint", default=None, help="Explicit pretrained checkpoint; HAIPipe scorer must be alongside it")
     parser.add_argument("--finetune_frames", type=int, default=None, help="CtxPipe/HAIPipe target interaction budget")
     parser.add_argument("--finetune_epochs", type=int, default=None, help="FlowPipe target fine-tuning epochs")
+    parser.add_argument("--small_n", type=int, default=None, help="Search sample size for CtxPipe/HAIPipe/FlowPipe; 0 uses the full training pool")
+    parser.add_argument("--fast_train", action=argparse.BooleanOptionalAction, default=None,
+                        help="Use reduced downstream training budgets during search; does not affect final evaluation")
     parser.add_argument("--context_cache_dir", default=None, help="CtxPipe or FlowPipe embedding cache")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--seed", type=int, default=42)
@@ -422,7 +404,10 @@ def _apply_baseline_model_paths(
 ) -> None:
     """Map experiment checkpoint arguments to each baseline's public API."""
     if baseline_name == "CtxPipe":
-        kwargs["gte_model_path"] = args.ctxpipe_gte_model_path
+        path = args.ctxpipe_gte_model_path
+        if path == "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B":
+            path = os.path.join(_ROOT, "ckpts", "Qwen3-8B")
+        kwargs["gte_model_path"] = path
     elif baseline_name == "DeepPrep":
         kwargs.update({
             "llm_backend": "local",
@@ -434,8 +419,11 @@ def _apply_baseline_model_paths(
             "llm_model": args.qwen3_model_path,
         })
     elif baseline_name == "FlowPipe":
+        path = args.qwen3_model_path
+        if path == "/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B":
+            path = os.path.join(_ROOT, "ckpts", "Qwen3-8B")
         kwargs.update({
-            "llama_model_path": args.qwen3_model_path,
+            "llama_model_path": path,
             "llm_name": "Qwen3-8B",
         })
 
@@ -471,9 +459,14 @@ def _run_baseline_and_eval(
     kwargs = dict(conf["kwargs"])
     _apply_baseline_model_paths(baseline_name, kwargs, args)
     if baseline_name in {"CtxPipe", "HAIPipe", "FlowPipe"}:
-        for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs"):
+        if args.small_n is not None and args.small_n < 0:
+            raise ValueError("--small_n must be nonnegative")
+        for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs", "small_n", "fast_train"):
             if getattr(args, key, None) is not None:
                 kwargs[key] = getattr(args, key)
+        if not kwargs.get("pretrained_dir"):
+            batch = "seed42_v3_20261026_213243" if baseline_name == "FlowPipe" else "seed42_v3_retry_20261029_211708"
+            kwargs["pretrained_dir"] = os.environ.get("DPPBENCH_PRETRAINED_DIR") or os.path.join(_ROOT, "ckpts", "pretrained", batch)
         if baseline_name != "HAIPipe" and getattr(args, "context_cache_dir", None):
             kwargs["context_cache_dir"] = args.context_cache_dir
     if conf["supports_eval_full"]:

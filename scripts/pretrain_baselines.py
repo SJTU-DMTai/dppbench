@@ -73,44 +73,50 @@ def build_runner(args, task):
 
 
 def build_sources(args):
+    from contextlib import ExitStack
+
     runners, evaluators, envs, contexts = [], [], [], []
-    for task in args.sources:
-        runner = build_runner(args, task)
-        evaluator = SearchPipelineEvaluator(
-            task_dir=runner.task_dir, data_name=task, data_dir=runner.data_dir,
-            model_name=args.model, device=args.device, seed=args.seed,
-            small_n=args.small_n, verbose=True,
-        )
-        evaluator.set_evaluate_std_test(False)
-        isolate_training_data(evaluator)
-        evaluator.set_fast_mode(args.fast_train)
-        if resolved_model(evaluator) != args.model:
-            raise ValueError(f"{task} does not resolve downstream model {args.model}")
-        data = evaluator.load_data()
-        ctx = get_data_ctx(task, data, evaluator.task_type)
-        if args.baseline == "CtxPipe":
-            from baselines.CtxPipe.env import PipelineEnv
-            env = PipelineEnv(evaluator, ctx, max_steps=args.max_pipeline_len,
-                              seed=args.seed, device=args.device,
-                              gte_model_path=args.llm_model_path, context_cache_dir=args.context_cache_dir)
-            # Share one frozen 8B encoder, not one resident copy per source dataset.
-            if envs:
-                env.embedder = envs[0].embedder
-        elif args.baseline == "HAIPipe":
-            from baselines.HAIPipe.env import HAIPipeEnv
-            env = HAIPipeEnv(evaluator, ctx, model_name=args.model, seed=args.seed)
-        else:
-            from baselines.FlowPipe.env import FlowPipeEnv
-            from baselines.FlowPipe.context import SemanticContextLoader
-            if evaluator.task_type == "graph":
-                raise ValueError("FlowPipe graph tasks are unsupported; remove graph sources")
-            env = FlowPipeEnv(evaluator, ctx, max_steps=runner.max_steps, seed=args.seed)
-            runner.precompute_context(device=args.device)
-            contexts.append(SemanticContextLoader(args.context_cache_dir, runner.llm_name,
-                             runner.ctx_dim, runner.llama_model_path).load(task))
-        runners.append(runner)
-        evaluators.append(evaluator)
-        envs.append(env)
+    loader = None
+    with ExitStack() as stack:
+        for task in args.sources:
+            runner = build_runner(args, task)
+            evaluator = SearchPipelineEvaluator(
+                task_dir=runner.task_dir, data_name=task, data_dir=runner.data_dir,
+                model_name=args.model, device=args.device, seed=args.seed,
+                small_n=args.small_n, verbose=True,
+            )
+            evaluator.set_evaluate_std_test(False)
+            isolate_training_data(evaluator)
+            evaluator.set_fast_mode(args.fast_train)
+            if resolved_model(evaluator) != args.model:
+                raise ValueError(f"{task} does not resolve downstream model {args.model}")
+            data = evaluator.load_data()
+            ctx = get_data_ctx(task, data, evaluator.task_type)
+            if args.baseline == "CtxPipe":
+                from baselines.CtxPipe.env import PipelineEnv
+                env = PipelineEnv(evaluator, ctx, max_steps=args.max_pipeline_len,
+                                  seed=args.seed, device=args.device,
+                                  gte_model_path=args.llm_model_path, context_cache_dir=args.context_cache_dir)
+                # Share one frozen 8B encoder, not one resident copy per source dataset.
+                if envs:
+                    env.embedder = envs[0].embedder
+            elif args.baseline == "HAIPipe":
+                from baselines.HAIPipe.env import HAIPipeEnv
+                env = HAIPipeEnv(evaluator, ctx, model_name=args.model, seed=args.seed)
+            else:
+                from baselines.FlowPipe.env import FlowPipeEnv
+                from baselines.FlowPipe.context import SemanticContextLoader
+                if evaluator.task_type == "graph":
+                    raise ValueError("FlowPipe graph tasks are unsupported; remove graph sources")
+                env = FlowPipeEnv(evaluator, ctx, max_steps=runner.max_steps, seed=args.seed)
+                if loader is None:
+                    loader = stack.enter_context(SemanticContextLoader(
+                        args.context_cache_dir, runner.llm_name, runner.ctx_dim, runner.llama_model_path))
+                runner.precompute_context(device=args.device, loader=loader)
+                contexts.append(loader.load(task))
+            runners.append(runner)
+            evaluators.append(evaluator)
+            envs.append(env)
     return runners, evaluators, envs, contexts
 
 
@@ -169,11 +175,13 @@ def train(args):
         trainer.agent.checkpoint_metadata = expected
         summary = trainer.train(str(args.run_dir / "aipipe.pt"), held_out_tasks=args.heldout)
         ds, ps, ys = [], [], []
+        scorer_samples_by_task = {}
         rng = random.Random(args.seed)
         for e, r in zip(envs, runners):
             hi = build_hi_pipeline(e.ctx, rng, task_dir=r.task_dir, max_len=args.max_pipeline_len)
             ai, _ = e.rollout(trainer.agent)
             candidates = combine_pipelines(hi, ai, e.ctx, rng, max_len=args.max_pipeline_len)
+            candidates = list({candidate.hash(): candidate for candidate in candidates}.values())
             if len(candidates) > args.al_candidates_per_task:
                 candidates = rng.sample(candidates, args.al_candidates_per_task)
             successful = []
@@ -181,6 +189,7 @@ def train(args):
                 ev = e.evaluator.evaluate(candidate)
                 if ev.success and math.isfinite(ev.fitness):
                     successful.append((candidate, ev.fitness))
+            scorer_samples_by_task[e.evaluator.data_name] = len(successful)
             if not successful:
                 continue
             mean = np.mean([v for _, v in successful])
@@ -197,12 +206,15 @@ def train(args):
             data_dim=env.data_dim, primitive_vocabulary=env.primitive_vocabulary,
             provenance=provenance, checkpoint_metadata=expected)
         trainer.agent.save(str(args.run_dir / "aipipe.pt"), provenance=provenance)
-        summary.update(scorer_samples=len(ys), scorer_loss=losses[-1])
+        summary.update(scorer_samples=len(ys), scorer_loss=losses[-1],
+                       scorer_samples_by_task=scorer_samples_by_task)
     source_evaluations = {e.data_name: e.n_unique_evaluations for e in evaluators}
     for evaluator in evaluators:
         evaluator._executor.cleanup()
     return {"provenance": provenance, "checkpoint_metadata": expected, "training": summary,
-            "source_unique_evaluations": source_evaluations}
+            "source_unique_evaluations": source_evaluations,
+            "source_search_statistics": {e.evaluator.data_name: dict(e.search_statistics)
+                                         for e in envs if hasattr(e, "search_statistics")}}
 
 
 def main():

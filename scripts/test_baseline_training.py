@@ -65,7 +65,9 @@ class BaselineTrainingTests(unittest.TestCase):
 
     def test_global_ctx_actions_survive_schema_changes(self):
         a = PipelineEnv(Evaluator(), context(), device="cpu")
-        b = PipelineEnv(Evaluator(), context("other", False), device="cpu")
+        other = Evaluator(data_name="other")
+        other.frame["x"] = ["alpha", "beta", "gamma", "delta"]
+        b = PipelineEnv(other, context("other", False), device="cpu")
         self.assertEqual(contract("CtxPipe", a, "LightGBM"), contract("CtxPipe", b, "LightGBM"))
         self.assertNotEqual(a.applicable_ops, b.applicable_ops)
         for key in a.component_ids:
@@ -199,6 +201,59 @@ class BaselineTrainingTests(unittest.TestCase):
                     result = runner.run()
                     self.assertEqual(result["training_mode"], mode)
                     self.assertEqual(training.call_count, 0 if mode == "pretrained" else 1)
+
+    def test_hai_rec_transfers_table_policy_without_changing_target_model(self):
+        import baselines.HAIPipe.haipipe as module
+        from baselines.HAIPipe.haipipe import HAIPipe
+        from baselines.HAIPipe.pretrain import CrossTaskPretrainer, save_alternative_evaluator
+        from baselines.HAIPipe.active_learning import ScoreNN
+        from baselines.common.utils import get_data_ctx
+
+        class RecEvaluator(Evaluator):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.task_type = "rec"
+                self._executor.get_model_config = lambda: {"model": "DIN"}
+
+            def load_data(self):
+                return SimpleNamespace(interaction_df=self.frame.copy())
+
+        pipeline = Pipeline([PipelineStep("HandleMV")])
+        selected = SimpleNamespace(pipeline=pipeline, fitness=.7, metrics={"auc": .7}, candidates=[])
+        with tempfile.TemporaryDirectory() as root:
+            env = HAIPipeEnv(Evaluator(), get_data_ctx("toy", Evaluator().load_data(), "tabular"), model_name="LightGBM")
+            trainer = CrossTaskPretrainer([env], frames=4)
+            expected = contract("HAIPipe", env, "LightGBM")
+            trainer.agent.checkpoint_metadata = expected
+            folder = Path(root) / "HAIPipe/LightGBM"
+            folder.mkdir(parents=True)
+            source = folder / "aipipe.pt"
+            trainer.agent.save(str(source))
+            original = source.read_bytes()
+            score = ScoreNN(env.data_dim, len(env.primitive_vocabulary))
+            save_alternative_evaluator(score, str(folder / "alternative_evaluator.pt"),
+                data_dim=env.data_dim, primitive_vocabulary=env.primitive_vocabulary, checkpoint_metadata=expected)
+            rec_ctx = context()
+            rec_ctx.task_type = "rec"
+            for mode in ("pretrained", "finetune"):
+                with self.subTest(mode=mode), ExitStack() as stack:
+                    stack.enter_context(patch.object(module, "SearchPipelineEvaluator", RecEvaluator))
+                    stack.enter_context(patch.object(module, "get_data_ctx", return_value=rec_ctx))
+                    stack.enter_context(patch.object(module, "build_hi_pipeline", return_value=pipeline))
+                    stack.enter_context(patch.object(CrossTaskPretrainer, "train", return_value={"frames": 4}))
+                    stack.enter_context(patch.object(HAIPipeEnv, "rollout", return_value=(pipeline, [])))
+                    stack.enter_context(patch.object(module, "combine_pipelines", return_value=[pipeline]))
+                    stack.enter_context(patch.object(module, "select_best_candidate", return_value=selected))
+                    runner = HAIPipe("unused", "toy", model_name="DIN", training_mode=mode,
+                                     pretrained_dir=root, output_dir=str(Path(root) / mode), eval_full=False)
+                    result = runner.run()
+                    provenance = result["training_provenance"]
+                    self.assertEqual(runner.model_name, "DIN")
+                    self.assertEqual(provenance["source_model"], "LightGBM")
+                    self.assertEqual(provenance["policy_model_vocabulary"], ["LightGBM"])
+                    self.assertTrue(provenance["cross_model_transfer"])
+                    self.assertEqual(Path(provenance["source_checkpoint"]), source)
+            self.assertEqual(source.read_bytes(), original)
 
     def test_finetuning_copies_base_and_direct_inference_is_frozen(self):
         with tempfile.TemporaryDirectory() as root:

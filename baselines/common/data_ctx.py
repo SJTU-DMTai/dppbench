@@ -90,6 +90,10 @@ class DataContext:
     secondary_tables: list[str] = field(default_factory=list)        # YAML 中 s1, s2, ... 对应的次表
     tables: dict[str, TableContext] = field(default_factory=dict)    # 每张 source table 的 schema/profile
     prediction_task: str | None = None
+    select_primary_only: bool = False
+
+    def selection_tables(self):
+        return [self.primary_context] if self.select_primary_only else self.tables.values()
 
     @property
     def primary_context(self) -> TableContext | None:
@@ -103,7 +107,7 @@ class DataContext:
     def numeric_cols(self) -> list[str]:
         return _dedupe(
             col
-            for table in self.tables.values()
+            for table in self.selection_tables()
             for col in table.numeric_cols
             if col not in _special_cols(self)
         )
@@ -112,18 +116,18 @@ class DataContext:
     def categorical_cols(self) -> list[str]:
         return _dedupe(
             col
-            for table in self.tables.values()
+            for table in self.selection_tables()
             for col in table.categorical_cols
             if col not in _special_cols(self)
         )
 
     @property
     def list_cols(self) -> list[str]:
-        return _dedupe(c for t in self.tables.values() for c in t.list_cols)
+        return _dedupe(c for t in self.selection_tables() for c in t.list_cols)
 
     @property
     def text_cols(self) -> list[str]:
-        return _dedupe(c for t in self.tables.values() for c in t.text_cols)
+        return _dedupe(c for t in self.selection_tables() for c in t.text_cols)
 
     @property
     def target_col(self) -> str | None:
@@ -383,8 +387,29 @@ def _first_existing(columns: list[str], candidates: tuple[str, ...]) -> str | No
     return None
 
 
+RESERVED_COLUMNS = {"__split__", "__row_id__", "sample_weight"}
+
+
+def context_for_frame(ctx: DataContext, frame) -> DataContext:
+    import numpy as np
+
+    semantic_types = {}
+    for table in ctx.tables.values():
+        semantic_types.update(table.semantic_types)
+    semantic_types = {c: semantic_types[c] for c in frame.columns if c in semantic_types}
+    for column in frame.columns:
+        if column not in semantic_types:
+            sample = frame[column].dropna().head(16)
+            if any(isinstance(value, (list, tuple, np.ndarray)) for value in sample):
+                semantic_types[column] = "categorical_list"
+    table = replace(ctx.primary_context, shape=frame.shape,
+                    dtypes={c: str(frame[c].dtype) for c in frame.columns},
+                    semantic_types=semantic_types)
+    return replace(ctx, tables={**ctx.tables, ctx.primary_table: table}, select_primary_only=True)
+
+
 def _special_cols(ctx: DataContext) -> set[str | None]:
-    return {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
+    return RESERVED_COLUMNS | {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
 
 
 def _dedupe(cols) -> list[str]:

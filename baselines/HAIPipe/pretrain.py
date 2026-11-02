@@ -92,7 +92,8 @@ class CrossTaskPretrainer:
             "held_out_tasks": list(held_out_tasks or []),
             "frames": self.trainer.frames,
         })
-        return {"frames": self.trainer.frames, "episodes": episode_count, "checkpoint": checkpoint_path}
+        return {"frames": self.trainer.frames, "episodes": episode_count, "checkpoint": checkpoint_path,
+                **self.trainer.training_statistics()}
 
 
 __all__ = ["CrossTaskPretrainer"]

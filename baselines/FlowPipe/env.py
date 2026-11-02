@@ -11,7 +11,8 @@ import numpy as np
 from baselines.common.op_spec import CATALOG, OpCategory, is_mandatory
 from baselines.common.budget import BudgetExceededError
 from baselines.common.search_reward import fitness_to_reward
-from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step, repair
+from baselines.common.data_ctx import context_for_frame
 from baselines.common.state_features import dataframe_state_features, primary_feature_frame
 
 
@@ -29,11 +30,16 @@ class FlowPipeEnv:
         self.evaluator = evaluator
         self.ctx = ctx
         self.max_steps = int(max_steps)
+        if self.max_steps < 1:
+            raise ValueError("FlowPipe max_steps must be positive")
         self.rng = random.Random(seed)
+        self.search_statistics = {"terminal_trajectories": 0, "auto_sequence": 0,
+                                  "noop_actions": 0, "prefix_failures": 0}
         self.categories = tuple(OpCategory)
         self.required_ops = {name for name in CATALOG if is_mandatory(name, ctx.task_type)}
         if ctx.secondary_tables:
             self.required_ops.add('JoinTable')
+        self.slot_required_ops = self.required_ops - ({"CreateSequence"} if ctx.task_type == "rec" else set())
         self.logical_pipelines = tuple(itertools.permutations(self.categories))
         self.n_logic = len(self.logical_pipelines)
 
@@ -44,11 +50,6 @@ class FlowPipeEnv:
             ActionSpec(i + self.n_logic, spec.op_name, spec.category)
             for i, spec in enumerate(specs)
         ]
-        self.applicable_gids = {
-            action.gid for action in self.actions
-            if CATALOG[action.name].task_type in ("both", ctx.task_type)
-            and self._can_instantiate(action.name)
-        }
         self.action_by_gid = {action.gid: action for action in self.actions}
         self.skip_gid = self.n_logic + len(self.actions)
         self.action_dim = self.skip_gid + 1
@@ -59,13 +60,23 @@ class FlowPipeEnv:
         self.reset()
 
     def _can_instantiate(self, name: str) -> bool:
-        return any(make_step(name, self.ctx, random.Random(10_000 + i)) is not None for i in range(3))
+        return any(make_step(name, self.current_ctx, random.Random(10_000 + i)) is not None for i in range(3))
+
+    def _refresh_context(self, frame):
+        self.current_ctx = context_for_frame(self.ctx, frame)
+        self.applicable_gids = {
+            action.gid for action in self.actions
+            if CATALOG[action.name].task_type in ("both", self.ctx.task_type)
+            and not (action.name == "AugmentMixup" and getattr(self.ctx, "prediction_task", None) != "regression")
+            and self._can_instantiate(action.name)
+        }
 
     def _raw_frame(self):
         data = self.evaluator.load_data()
         frame = getattr(data, "interaction_df", None) if self.ctx.task_type == "rec" else getattr(data, "train_df", None)
         if frame is None:
             raise ValueError("FlowPipe could not locate the primary dataframe")
+        self._refresh_context(frame)
         return primary_feature_frame(frame, self.ctx.target_col)
 
     def reset(self):
@@ -98,17 +109,19 @@ class FlowPipeEnv:
         if self.done:
             return mask
         if not self.logic_selected:
-            required_categories = {CATALOG[name].category for name in self.required_ops}
+            required_categories = {CATALOG[name].category for name in self.slot_required_ops}
             for i, order in enumerate(self.logical_pipelines):
                 if required_categories.issubset(order[:self.max_steps]):
                     mask[i] = 1.0
             return mask
         category = self.current_order[self.stage_index]
-        required_here = {name for name in self.required_ops if CATALOG[name].category == category}
+        required_here = {name for name in self.slot_required_ops if CATALOG[name].category == category}
         for action in self.actions:
             if action.category == category and action.gid in self.applicable_gids:
                 if not required_here or action.name in required_here:
-                    mask[action.gid] = 1.0
+                    missing = self.required_ops - set(self.pipeline.op_names()) - {action.name}
+                    if len(self.pipeline) + 1 + len(missing) <= self.max_steps:
+                        mask[action.gid] = 1.0
         if not required_here:
             mask[self.skip_gid] = 1.0
         return mask
@@ -129,7 +142,7 @@ class FlowPipeEnv:
         info = {"category": self.current_order[self.stage_index].value, "err_code": 0}
         if gid != self.skip_gid:
             action = self.action_by_gid[gid]
-            step = make_step(action.name, self.ctx, self.rng)
+            step = make_step(action.name, self.current_ctx, self.rng)
             if step is None:
                 self.done = True
                 return self.get_state_repr(), 1e-12, True, {**info, "error": "parameter instantiation failed", "err_code": -1}
@@ -150,14 +163,19 @@ class FlowPipeEnv:
             except BudgetExceededError:
                 raise
             except Exception as exc:
+                self.search_statistics["prefix_failures"] += 1
                 self.done = True
                 return self.get_state_repr(), 1e-12, True, {
                     **info, "error": f"{type(exc).__name__}: {exc}", "err_code": -1,
                 }
             self.pipeline = candidate
             self.current_frame = primary_feature_frame(processed, self.ctx.target_col)
+            self._refresh_context(processed)
             info["op"] = action.name
+            info["params"] = dict(step.params)
+            info["output_shape"] = list(processed.shape)
         else:
+            self.search_statistics["noop_actions"] += 1
             info["op"] = "NOOP"
 
         self.selected_gids.append(gid)
@@ -165,7 +183,20 @@ class FlowPipeEnv:
         self.done = self.stage_index >= len(self.categories) or self.stage_index >= self.max_steps
         if not self.done:
             return self.get_state_repr(), 0.0, False, info
+        self.search_statistics["terminal_trajectories"] += 1
+        info["pre_repair_hash"] = self.pipeline.hash()
+        info["auto_sequence"] = self.ctx.task_type == "rec" and "CreateSequence" not in self.pipeline.op_names()
+        if info["auto_sequence"]:
+            self.search_statistics["auto_sequence"] += 1
+            repair(self.pipeline, self.ctx.task_type, self.ctx, rng=self.rng)
         assign_dag_structure(self.pipeline, self.ctx, self.rng)
+        info["final_hash"] = self.pipeline.hash()
+        info["final_ops"] = self.pipeline.op_names()
+        self.last_info = info
+        if len(self.pipeline) > self.max_steps:
+            return self.get_state_repr(), 1e-12, True, {
+                **info, "error": "final pipeline exceeds max_steps after mandatory completion", "err_code": -1,
+            }
         report = check_pipeline(self.pipeline, self.ctx)
         if not report.valid:
             return self.get_state_repr(), 1e-12, True, {

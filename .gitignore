@@ -29,6 +29,9 @@ Thumbs.db
 # Environment
 .env
 .venv/
+.venv_gpu/
+/ckpts/
+/checkpoints/pretrained/
 venv/
 env/
 papers/
@@ -37,5 +40,3 @@ logs/
 
 AGENTS.md
 *.pdf
-# Locally trained pretrained model weights and caches
-/checkpoints/pretrained/

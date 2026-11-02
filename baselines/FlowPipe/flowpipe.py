@@ -122,7 +122,7 @@ class FlowPipe:
 
     def precompute_context(
         self, *, device: Optional[str] = None, max_length: int = 4096,
-        overwrite: bool = False,
+        overwrite: bool = False, loader: Optional[SemanticContextLoader] = None,
     ) -> str:
         """Precompute and persist this task's frozen Llama embedding."""
         evaluator = self._build_evaluator()
@@ -139,14 +139,20 @@ class FlowPipe:
             raise ValueError(f"[{self.data_name}] primary dataframe is unavailable")
         # Keep the target in the semantic prompt, while excluding frozen test rows.
         frame = primary_feature_frame(frame, target_col=None)
-        loader = SemanticContextLoader(
-            self.context_cache_dir, self.llm_name, self.ctx_dim,
-            llama_model_path=self.llama_model_path,
-        )
-        return str(loader.precompute(
-            self.data_name, frame, ctx, device=device or self.device,
-            max_length=max_length, overwrite=overwrite,
-        ))
+        owns_loader = loader is None
+        if owns_loader:
+            loader = SemanticContextLoader(
+                self.context_cache_dir, self.llm_name, self.ctx_dim,
+                llama_model_path=self.llama_model_path,
+            )
+        try:
+            return str(loader.precompute(
+                self.data_name, frame, ctx, device=device or self.device,
+                max_length=max_length, overwrite=overwrite,
+            ))
+        finally:
+            if owns_loader:
+                loader.close()
 
     def run(self) -> dict:
         started = time.time()

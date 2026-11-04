@@ -381,7 +381,7 @@ class DataMaster:
             print(f"[DataMaster] DONE in {duration:.1f}s")
             fit_str = f"{eval_fitness:.4f}" if isinstance(eval_fitness, float) else "n/a"
             print(f"[DataMaster] downstream fitness = {fit_str}")
-            print(f"[DataMaster] downstream metrics = {eval_metrics}")
+            print(f"[DataMaster] downstream metrics = {dict((k, v) for k, v in eval_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[DataMaster] eval error: {eval_error}")
             print(f"[DataMaster] best pipeline saved to: {out_yaml_path}")

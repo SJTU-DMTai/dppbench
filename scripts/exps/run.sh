@@ -9,17 +9,24 @@ source scripts/exps/common.sh
 # 实验配置
 SEED_LIST="42"
 
-TASK_LIST=(
-  amazon_beauty
-)
-
 # TASK_LIST=(
+#   berka
+#   bike_sharing
+#   citibike_jc_hourly
+#   default_credit
 #   fraud_detection
+#   home_credit
+#   nyc_taxi_hourly
+#   polish_bankruptcy
 # )
+
+TASK_LIST=(
+  berka
+)
 
 HARD_MEMORY_GIB=85
 
-LOG_DIR="logs/exp_1_new/seed42"
+LOG_DIR="logs/exp1_10_30/seed42"
 mkdir -p "$LOG_DIR"
 
 FAILED=()

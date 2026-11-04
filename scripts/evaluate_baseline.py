@@ -44,6 +44,7 @@ import re
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -490,10 +491,8 @@ def _run_baseline_and_eval(
     resume_path = _resume_path(args, task_name, model_name)
     if baseline_name == "DAGPipe":
         from baselines.DAGPipe.preflight import check_runtime
-        report = check_runtime(task_dir=task_dir, data_name=task_name, model_name=model_name,
-                               evaluator_class=_load_class(conf["evaluator_cls"]))
-        if not args.quiet:
-            _print_json({"dagpipe_preflight": report})
+        check_runtime(task_dir=task_dir, data_name=task_name, model_name=model_name,
+                      evaluator_class=_load_class(conf["evaluator_cls"]))
     if resume_path:
         from pathlib import Path
         source = Path(resume_path)
@@ -768,7 +767,6 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
             "ops": row.get("ops"),
             "n_unique_evals": row.get("n_unique_evals"),
         },
-        "rec_protocol": row.get("rec_protocol"),
         "budget": row.get("budget"),
         "search_cost": row.get("search_cost"),
         "error": row.get("error"),
@@ -895,9 +893,11 @@ def main():
         search_cost = SearchCost(args.baseline)
         try:
             _ensure_std_test(task_name, args.data_dir, args.skip_build or bool(args.resume_pipeline), args.quiet)
-            row.update(_run_baseline_and_eval(
-                task_name, args.baseline, args, out_root, budget=budget, search_cost=search_cost
-            ))
+            from dppbench.rec_partition import partition_audit_scope
+            with partition_audit_scope(Path(run_output_dir) / 'partition_audits'):
+                row.update(_run_baseline_and_eval(
+                    task_name, args.baseline, args, out_root, budget=budget, search_cost=search_cost
+                ))
         except Exception as e:
             tb = traceback.format_exc()
             if not args.quiet:

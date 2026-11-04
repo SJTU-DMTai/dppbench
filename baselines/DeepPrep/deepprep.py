@@ -332,7 +332,7 @@ class DeepPrep:
                 f"{reported_fitness:.4f}" if isinstance(reported_fitness, float) else "n/a"
             )
             print(f"[DeepPrep] downstream fitness = {fit_str}")
-            print(f"[DeepPrep] downstream metrics = {reported_metrics}")
+            print(f"[DeepPrep] downstream metrics = {dict((k, v) for k, v in reported_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[DeepPrep] eval error: {eval_error}")
             print(f"[DeepPrep] best pipeline saved to: {out_yaml_path}")

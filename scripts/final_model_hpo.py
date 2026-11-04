@@ -244,4 +244,6 @@ def tune_final_model(pipeline, *, output_dir, evaluator_class=None, **kwargs):
     protocol = summary.get('best_rec_protocol') or {}
     final_evaluator._executor.expected_rec_schema_sha256 = protocol.get('feature_schema_sha256')
     final_evaluator._executor.expected_category_maps_sha256 = protocol.get('category_maps_sha256')
+    final_evaluator._executor.expected_rec_partition_sha256 = (protocol.get('partition') or {}).get('canonical_sha256')
+    final_evaluator._executor.expected_rec_data_files = (protocol.get('partition') or {}).get('data_files')
     return final_evaluator, summary

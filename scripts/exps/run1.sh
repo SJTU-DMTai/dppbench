@@ -7,39 +7,41 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="42"
+SEED_LIST="43"
+GPU_ID=1
 
 TASK_LIST=(
-  amazon_beauty
-  kuairec
-  movielens
-  elliptic_bitcoin
   beijing_air_quality
   berka
   bike_sharing
+  citibike_jc_hourly
   default_credit
   fraud_detection
   home_credit
+  nyc_taxi_hourly
   polish_bankruptcy
 )
 
 BASELINES=(
-  SAGA 
-  AutoPrep 
-  Learn2Clean 
+  SAGA
+  AutoPrep
+  Learn2Clean
   AlphaClean
   Random
   DiffPrep
-  DAGPipe
 )
 
+# BASELINES=(
+#  SAGA
+# )
+
 # TASK_LIST=(
-#   fraud_detection
+#   elliptic_bitcoin
 # )
 
 HARD_MEMORY_GIB=85
 
-LOG_DIR="logs/exp_1_1/seed42"
+LOG_DIR="logs/exp1_10_30/seed43"
 mkdir -p "$LOG_DIR"
 
 FAILED=()
@@ -57,14 +59,15 @@ for seed in $SEED_LIST; do
       echo "[TIME] $(date)"
 
       # 每次执行都会启动新的 Python 进程
-      if TASKS="$task" \
-         SEEDS="$seed" \
-         BASELINES="$baseline" \
-         DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
-         python scripts/run_memory_limited.py \
-           --memory-gib "$HARD_MEMORY_GIB" -- \
-           bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
-           > "$LOG" 2>&1
+      if GPU_ID="$GPU_ID" \
+          TASKS="$task" \
+          SEEDS="$seed" \
+          BASELINES="$baseline" \
+          DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
+          python scripts/run_memory_limited.py \
+            --memory-gib "$HARD_MEMORY_GIB" -- \
+            bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
+            > "$LOG" 2>&1
       then
         echo "[SUCCESS] task=$task baseline=$baseline seed=$seed"
       else

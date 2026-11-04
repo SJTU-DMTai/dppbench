@@ -1,22 +1,25 @@
-mkdir -p logs/yelp_acceptance_43
+set -euo pipefail
 
-export DPPBENCH_YELP_SIDE_TABLE_SCOPE=full
-export DPPBENCH_MEMORY_TRACE=1
+root=outputs/elliptic_ref16_vs_256
+for seed in 42 44 ; do
+  for arm in ref16 ref256; do
+    checkpoint="$root/seed${seed}/$arm/best_pipeline.yaml"
+    test -s "$checkpoint" || { echo "Missing: $checkpoint" >&2; exit 1; }
 
-python scripts/run_memory_limited.py --memory-gib 75 -- \
-  python -u scripts/evaluate_baseline.py \
-    --baseline AlphaClean \
-    --data_names yelp \
-    --model DIN \
-    --seed 43 \
-    --gpu_id 1 \
-    --data_dir /mnt/sdb/dengjiale/dppbench/data \
-    --output_dir /mnt/sdb/jiaqinyi/dppbench/output/yelp_acceptance_43 \
-    --output_csv /mnt/sdb/jiaqinyi/dppbench/output/yelp_acceptance_43/results.csv \
-    --max_pipeline_len 10 \
-    --max_evaluations 20 \
-    --max_memory_mb 71680 \
-    --final_hpo \
-    > logs/yelp_acceptance_43/run.log 2>&1
-
-echo "exit_code=$?" >> logs/yelp_acceptance_43/run1.log
+    out="$root/final_hpo/seed${seed}/$arm"
+    mkdir -p "$out"
+    python -u scripts/evaluate_baseline.py \
+      --baseline DAGPipe \
+      --data_names elliptic_bitcoin \
+      --model GraphSAGE \
+      --data_dir /mnt/sdb/dengjiale/dppbench/data \
+      --resume_pipeline "$checkpoint" \
+      --final_hpo \
+      --seed "$seed" \
+      --gpu_id 2 \
+      --max_pipeline_len 10 \
+      --output_dir "$out" \
+      --output_csv "$out/results.csv" \
+      2>&1 | tee "$out/run.log"
+  done
+done

@@ -15,12 +15,12 @@ def implementation_manifest():
     import json
     root = Path(__file__).resolve().parents[1]
     paths = set()
-    for folder in ('dppbench', 'baselines/common', 'baselines/DiffPrep', 'baselines/DAGPipe'):
+    for folder in ('dppbench', 'baselines'):
         paths.update((root/folder).rglob('*.py'))
     paths.update((root/'dppbench/tasks').rglob('model.yaml'))
     paths.update((root/'baselines').glob('*/config.yaml'))
-    paths.update(root/'scripts'/name for name in ('final_model_hpo.py', 'evaluate_baseline.py'))
-    files = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(paths)}
+    paths.update(root/'scripts'/name for name in ('final_model_hpo.py', 'evaluate_baseline.py', 'build_std_test.py'))
+    files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(paths)}
     return {'protocol': VERSION, 'files': files,
             'implementation_sha256': hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()}
 
@@ -142,7 +142,12 @@ def history_transform(frame, op, time_col):
             raise ValueError('Recommendation rolling windows must be positive')
         specs = [(op.target_col, agg, int(w), f'{op.target_col}_roll_{agg}_{w}')
                  for w in op.windows for agg in op.aggs]
-    train = training_rows(out)
+    timeline = out
+    from .rec_time_context import EVENT_CONTEXT, event_context
+    if EVENT_CONTEXT in out:
+        timeline = out.copy(deep=False)
+        timeline[time_col] = [value.time for value in event_context(out)]
+    train = training_rows(timeline)
     # Group-key tuples also work for an empty grouping and missing keys.
     def group_keys(df):
         return list(zip(*(df[c].map(lambda v: token(v) or '__MISSING__') for c in groups))) if groups else [()] * len(df)
@@ -172,11 +177,27 @@ def history_transform(frame, op, time_col):
                 cached[name] = reducer.agg(agg).tolist()
         # O(N log N); expanding/rolling statistics above are computed once.
         for pos in queries.get(key, []):
-            when = out[time_col].iloc[pos]
+            when = timeline[time_col].iloc[pos]
             if pd.isna(when):
                 continue
             previous = bisect.bisect_left(times, when) - 1
             if previous >= 0:
+                available = getattr(op, 'available_at_col', None)
+                if available and op.name in ('CreateLagFeature', 'CreateRollingFeature'):
+                    from .tabular_contracts import parse_time
+                    from .time_applicability import declared_clock
+                    rules = getattr(op, '_declared_history_rules', {})
+                    arule = declared_clock('', available, rules)
+                    trule = declared_clock('', time_col, rules)
+                    cutoff = when if trule.get('kind') == 'ordered_step' else parse_time(pd.Series([when]), trule).iloc[0]
+                    eligible = ref.iloc[:previous + 1]
+                    available_times = eligible[available] if arule.get('kind') == 'ordered_step' else parse_time(eligible[available], arule, eligible)
+                    known = available_times.le(cutoff)
+                    eligible = eligible.loc[known]
+                    for col, agg, window, name in specs:
+                        values = eligible[col].tail(window)
+                        result[name][pos] = (values.iloc[-window] if len(values) >= window else np.nan) if agg == 'lag' else getattr(pd.to_numeric(values, errors='raise'), agg)()
+                    continue
                 for name, values in cached.items():
                     result[name][pos] = values[previous]
     for name, values in result.items():

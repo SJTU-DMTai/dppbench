@@ -398,11 +398,31 @@ class BaseData:
             print(f"DAG params {ref} {op_name}: {raw_params}")
             params = {k: self._resolve_param(v) for k, v in raw_params.items()}
 
+            from dppbench.time_applicability import resolve_time_params, TIME_OPS, HISTORY_OPS
+            if op_name in TIME_OPS | HISTORY_OPS:
+                from dppbench.tabular_contracts import dataset_key
+                cfg = getattr(self, 'model_cfg', {}) or {}
+                params, errors = resolve_time_params(op_name, params, dataset_key(self),
+                    cfg.get('feature', {}).get('time_rules', {}),
+                    cfg.get('history_protocol', cfg.get('tabular_history', {})),
+                    getattr(self, 'target_col', None))
+                if errors:
+                    raise ValueError('; '.join(errors))
             op_cls = self._load_op(op_name)
             params = self._bind_relation_secondary_inputs(
                 op_cls, params, input_dfs[1:], op_name
             )
             op = op_cls(**params)
+            if op_name in HISTORY_OPS:
+                from dppbench.time_applicability import declared_clock, declared_history
+                history_config = declared_history(dataset_key(self), params,
+                    cfg.get('history_protocol', cfg.get('tabular_history', {})))
+                history_config.update(history_config.get('sources', {}).get(op.target_col, {}))
+                clock_rules = dict(cfg.get('feature', {}).get('time_rules', {}))
+                if history_config.get('time_rule'):
+                    clock_rules[op.time_col] = history_config['time_rule']
+                op._declared_history_rules = {c: declared_clock(dataset_key(self), c, clock_rules)
+                    for c in (op.time_col, op.available_at_col) if c}
             df = input_dfs[0]
             # A labelled DAG branch is not an independent lookup table.
             # Reject ambiguous reuse rather than joining held-out labels back
@@ -632,6 +652,10 @@ class RecData(BaseData):
                                           self.model_cfg.get("feature", {}).get("time_col", "timestamp"))
         std_df["__split__"] = "std_test"
 
+        # Freeze original training identities/types before held-out concat can
+        # promote timestamp/label dtypes or add columns to the training frame.
+        self._validation_prepared = False
+        self._prepare_validation()
         base = self.interaction_df.copy()
         if "__split__" not in base.columns:
             base["__split__"] = "train"
@@ -644,6 +668,8 @@ class RecData(BaseData):
         self.interaction_df = pd.concat(
             [base, std_df[base.columns]], ignore_index=True
         )
+        self._rec_active_positions = np.concatenate([
+            self._rec_active_positions, np.full(len(std_df), -1, dtype=np.int64)])
 
         self._has_std_test = True
         feat_cfg = self.model_cfg.get("feature", {}) if self.model_cfg else {}
@@ -710,12 +736,44 @@ class RecData(BaseData):
             config, available_sources,
             lambda df, op, op_name: self._transform_rec_dag_df(df, op, op_name),
         )
+        from .rec_time_context import EVENT_CONTEXT
+        final_df = final_df.drop(columns=[EVENT_CONTEXT], errors='ignore')
         self.interaction_df = final_df
         self._require_training_rows(final_df, "Pipeline")
         self._remap_ids()
 
     def _transform_rec_dag_df(self, df, op, op_name):
+        from .rec_time_context import EVENT_CONTEXT, preserve_event_context, event_context
+        # Preserve the original event clock before a representation operator
+        # replaces it. This metadata is never fitted or encoded.
+        time_col = self.model_cfg.get('feature', {}).get('time_col', 'timestamp')
+        from .feature_contracts import _names
+        clock_writers = {'ParseDate', 'ParseNumber', 'CastType', 'RenameColumn',
+                         'DropColumns', 'DiscretizeFeature', 'ScaleFeature',
+                         'TransformPower', 'ClipOutlier', 'HandleOutlier'}
         self._protect_aggregate_target(df, op, op_name)
+        if op_name in ('ParseDate', 'ExtractDateTimeFeature'):
+            from .rec_time_context import time_rule
+            op.time_rules = {c: (getattr(op, 'time_rules', {}).get(c) or time_rule(self, c))
+                             for c in op.cols}
+        # None-valued numeric selectors are resolved by the guard above.
+        if op_name in clock_writers and time_col in _names(vars(op)) and time_col in df:
+            df = preserve_event_context(df, self._user_id_col, time_col)
+        has_context = EVENT_CONTEXT in df
+        if has_context:
+            # Inspect selectors, not fitted state (e.g. OneHot output_columns_
+            # legitimately carries this passthrough field when replayed).
+            from .feature_contracts import FEATURE_SELECTORS
+            selectors = set(FEATURE_SELECTORS.get(op_name, ())) | {
+                'cols', 'subset', 'by', 'feature_cols', 'key_col',
+                'output_col', 'output_cols', 'seq_col'}
+            if EVENT_CONTEXT in _names({key: getattr(op, key, None) for key in selectors}):
+                raise ValueError('Operators cannot select recommendation event context metadata')
+            if op_name == 'Deduplicate' and op.subset is None:
+                # Execution metadata must not change duplicate equivalence.
+                op.subset = [c for c in df if c not in (EVENT_CONTEXT, '__split__')]
+            if op_name == 'LabelEncode' and op.cols is None:
+                op.exclude_cols = [*getattr(op, 'exclude_cols', ()), EVENT_CONTEXT]
         if op_name == "RenameColumn":
             op.output_col_types = {new: self.col_types[old] for old, new in op.rename_map.items() if old in self.col_types}
             op.drop_col_types = list(op.rename_map)
@@ -730,7 +788,11 @@ class RecData(BaseData):
                                       if op_name == "CreateLagFeature" else self.NUMERIC)
                                    for c in new_df if c not in df}
         elif "__split__" in df.columns and uses_train_history:
-            new_df = op.transform(df)
+            reference = getattr(self, '_rec_history_reference', None)
+            if op_name == 'CreateSequence' and reference is not None:
+                new_df = op.transform_with_history(df, reference)
+            else:
+                new_df = op.transform(df)
         elif "__split__" in df.columns:
             parts = []
             std_test_count = int((df["__split__"] == "std_test").sum())
@@ -791,6 +853,10 @@ class RecData(BaseData):
         else:
             new_df = op.transform(df)
 
+        if has_context:
+            if EVENT_CONTEXT not in new_df:
+                raise ValueError(f'{op_name} lost recommendation event context')
+            event_context(new_df)
         if hasattr(op, 'output_col_types') and op.output_col_types:
             self.register_col_types(op.output_col_types)
         if hasattr(op, 'drop_col_types') and op.drop_col_types:
@@ -801,23 +867,8 @@ class RecData(BaseData):
         return new_df
 
     def _prepare_validation(self):
-        if getattr(self, "_validation_prepared", False):
-            return
-        from sklearn.model_selection import train_test_split
-        cfg = getattr(self, "model_cfg", {})
-        train_cfg = cfg.get("train", {})
-        df = self.interaction_df.copy()
-        if "__split__" not in df:
-            df["__split__"] = "train"
-        pool = df.loc[df["__split__"] == "train"]
-        target = cfg.get("feature", {}).get("target_col")
-        stratify = pool[target] if target in pool and 1 < pool[target].nunique() <= 50 else None
-        train, val = train_test_split(pool, test_size=train_cfg.get("val_ratio", 0.1),
-                                      random_state=train_cfg.get("seed", 42), stratify=stratify)
-        self.interaction_df = pd.concat([
-            train, val.assign(__split__="val"), df.loc[df["__split__"] != "train"],
-        ], ignore_index=True)
-        self._validation_prepared = True
+        from .rec_partition import prepare_validation
+        prepare_validation(self)
 
     def run_pre_process(self, yaml_path):
         if not self._has_std_test and not getattr(self, "_skip_std_test_loading", False):
@@ -1021,7 +1072,17 @@ class TabularData(BaseData):
         self._require_training_rows(final_df, "Pipeline")
 
     def _transform_tabular_dag_df(self, df, op, op_name):
+        from dppbench.tabular_contracts import diagnostic_columns, time_rule
+        # CorrectLabel is allowed to change training labels, but its marker is
+        # bookkeeping. Remove it before ANY later transform, including defaults.
+        df = df.drop(columns=[c for c in diagnostic_columns(df.columns, self.target_col)
+                              if c not in ('__split__', 'sample_weight')], errors='ignore')
+        if op_name in ('ParseDate', 'ExtractDateTimeFeature'):
+            op.time_rules = {c: (getattr(op, 'time_rules', {}).get(c) or time_rule(self.name, c)) for c in op.cols}
         self._protect_aggregate_target(df, op, op_name)
+        if op_name in ('CreateLagFeature', 'CreateRollingFeature'):
+            from dppbench.tabular_history import transform_partitioned_history
+            return transform_partitioned_history(self, df, op)
         if op_name == "AugmentMixup":
             task = (getattr(self, "model_cfg", {}) or {}).get("model_params", {}).get("task", "classification")
             op.task = "regression" if task == "regression" else "classification"
@@ -1083,6 +1144,8 @@ class TabularData(BaseData):
             new_df = op.transform(df)
         if "__split__" in df.columns:
             self._require_training_rows(new_df, op_name)
+        if op_name == 'CorrectLabel':
+            new_df = new_df.drop(columns=[op.mask_col], errors='ignore')
         return new_df
 
     def run_pre_process(self, yaml_path):
@@ -1166,6 +1229,11 @@ class TabularData(BaseData):
         cfg = getattr(self, "model_cfg", {}).get("train", {})
         # Dispatch to the task's original split (including chronological splits).
         splits = self.split(val_ratio=cfg.get("val_ratio", 0.2), seed=cfg.get("seed", 42))
+        from dppbench.tabular_contracts import fixed_search_view, prepare_references
+        if not hasattr(self, 'build_graph'):
+            splits = fixed_search_view(self, splits, getattr(self, '_tabular_search_small_n', 0),
+                                       getattr(self, '_tabular_search_seed', cfg.get('seed', 42)))
+            prepare_references(self, splits['train'])
         parts = []
         for name in ("train", "val", "std_test"):
             frame = splits.get(name)

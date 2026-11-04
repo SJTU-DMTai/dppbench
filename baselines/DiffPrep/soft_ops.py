@@ -5,10 +5,9 @@ numeric features (already imputed for NaN-mask handling) and returns a
 transformed tensor of the *same shape*, so multiple candidate outputs can be
 mixed via :func:`softmix`.
 
-These tensor implementations are intentionally lightweight: they are only used
-to provide gradient signal to ``tau`` (the DARTS-style architecture parameters)
-during the inner-loop. The final discretized pipeline runs the *real* operators
-from ``dppbench/ operators/``.
+The production tabular path uses tabular_bank.py for typed, expanding real
+operators. Legacy numerical helpers below are not tabular search semantics.
+apply_soft_op refuses implicit minibatch fitting and dispatches real operators.
 """
 from __future__ import annotations
 
@@ -145,36 +144,37 @@ def has_soft_impl(op_name: str) -> bool:
     return op_name in SOFT_OP_FNS
 
 
-def apply_soft_op(op_name: str, x: torch.Tensor, mask: torch.Tensor, fit_rows=None) -> torch.Tensor:
-    """Run a single soft-op forward."""
-    if fit_rows is not None:
-        ref = x[fit_rows]
-        if not len(ref):
-            raise ValueError('Soft transforms require training reference rows')
-        if op_name == 'HandleMV':
-            valid = 1. - mask[fit_rows]
-            mean = (ref * valid).sum(0) / valid.sum(0).clamp(min=1.)
-            return x * (1. - mask) + mean * mask
-        if op_name in {'ScaleFeature', 'TargetEncode', 'ClipOutlier'}:
-            mean = ref.mean(0)
-            std = ref.std(0, unbiased=False).clamp(min=1e-6)
-            if op_name == 'ClipOutlier':
-                return torch.minimum(torch.maximum(x, mean - 3 * std), mean + 3 * std)
-            return (x - mean) / std
-        if op_name == 'Normalize':
-            lo, hi = ref.amin(0), ref.amax(0)
-            return (x - lo) / (hi - lo).clamp(min=1e-6)
-        if op_name in {'DiscretizeFeature', 'OneHotEncode', 'OrdinalEncode',
-                       'HashEncode', 'LabelEncode', 'FrequencyEncode'}:
-            buckets = 8 if op_name == 'DiscretizeFeature' else (16 if op_name == 'FrequencyEncode' else 32)
-            bounds = torch.quantile(ref, torch.linspace(0, 1, buckets + 1, device=x.device, dtype=x.dtype)[1:-1], dim=0)
-            return (x.unsqueeze(1) >= bounds.unsqueeze(0)).sum(1).to(x.dtype) / (buckets - 1)
-    if op_name == "HandleMV":
-        return soft_fill_missing(x, mask, mode="mean")
-    fn = SOFT_OP_FNS.get(op_name)
-    if fn is None:
+def apply_soft_op(op_name: str, x: torch.Tensor, mask: torch.Tensor, fit_rows=None,
+                  params=None, target=None) -> torch.Tensor:
+    """Real numeric dataframe forward; typed/gradient search uses tabular_bank.
+
+    No guessing a training reference, no rank aliases, no truncated one-hot.
+    TargetEncode requires explicit TRAIN labels, never validation labels.
+    """
+    if op_name == 'Identity':
         return x
-    return fn(x)
+    if fit_rows is None or len(fit_rows) == 0:
+        raise ValueError('Real transforms require explicit fixed training reference rows; use tabular_bank')
+    import numpy as np
+    import pandas as pd
+    from dppbench.dataset import TabularData
+    rows = fit_rows.detach().cpu().numpy() if torch.is_tensor(fit_rows) else fit_rows
+    values = x.detach().cpu().numpy().copy()
+    values[mask.detach().cpu().numpy().astype(bool)] = np.nan
+    names = [f'x{j}' for j in range(x.shape[1])]
+    frame = pd.DataFrame(values, columns=names)
+    kwargs = dict(params or {})
+    kwargs.setdefault('cols', names)
+    fit = frame.iloc[rows].copy()
+    if op_name == 'TargetEncode':
+        if target is None or len(target) != len(fit):
+            raise ValueError('TargetEncode requires exactly the training-reference labels')
+        kwargs.setdefault('target_col', '__fit_target')
+        fit[kwargs['target_col']] = np.asarray(target)
+    op = TabularData('numeric_adapter')._load_op(op_name)(**kwargs)
+    op.transform(fit)
+    result = op.transform(frame).drop(columns=[kwargs.get('target_col')], errors='ignore')
+    return x.new_tensor(result.to_numpy(dtype=float))
 
 
 # ---------------------------------------------------------------------------

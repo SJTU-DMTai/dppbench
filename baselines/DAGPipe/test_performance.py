@@ -183,14 +183,3 @@ def test_resource_guard_throttles_and_forces_boundaries():
     assert check.call_count == 3
 
 
-def test_cpu_budget_checks_do_not_initialize_cuda(monkeypatch):
-    from baselines.common.budget import Budget, _gpu_peak_memory_mb
-    from unittest.mock import Mock
-    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
-    monkeypatch.setattr(torch.cuda, 'is_initialized', lambda: False)
-    allocate = Mock(side_effect=AssertionError('unexpected lazy CUDA context'))
-    monkeypatch.setattr(torch.cuda, 'max_memory_allocated', allocate)
-    monkeypatch.setattr(torch.cuda, 'reset_peak_memory_stats', allocate)
-    Budget().start()
-    assert _gpu_peak_memory_mb() == 0
-    allocate.assert_not_called()

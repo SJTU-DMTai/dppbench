@@ -11,13 +11,14 @@ class ExtractDateTimeFeature(TabularOp):
         "is_weekend", "dayofyear",
     ]
 
-    def __init__(self, cols, features=None, drop_original=False):
+    def __init__(self, cols, features=None, drop_original=False, time_rules=None):
         super().__init__(name="ExtractDateTimeFeature")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.features = features or self.DEFAULT_FEATURES
         self.drop_original = bool(drop_original)
         self.output_col_types = {}
         self.drop_col_types = []
+        self.time_rules = time_rules or {}
 
     def get_op_description(self):
         description = """Operator name: ExtractDateTimeFeature
@@ -74,17 +75,8 @@ dag:
             if col not in df.columns:
                 continue
             series = df[col]
-            if pd.api.types.is_numeric_dtype(series):
-                # Promote float32 before pandas' seconds-to-nanoseconds
-                # arithmetic; errors='coerce' alone does not prevent a NumPy
-                # floating point overflow inside that conversion.
-                seconds = series.astype("float64")
-                lo = np.ceil(pd.Timestamp.min.value / 1e9)
-                hi = np.floor(pd.Timestamp.max.value / 1e9)
-                seconds = seconds.where(np.isfinite(seconds) & seconds.between(lo, hi))
-                ts = pd.to_datetime(seconds, unit="s", errors="coerce")
-            else:
-                ts = pd.to_datetime(series, errors="coerce")
+            from dppbench.tabular_contracts import parse_time
+            ts = parse_time(series, self.time_rules.get(col), df)
             if "year" in self.features:
                 df[f"{col}_year"] = ts.dt.year.astype("Int32")
             if "month" in self.features:
@@ -98,7 +90,7 @@ dag:
             if "quarter" in self.features:
                 df[f"{col}_quarter"] = ts.dt.quarter.astype("Int8")
             if "is_weekend" in self.features:
-                df[f"{col}_is_weekend"] = (ts.dt.dayofweek >= 5).astype("Int8")
+                df[f"{col}_is_weekend"] = (ts.dt.dayofweek >= 5).where(ts.notna()).astype("Int8")
             if "dayofyear" in self.features:
                 df[f"{col}_dayofyear"] = ts.dt.dayofyear.astype("Int16")
             if "hour" in self.features:

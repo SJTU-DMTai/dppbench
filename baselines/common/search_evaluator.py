@@ -142,9 +142,20 @@ def _subsample_data_inplace(data, small_n: int, seed: int) -> None:
     """
     if small_n <= 0:
         return
+    if getattr(data, '_rec_training_only', False):
+        # The executor restores the full frozen pool, fixes validation first,
+        # then applies the original TOTAL search-row cap. Never truncate here.
+        return
 
     # ---- Tabular ----
     train_df = getattr(data, "train_df", None)
+    from dppbench.dataset import TabularData
+    if isinstance(data, TabularData) and not hasattr(data, 'build_graph'):
+        # load_data can still contain raw rows, later replaced by frozen data.
+        # Defer sampling until _prepare_validation fixes the canonical split.
+        data._tabular_search_small_n = int(small_n)
+        data._tabular_search_seed = int(seed)
+        return
     if train_df is not None:
         if "__split__" in train_df.columns:
             data.train_df = _subsample_split_frame(

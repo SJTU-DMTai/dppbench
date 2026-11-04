@@ -80,12 +80,24 @@ def discretize(
 ) -> Pipeline:
     """Materialise a :class:`Pipeline` from the continuous parameters."""
     rng = rng or _random.Random(0)
+    if hasattr(continuous, 'tabular_bank'):
+        pipe = Pipeline(steps=copy.deepcopy(structural_steps or []))
+        pipe.steps.extend(continuous.tabular_bank.selected_steps(continuous))
+        assign_dag_structure(pipe, ctx, rng)
+        report = check_pipeline(pipe, ctx)
+        if not report.valid:
+            raise ValueError('; '.join(report.errors))
+        pipe.metadata = {'diffprep_tabular_contract': continuous.tabular_bank.contract(),
+                         'diffprep_slot_order': slot_order(continuous)}
+        return pipe
     if hasattr(continuous, 'rec_bank'):
         pipe = Pipeline(steps=copy.deepcopy(structural_steps or []))
         pipe.steps.extend(continuous.rec_bank.selected_steps(continuous))
         # The fixed history adapter is the same operation executed before search.
         pipe.steps.append(copy.deepcopy(continuous.rec_sequence_step))
+        continuous.export_candidate_raw = [s.to_dict() for s in pipe.steps]
         assign_dag_structure(pipe, ctx, rng)
+        continuous.export_candidate_yaml = pipe.to_yaml()
         report = check_pipeline(pipe, ctx)
         if not report.valid:
             raise ValueError('; '.join(report.errors))

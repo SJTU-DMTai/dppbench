@@ -20,9 +20,13 @@ def tabular_search_splits(data, config, seed, small_n=0):
     labels = pd.to_numeric(frame[data.target_col], errors='coerce')
     data.train_df = frame.loc[labels.notna() & np.isfinite(labels)].reset_index(drop=True)
     splits = data.split(val_ratio=config.get('train', {}).get('val_ratio', .2), seed=seed)
+    from dppbench.tabular_contracts import fixed_search_view
+    fixed_search_view(data, splits, 0, seed)  # fingerprint the unchanged canonical boundary
     # Keep the canonical validation partition. small_n limits training only.
     if small_n and len(splits['train']) > small_n:
         splits['train'] = splits['train'].sample(n=small_n, random_state=seed).reset_index(drop=True)
+    from dppbench.tabular_contracts import prepare_references
+    prepare_references(data, splits['train'])
     return splits
 
 

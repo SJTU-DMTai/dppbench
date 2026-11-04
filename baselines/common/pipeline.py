@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+from baselines.common.column_compaction import compact_column_steps
 
 from baselines.common.data_ctx import DataContext, is_internal_column
 from baselines.common.budget import Budget, get_active_budget
@@ -237,6 +238,7 @@ class Pipeline:
     # Serialization
     # ------------------------------------------------------------------
     def to_yaml(self) -> str:
+        compact_column_steps(self)
         body = _steps_to_dag(self.steps, self.sources, self.train_prev)
         return yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
 
@@ -263,9 +265,11 @@ class Pipeline:
         return hashlib.sha1(self.to_yaml().encode("utf-8")).hexdigest()
 
     def op_names(self) -> list[str]:
+        compact_column_steps(self)
         return [s.op for s in self.steps]
 
     def __len__(self) -> int:
+        compact_column_steps(self)
         return len(self.steps)
 
 
@@ -468,7 +472,25 @@ def validate_step_params(
             errors.append(f"{op_name} is classification-only; regression targets are not classes")
         errors.extend(_target_leakage_errors(op_name, params, ctx))
         errors.extend(_rec_id_protection_errors(op_name, params, ctx))
+        from dppbench.time_applicability import resolve_time_params
+        _, time_errors = resolve_time_params(op_name, params, ctx.data_name,
+            ctx.time_rules, ctx.history_protocol, ctx.target_col)
+        errors.extend(time_errors)
     return errors
+
+
+def _context_time_rule(ctx, col):
+    from dppbench.time_applicability import declared_clock
+    return declared_clock(ctx.data_name, col, ctx.time_rules)
+
+
+def _numeric_time_needs_rule(ctx, col, rule):
+    from pandas.api.types import is_numeric_dtype
+    numeric = any(is_numeric_dtype(table.dtypes.get(col)) for table in ctx.tables.values()
+                  if col in table.dtypes)
+    declared = isinstance(rule, dict) and (
+        bool(rule.get('format')) or ('unit' in rule and 'origin' in rule))
+    return numeric and not declared
 
 
 def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
@@ -510,6 +532,16 @@ def _pick_some(cols: list[str], rng: _random.Random, lo: int = 1, hi: int = 3) -
 
 
 def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) -> dict | None:
+    params = _build_default_params(op_name, ctx, rng)
+    if params is None:
+        return None
+    from dppbench.time_applicability import resolve_time_params
+    params, errors = resolve_time_params(op_name, params, ctx.data_name,
+        ctx.time_rules, ctx.history_protocol, ctx.target_col)
+    return None if errors else params
+
+
+def _build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) -> dict | None:
     """Return a dict of default params for ``op_name``, or ``None`` if the
     operator cannot be applied given the current context (e.g. no time column
     for ``ExtractDateTimeFeature``).
@@ -713,6 +745,11 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if not ctx.time_col:
             return None
         p["cols"] = [ctx.time_col]
+        rule = _context_time_rule(ctx, ctx.time_col)
+        if not rule or rule.get('kind') == 'ordered_step':
+            return None
+        if rule:
+            p['time_rules'] = {ctx.time_col: rule}
         return p
 
     # ---- OUTLIER ----
@@ -831,6 +868,11 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if not ctx.time_col:
             return None
         p["cols"] = [ctx.time_col]
+        rule = _context_time_rule(ctx, ctx.time_col)
+        if not rule or rule.get('kind') == 'ordered_step':
+            return None
+        if rule:
+            p['time_rules'] = {ctx.time_col: rule}
         return p
 
     # ---- FE-TimeSeries ----
@@ -952,7 +994,10 @@ def make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> PipelineSt
     params = build_default_params(op_name, ctx, rng)
     if params is None:
         return None
-    if validate_step_params(op_name, params, ctx, strict=True):
+    from dppbench.time_applicability import resolve_time_params
+    params, errors = resolve_time_params(op_name, params, ctx.data_name,
+        ctx.time_rules, ctx.history_protocol, ctx.target_col)
+    if errors or validate_step_params(op_name, params, ctx, strict=True):
         return None
     return PipelineStep(
         op=op_name,
@@ -991,6 +1036,7 @@ def assign_dag_structure(pipeline: Pipeline, ctx: DataContext, rng: _random.Rand
     integration operators as multi-input DAG nodes.
     """
     rng = rng or _random.Random()
+    compact_column_steps(pipeline)
     aux_tables = _selected_aux_tables(ctx, pipeline.steps, rng)
     sources = _source_entries_for_context(ctx, aux_tables)
     source_by_table = _table_to_source_id(sources)
@@ -1082,6 +1128,7 @@ def repair(
     ``sort_steps`` is retained for API compatibility but categories no longer
     impose an operator order.
     """
+    compact_column_steps(pipeline)
     seen = set()
     deduped: list[PipelineStep] = []
     for step in pipeline.steps:

@@ -44,10 +44,10 @@ def prepare_rec_search(data, config, seed, small_n):
     val = data.interaction_df.loc[data.interaction_df['__split__'].eq('val')]
     # Context is the full legal training partition, NOT the optimizer query sample.
     data._rec_history_reference = train[identity_cols].assign(__split__='train').copy()
-    if small_n and len(train) > small_n:
-        # Keep the established recent-history sampling strategy, within train only.
-        train = train.sort_values(time, kind='stable').tail(small_n)
-    data.interaction_df = pd.concat([train, val], ignore_index=True)
+    from dppbench.rec_partition import select_queries, persist_partition
+    select_queries(data, train_limit=small_n or None)  # DiffPrep small_n caps TRAIN only.
+    train = training_rows(data.interaction_df)
+    partition = persist_partition(data)
     # Same fixed JoinTable adapter that will be exported, before architecture search.
     structural = []
     sides = {}
@@ -66,7 +66,7 @@ def prepare_rec_search(data, config, seed, small_n):
     data.register_col_types(op.output_col_types)
     data._diffprep_sequence_step = PipelineStep('CreateSequence', params=seq_params)
     ctx = infer_data_context(data.name, data, task_type='rec')
-    audit.update(protocol=VERSION, train_rows=len(train), val_rows=len(val),
+    audit.update(protocol=VERSION, partition=partition, train_rows=len(train), val_rows=len(val),
                  history_protocol='full_training_context_query_subsample_v1',
                  history_reference_rows=len(data._rec_history_reference),
                  history_reference_sha256=hashlib.sha256(pd.util.hash_pandas_object(

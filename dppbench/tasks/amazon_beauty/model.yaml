@@ -29,6 +29,7 @@ std_test:
     min_train_interactions: 2
 
 train:
+  split_protocol: rec_event_group_split_v1
   optimizer: adam
   lr: 0.001
   weight_decay: 0.00001

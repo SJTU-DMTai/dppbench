@@ -137,20 +137,17 @@ dag:
             )
         overlap_cols = [c for c in aux.columns if c != self.key_col and c in df.columns]
         aux = aux.drop(columns=[self.key_col])
-        # result = df.merge(aux, on=tmp_key, how=self.how, suffixes=self.SUFFIXES)
         result = df.merge(aux, on=tmp_key, how=self.how, suffixes=self.SUFFIXES,
                           validate="many_to_one")
+        if (self.how == 'left' and len(result) != len(df)) or len(result) > len(df):
+            raise pd.errors.MergeError('JoinTable lookup unexpectedly expanded main rows')
         result = result.drop(columns=[tmp_key])
         right_suffix = self.SUFFIXES[1]
         for col in overlap_cols:
             aux_col = f"{col}{right_suffix}"
             if aux_col not in result.columns:
                 continue
-            # result[col] = result[col].combine_first(result[aux_col])
-            result[col] = result[col].where(
-                        result[col].notna(),
-                        result[aux_col],
-                    )
+            result[col] = result[col].combine_first(result[aux_col])
             result = result.drop(columns=[aux_col])
         return result
 
@@ -180,16 +177,17 @@ dag:
             for col, func in grouped.columns
         ]
         grouped = grouped.reset_index()
-        return df.merge(grouped, on=self.key_col, how="left")
+        result = df.merge(grouped, on=self.key_col, how="left", validate='many_to_one')
+        if len(result) != len(df):
+            raise pd.errors.MergeError('JoinTable aggregate unexpectedly changed row count')
+        return result
 
     def _transform_rec(self, df):
         result = df.copy()
         if self.user_df is not None:
-            # result = pd.merge(result, self.user_df, on=self.user_col, how=self.how)
             result = pd.merge(result, self.user_df, on=self.user_col, how=self.how,
                               validate="many_to_one")
         if self.item_df is not None:
-            # result = pd.merge(result, self.item_df, on=self.item_col, how=self.how)
             result = pd.merge(result, self.item_df, on=self.item_col, how=self.how,
                               validate="many_to_one")
         return result

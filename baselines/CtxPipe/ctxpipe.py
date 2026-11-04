@@ -310,7 +310,7 @@ class CtxPipe:
             print(f"[CtxPipe] DONE in {duration:.1f}s")
             fit_str = f"{best_fitness:.4f}" if isinstance(best_fitness, float) else "n/a"
             print(f"[CtxPipe] best fitness = {fit_str}")
-            print(f"[CtxPipe] best metrics = {best_metrics}")
+            print(f"[CtxPipe] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
             print(f"[CtxPipe] best pipeline saved to: {out_yaml}")
             print(f"[CtxPipe] q-network saved to: {weights_path}")
             print(f"[CtxPipe] unique evaluations: "

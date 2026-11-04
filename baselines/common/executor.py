@@ -155,10 +155,14 @@ class TrainingExecutor:
         data.interaction_df = frame.assign(__split__='train')
         data._skip_std_test_loading = True
         data._has_std_test = False
+        data._validation_prepared = False
+        data._prepare_validation()
+        # Separate the full, legal history reference from budgeted model queries.
+        from dppbench.rec_protocol import training_rows
+        data._rec_history_reference = training_rows(data.interaction_df)[identity_cols].copy()
         small_n = getattr(data, '_search_small_n', 0)
-        if small_n:
-            from .search_evaluator import subsample_data_inplace
-            subsample_data_inplace(data, small_n, getattr(data, '_search_seed', 42))
+        from dppbench.rec_partition import public_search_view
+        public_search_view(data, small_n)
 
     def get_current_yaml(self):
         with open(self._working_yaml, "r", encoding="utf-8") as f:
@@ -344,6 +348,7 @@ class TrainingExecutor:
             "shape": [int(frame.shape[0]), int(frame.shape[1])],
             "columns": [str(col) for col in frame.columns],
             "dtypes": {str(col): str(dtype) for col, dtype in frame.dtypes.items()},
+            "tabular_split_contract": getattr(data, '_tabular_split_contract', None),
         }
 
     @staticmethod
@@ -628,6 +633,9 @@ class TrainingExecutor:
             y_train = train_df[target_col].values
             X_val = val_df.drop(columns=drop_cols, errors="ignore")
             y_val = val_df[target_col].values
+            from dppbench.tabular_contracts import model_features
+            X_train = model_features(X_train, target_col, id_col)
+            X_val = model_features(X_val, target_col, id_col)
 
             result["train_shape"] = X_train.shape
             result["n_features"] = X_train.shape[1]
@@ -864,6 +872,14 @@ class TrainingExecutor:
             memory_checkpoint("rec.loaded")
             data.run_pre_process(os.path.abspath(self._working_yaml))
             memory_checkpoint("rec.preprocessed")
+            from dppbench.rec_partition import persist_partition
+            partition_audit = getattr(data, 'partition_audit_', None)
+            expected_partition = getattr(self, 'expected_rec_partition_sha256', None)
+            if expected_partition is not None and (partition_audit or {}).get('canonical_sha256') != expected_partition:
+                raise ValueError('HPO/final recommendation partition mismatch')
+            expected_data = getattr(self, 'expected_rec_data_files', None)
+            if expected_data is not None and (partition_audit or {}).get('data_files') != expected_data:
+                raise ValueError('HPO/final recommendation data fingerprints mismatch')
             result["execution_data"] = self._execution_profile(data)
             splits = data.split()
 
@@ -891,6 +907,7 @@ class TrainingExecutor:
             if maps is None and getattr(self, 'pipeline', None) is not None:
                 maps = self.pipeline.payload.get('adapter', {}).get('id_maps', {})
             result['category_maps_sha256'] = hashlib.sha256(json.dumps(maps or {}, sort_keys=True).encode()).hexdigest()
+            partition_audit = persist_partition(data, effective_config=cfg)
             expected = getattr(self, 'expected_rec_schema_sha256', None)
             if expected is not None and expected != result['feature_schema_sha256']:
                 raise ValueError('HPO/final recommendation feature schema mismatch')
@@ -926,7 +943,8 @@ class TrainingExecutor:
                 'implementation_sha256': implementation_manifest()['implementation_sha256'],
                 'feature_schema_sha256': result['feature_schema_sha256'],
                 'category_maps_sha256': result['category_maps_sha256'],
-                'split_audit': getattr(data, 'split_audit_', None)}
+                'split_audit': getattr(data, 'split_audit_', None),
+                'partition': partition_audit}
             if not result["metrics"]:
                 raise ValueError("Missing validation metrics; test metrics cannot replace validation fitness")
 

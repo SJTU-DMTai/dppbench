@@ -179,6 +179,8 @@ class ContinuousPipeline(nn.Module):
         beta = self.beta()
         if hasattr(self, 'rec_bank'):
             return self.rec_bank.forward(x, beta, self.alpha() if self.flex else None)
+        if hasattr(self, 'tabular_bank'):
+            return self.tabular_bank.forward(x, mask, beta, self.alpha() if self.flex else None)
         out = x
 
         if not self.flex:

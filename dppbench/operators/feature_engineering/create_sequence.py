@@ -91,7 +91,16 @@ dag:
         df = df.copy()
         sequences = [[] for _ in range(len(df))]
         positions = {}
-        for pos, uid in enumerate(df[self.user_col]):
+        from dppbench.rec_time_context import EVENT_CONTEXT, original_queries
+        users, query_times = original_queries(df, self.user_col, self.time_col)
+        # Also support transform(frame) when a previous public operator has
+        # preserved context but no separate full-training reference was passed.
+        if EVENT_CONTEXT in train:
+            train = train.copy()
+            history_users, history_times = original_queries(train, self.user_col, self.time_col)
+            train[self.user_col] = history_users
+            train[self.time_col] = history_times
+        for pos, uid in enumerate(users):
             positions.setdefault(uid, []).append(pos)
         for uid, history in train.groupby(self.user_col, sort=False, dropna=False):
             history = history.sort_values(self.time_col, kind="stable")
@@ -100,7 +109,7 @@ dag:
             times = history[self.time_col].tolist()
             items = history[self.item_col].tolist()
             for pos in positions.get(uid, []):
-                when = df[self.time_col].iloc[pos]
+                when = query_times[pos]
                 if pd.isna(when):
                     continue
                 stop = bisect.bisect_left(times, when)

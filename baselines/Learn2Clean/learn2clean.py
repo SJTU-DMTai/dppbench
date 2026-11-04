@@ -256,7 +256,7 @@ class Learn2Clean:
             print(f"[Learn2Clean] DONE in {duration:.1f}s")
             fit_str = f"{best_fitness:.4f}" if isinstance(best_fitness, float) else "n/a"
             print(f"[Learn2Clean] best fitness = {fit_str}")
-            print(f"[Learn2Clean] best metrics = {best_metrics}")
+            print(f"[Learn2Clean] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
             print(f"[Learn2Clean] best ops     = {best_pipe.op_names()}")
             print(f"[Learn2Clean] best yaml    -> {out_yaml_path}")
             print(f"[Learn2Clean] history      -> {history_path}")

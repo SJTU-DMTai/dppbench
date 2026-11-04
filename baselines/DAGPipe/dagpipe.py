@@ -9,6 +9,7 @@ import time
 import uuid
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn
 import yaml
@@ -18,7 +19,8 @@ from baselines.common.executor import TrainingExecutor
 from .evaluator import training_splits
 from .pipeline import DAGPipePipeline
 from .tabular_adapter import tabular_adapter, augment_splits
-from .runtime import InputEncoder, limited_layers, make_model, check_resources, reference_forward
+from .runtime import make_model, check_resources, reference_forward
+from .protocol_v4 import REFERENCE_ROWS, CANDIDATES, fit_input_encoder, validate_raw_features, allocate_layers, fit_tables, row_folds
 from .task_adapter import rec_adapter, rec_splits, fit_rec_schema, graph_splits
 from .performance import (clip_gradients, legacy_clip_gradients, TrainingData, ProfileWindow,
                           StepMeasurements, ResourceGuard)
@@ -33,14 +35,18 @@ class DAGPipe:
         self.model_name = model_name
         self.output_dir = Path(output_dir or Path('outputs')/'DAGPipe'/data_name)
         self.cfg = yaml.safe_load(Path(config_path or Path(__file__).with_name('config.yaml')).read_text(encoding='utf-8'))
+        if self.cfg.get('operator_space') != 'typed_public_v4':
+            raise ValueError('New DAGPipe training requires typed_public_v4; v2/v3 are replay-only')
+        if self.cfg.get('dtype', 'float64') != 'float64':
+            raise ValueError('v4 requires float64 for numerical precision and stable feature-hash folds')
         if self.cfg.get('dtype', 'float64') not in ('float32', 'float64'):
             raise ValueError('DAGPipe dtype must be float32 or float64')
         self.dtype = getattr(torch, self.cfg.get('dtype', 'float64'))
-        self.max_len = int(max_pipeline_len) if max_pipeline_len is not None else 18
-        if self.max_len < 2:
-            raise ValueError('DAGPipe max_pipeline_len must be >=2: input encoding plus operation nodes')
-        for key in ('epochs', 'batch_size', 'reference_rows', 'patience'):
-            if int(self.cfg[key]) < (2 if key in ('batch_size', 'reference_rows') else 1):
+        self.max_len = int(max_pipeline_len) if max_pipeline_len is not None else 10
+        if not 2 <= self.max_len <= 10:
+            raise ValueError('DAGPipe max_pipeline_len must be in [2, 10]')
+        for key in ('epochs', 'batch_size', 'patience'):
+            if int(self.cfg[key]) < (2 if key == 'batch_size' else 1):
                 raise ValueError(f'Invalid DAGPipe config {key}={self.cfg[key]}')
         self.eval_full = eval_full  # Final evaluation is owned by the harness.
         if float(self.cfg.get('min_delta', 0)) < 0 or int(self.cfg.get('profile_steps', 0)) < 0:
@@ -76,6 +82,8 @@ class DAGPipe:
             if task_type == 'rec':
                 adapter = rec_adapter(data, cfg)
                 splits = rec_splits(data, cfg, adapter=adapter)
+                from dppbench.rec_partition import persist_partition
+                adapter['partition'] = persist_partition(data, self.output_dir / 'partition_audits')
                 target = adapter['target']
                 columns = fit_rec_schema(adapter, splits['train'], data.col_types)
                 exclude = {target, '__split__', adapter['time'], 'sample_weight'}
@@ -111,7 +119,15 @@ class DAGPipe:
                 print('[DAGPipe inputs] ' + json.dumps(input_diagnostics, ensure_ascii=False))
             if len(train) < 2 or len(val) < 2:
                 raise ValueError('DAGPipe needs >=2 train and >=2 validation rows')
-            encoder = InputEncoder().fit(train[columns])
+            categorical_columns = {col for col, kind in (getattr(data, 'col_types', {}) or {}).items()
+                                   if kind == 'categorical'}
+            operator_space = self.cfg.get('operator_space', 'current')
+            temporal = task_type in ('rec', 'graph') or bool(getattr(data, '_sort_col', None) or adapter.get('time') or
+                            any(kind in ('timestamp', 'datetime') for kind in (getattr(data, 'col_types', {}) or {}).values()))
+            encoder = fit_input_encoder(train[columns], categorical_columns, getattr(data, 'col_types', {}))
+            validate_raw_features(train[columns], encoder.state)
+            validate_raw_features(val[columns], encoder.state)
+            fit_labels = train[target].copy()
             x_train = torch.from_numpy(encoder.transform(train[columns])).to(self.dtype)
             x_val = torch.from_numpy(encoder.transform(val[columns])).to(self.dtype)
             if budget:
@@ -138,6 +154,8 @@ class DAGPipe:
                 y_train = torch.tensor(train[target].map(mapping).to_numpy(), dtype=torch.long)
                 y_val = torch.tensor(val[target].map(mapping).to_numpy(), dtype=torch.long)
                 n_outputs = len(classes)
+                if not pd.api.types.is_numeric_dtype(fit_labels):
+                    fit_labels = fit_labels.map(mapping)
             if not torch.isfinite(y_train).all() or not torch.isfinite(y_val).all():
                 raise ValueError('DAGPipe encountered non-finite train/validation labels')
         finally:
@@ -146,11 +164,47 @@ class DAGPipe:
         preparation_seconds = time.monotonic()-started
 
         fixed_steps = 1 + len(adapter.get('ops', []))
-        if self.max_len <= fixed_steps:
+        limit = min(self.max_len, budget.max_pipeline_length or self.max_len) if budget else self.max_len
+        if limit <= fixed_steps:
             raise ValueError(f'DAGPipe {task_type} needs max_pipeline_len >= {fixed_steps + 1} '
                              'to include task adapters and a learned operation')
-        layers = limited_layers(self.max_len-fixed_steps)
-        model = make_model(layers, len(columns), self.device, self.dtype)
+        categorical = any(spec['kind'] == 'category' for spec in encoder.state)
+        v4 = operator_space == 'typed_public_v4'
+        allow_target = not temporal and (regression or n_outputs == 2)
+        folds = int(self.cfg.get('target_encoding_folds', 5))
+        if folds < 2:
+            raise ValueError('Target encoding fold count must be >=2')
+        if categorical and allow_target:
+            allow_target = len(set(row_folds(x_train.numpy(), folds, self.seed))) >= 2
+        ablate_second_robust = self.cfg.get('ablate_elliptic_second_robust_scaler', False)
+        layers = allocate_layers(
+            encoder.state, x_train.numpy(), limit-fixed_steps,
+            allow_target=allow_target, allow_frequency=not temporal,
+            task=self.data_name, ablate_elliptic_second_robust_scaler=ablate_second_robust,
+        )
+        names = [name for layer in layers for name in layer if CANDIDATES[name][0] == 'encode']
+        from baselines.common.search_cost import measured_call
+        category_state = measured_call('operator_fit.category_tables', lambda:
+            fit_tables(train[columns], fit_labels, encoder.state, x_train.numpy(), names,
+                       self.seed, folds))
+        reference_rows = self.cfg.get('elliptic_reference_rows', REFERENCE_ROWS)
+        if type(reference_rows) is not int or reference_rows < REFERENCE_ROWS:
+            raise ValueError('Invalid Elliptic reference row count')
+        if reference_rows != REFERENCE_ROWS and (
+            self.data_name != 'elliptic_bitcoin' or reference_rows > len(x_train)
+        ):
+            raise ValueError('Custom reference row counts require enough Elliptic training rows')
+        print(f'[DAGPipe] protocol={operator_space} nodes={layers} reference={min(reference_rows, len(x_train))} '
+              f'steps={fixed_steps + sum(map(len, layers))}/{limit} adapters_and_encoding={fixed_steps}')
+        if v4:
+            print('[DAGPipe] unavailable=' + json.dumps({n: reason for n, (_, enabled, reason) in CANDIDATES.items() if not enabled}))
+            if temporal:
+                print('[DAGPipe] TargetEncoder and FrequencyEncoder disabled: event-time visibility is not established')
+            elif categorical and not allow_target:
+                print('[DAGPipe] TargetEncoder skipped: requires binary/regression target and at least two nonempty feature-hash folds')
+        model = make_model(layers, len(columns), self.device, self.dtype, specs=encoder.state,
+                           category_state=category_state, scale_protocol='public_v1',
+                           operator_space=operator_space)
         predictor = nn.Sequential(nn.Linear(len(columns), int(self.cfg['hidden'])), nn.ReLU(),
                                   nn.Linear(int(self.cfg['hidden']), n_outputs)).to(device=self.device, dtype=self.dtype)
         optimizer = torch.optim.Adam(list(model.parameters())+list(predictor.parameters()),
@@ -158,8 +212,13 @@ class DAGPipe:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
         generator = torch.Generator().manual_seed(self.seed)
         # Fixed before optimization and reused by validation and deployment.
-        reference_idx = torch.randperm(len(x_train), generator=generator)[:int(self.cfg['reference_rows'])]
-        reference = x_train[reference_idx].to(self.device)
+        reference_idx = torch.randperm(len(x_train), generator=generator)[:reference_rows]
+        sampled = x_train[reference_idx]
+        numeric = [i for i, spec in enumerate(encoder.state) if spec['kind'] != 'category']
+        missing = [encoder.state[i]['column'] for i in numeric if sampled[:, i].isnan().all()]
+        if missing:
+            raise ValueError(f'DAGPipe sampled reference has no observed values for: {missing}')
+        reference = sampled.to(self.device)
         training_data = TrainingData((x_train, y_train, x_val, y_val), self.device, self.cfg, budget,
                                      parameters=list(model.parameters())+list(predictor.parameters()))
         print('[DAGPipe memory plan] ' + json.dumps(training_data.report))
@@ -295,20 +354,48 @@ class DAGPipe:
             profiler.close()
         if best_state is None:
             raise RuntimeError('DAGPipe produced no valid checkpoint')
+        frozen_nodes = None
+        freeze_verification = None
+        if v4:
+            from .protocol_v4 import freeze_statistics
+            model.load_state_dict(best_state, strict=True)
+            probe = x_val[:int(self.cfg['batch_size'])].to(self.device)
+            with torch.no_grad():
+                before_freeze = measured_call('operator_check.before_freeze', lambda: reference_forward(model, probe, reference))
+            frozen_nodes = measured_call('operator_fit.final_statistics', lambda: freeze_statistics(model, reference))
+            record_work('operator_work.final_statistics', forwarded_rows=len(reference))
+            with torch.no_grad():
+                after_freeze = measured_call('operator_check.after_freeze', lambda: reference_forward(model, probe, reference))
+            torch.testing.assert_close(before_freeze, after_freeze, rtol=1e-10, atol=1e-12)
+            freeze_verification = {'rows': len(probe), 'max_abs_diff': float((before_freeze-after_freeze).abs().max()),
+                                   'rtol': 1e-10, 'atol': 1e-12}
+            record_work('operator_work.freeze_verification', forwarded_rows=len(reference)+2*len(probe))
         payload = {
-            'format': 'dppbench.DAGPipe.reference.v2', 'task': self.data_name,
-            'seed': self.seed, 'variant': 'daghie_inductive_reference_v2',
+            'format': 'dppbench.DAGPipe.reference.v4', 'task': self.data_name,
+            'seed': self.seed, 'variant': 'typed_crossfit_full_train_v4',
             'adapter': adapter,
             'dtype': self.cfg.get('dtype', 'float64'),
             'excluded_columns': sorted(c for c in exclude if c),
             'encoder': encoder.state, 'layers': layers,
+            'category_state': category_state, 'scale_protocol': 'public_v1',
+            'operator_space': operator_space,
+            'fit_protocol': 'seeded_training_sample_16',
+            'training_rows': len(x_train),
+            'max_pipeline_len': limit,
+            'allow_target_encoding': allow_target,
+            'allow_frequency_encoding': not temporal,
+            'frozen_nodes': frozen_nodes,
             'state_dict': {k: v.detach().cpu().tolist() for k,v in best_state.items()},
-            'reference': x_train[reference_idx].tolist(),
+            'reference': sampled.tolist(),
             'cache_entries': int(self.cfg['transform_cache_entries']),
             'cache_max_mb': float(self.cfg.get('transform_cache_max_mb', 512)),
             'transform_batch_size': int(self.cfg.get('transform_batch_size', 1024)),
             'selection': {'epoch': best_epoch, 'validation_loss': best_loss},
         }
+        if ablate_second_robust:
+            payload['ablate_elliptic_second_robust_scaler'] = True
+        if reference_rows != REFERENCE_ROWS:
+            payload.update(fit_protocol='seeded_elliptic_training_sample', reference_rows=reference_rows)
         pipeline = DAGPipePipeline(payload)
         self.best_pipeline = pipeline
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -329,6 +416,14 @@ class DAGPipe:
                'timing_kind': 'synchronized phase wall time; includes Python/resource/statistics/profiler overhead',
                'search_metric': 'negative_normalized_mse' if regression else 'negative_cross_entropy',
                'budget': budget.snapshot() if budget else None}
+        if v4:
+            from .protocol_v4 import numerical_report
+            log['numerical_nodes'] = numerical_report(model)
+            log['candidate_registry'] = CANDIDATES
+            log['reference_protocol'] = 'fixed seeded sample of up to 16 legal training rows; node statistics frozen at selected weights for query-only inference'
+            log['freeze_verification'] = freeze_verification
+            log['environment'] = {'torch': torch.__version__, 'numpy': np.__version__, 'pandas': pd.__version__,
+                                  'device': str(self.device), 'cuda': torch.version.cuda}
         if input_diagnostics is not None:
             log['input_diagnostics'] = input_diagnostics
         (self.output_dir/'DAGPipe_search.json').write_text(json.dumps(log, indent=2), encoding='utf-8')

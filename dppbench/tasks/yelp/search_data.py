@@ -44,6 +44,15 @@ def load_frozen_search_interactions(data, small_n, seed):
         path = os.path.join(directory, 'interaction_frozen.parquet')
         if not os.path.isfile(path):
             raise FileNotFoundError(f'Yelp search requires frozen training data: {path}')
+        if getattr(data, '_rec_training_only', False):
+            # The executor must establish the canonical boundary on the FULL
+            # frozen pool before selecting budgeted queries. No raw reviews.
+            result = pd.read_parquet(path)
+            if '__split__' in result and not result['__split__'].eq('train').all():
+                raise ValueError('Frozen Yelp training file contains held-out partitions')
+            result['__split__'] = 'train'
+            data._rec_frozen_train_only = True
+            return result
         names = pq.ParquetFile(path).schema_arrow.names
         cols = [c for c in ('user_id', 'timestamp', '__split__') if c in names]
         metadata = pd.read_parquet(path, columns=cols)

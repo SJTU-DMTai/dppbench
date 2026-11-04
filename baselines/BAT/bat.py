@@ -436,7 +436,7 @@ class BAT:
             fit_str = (f"{reported_fitness:.4f}"
                        if isinstance(reported_fitness, float) else "n/a")
             print(f"[BAT] downstream fitness = {fit_str}")
-            print(f"[BAT] downstream metrics = {reported_metrics}")
+            print(f"[BAT] downstream metrics = {dict((k, v) for k, v in reported_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[BAT] eval error: {eval_error}")
             print(f"[BAT] best pipeline saved to: {out_yaml_path}")

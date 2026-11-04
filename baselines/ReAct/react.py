@@ -398,7 +398,7 @@ class ReAct:
             print(f"[ReAct] DONE in {duration:.1f}s")
             fit_str = f"{eval_fitness:.4f}" if isinstance(eval_fitness, float) else "n/a"
             print(f"[ReAct] downstream fitness = {fit_str}")
-            print(f"[ReAct] downstream metrics = {eval_metrics}")
+            print(f"[ReAct] downstream metrics = {dict((k, v) for k, v in eval_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[ReAct] eval error: {eval_error}")
             print(f"[ReAct] best pipeline saved to: {out_yaml_path}")

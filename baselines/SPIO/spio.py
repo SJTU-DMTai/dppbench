@@ -359,7 +359,7 @@ class SPIO:
                 f"{eval_fitness:.4f}" if isinstance(eval_fitness, float) else "n/a"
             )
             print(f"[SPIO] downstream fitness = {fit_str}")
-            print(f"[SPIO] downstream metrics = {eval_metrics}")
+            print(f"[SPIO] downstream metrics = {dict((k, v) for k, v in eval_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[SPIO] eval error: {eval_error}")
             print(f"[SPIO] best pipeline saved to: {out_yaml_path}")

@@ -7,6 +7,7 @@ from ...dataset import RecData
 
 
 class AmazonBeautyData(RecData):
+    SPLIT_PROTOCOL = 'rec_event_group_split_v1'
     INTERACTION_URL = "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2/categoryFiles/All_Beauty.json.gz"
     ITEM_URL = "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2/metaFiles2/meta_All_Beauty.json.gz"
 

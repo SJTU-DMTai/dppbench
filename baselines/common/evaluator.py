@@ -325,6 +325,10 @@ def _subsample_loaded_data(data, fraction: float, seed: int) -> None:
     import pandas as pd  # type: ignore
 
     for attr in ("train_df", "test_df", "interaction_df", "std_test_negatives_df"):
+        if attr == 'interaction_df' and getattr(data, '_rec_training_only', False):
+            # Fixed recommendation query budgets are owned by the executor;
+            # fast_train changes model training rounds, not these memberships.
+            continue
         df = getattr(data, attr, None)
         if df is not None:
             setattr(data, attr, sample_df(df))

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "${EXPS_DIR}/../.." && pwd)"
 
 DATA_DIR="${DATA_DIR:-/mnt/sdb/dengjiale/dppbench/data}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/sdb/jiaqinyi/dppbench/output/exps1_10_30}"
-GPU_ID="${GPU_ID:-2}"
+GPU_ID="${GPU_ID:-1}"
 CTXPIPE_GTE_MODEL_PATH="${CTXPIPE_GTE_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
 DEEPPREP_MODEL_PATH="${DEEPPREP_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/DeepPrep-Qwen3-8B}"
 QWEN3_MODEL_PATH="${QWEN3_MODEL_PATH:-/mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B}"
@@ -111,11 +111,10 @@ TASKS="${TASKS:-${DEFAULT_TASKS}}"
 # DEFAULT_BASELINES="SAGA BAT AutoPrep DeepPrep Learn2Clean AlphaClean Random DiffPrep CtxPipe HAIPipe FlowPipe"
 
 # baselines not based on LLMs
-DEFAULT_BASELINES="DiffPrep"
+# DEFAULT_BASELINES="DiffPrep"
 
 # baselines based on LLMs
-# DEFAULT_BASELINES="Learn2Clean AlphaClean Random DiffPrep"
-# DEFAULT_BASELINES="DAGPipe"
+DEFAULT_BASELINES="AlphaClean Random DiffPrep DAGPipe"
 
 BASELINES="${BASELINES:-${DEFAULT_BASELINES}}"
 
@@ -153,6 +152,15 @@ run_eval() {
     --deepprep_model_path "${DEEPPREP_MODEL_PATH}"
     --qwen3_model_path "${QWEN3_MODEL_PATH}"
   )
+
+  case "$baseline" in
+    CtxPipe|HAIPipe|FlowPipe)
+      cmd+=(--training_mode "${TRAINING_MODE:-finetune}"
+            --pretrained_dir "${PRETRAINED_DIR:-${REPO_ROOT}/checkpoints/pretrained}")
+      add_optional_arg cmd --finetune_frames "${FINETUNE_FRAMES:-}"
+      add_optional_arg cmd --finetune_epochs "${FINETUNE_EPOCHS:-}"
+      ;;
+  esac
 
   if [[ -n "${max_pipeline_len}" ]]; then
     cmd+=(--max_pipeline_len "${max_pipeline_len}")

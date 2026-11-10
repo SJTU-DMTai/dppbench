@@ -32,7 +32,7 @@ class FlowPipeTrainer:
         os.makedirs(self.output_dir, exist_ok=True)
         self.candidates = []
         self.history = []
-        self.policy_updates = 0
+        self.optimizer_updates = 0
 
     def train(self, num_epochs: int | None = None) -> list[dict]:
         if not self.combos:
@@ -43,7 +43,6 @@ class FlowPipeTrainer:
         epochs = max(int(num_epochs or coverage_epochs), coverage_epochs)
         history = self.history
         combo_counter = 0
-        trajectory_pool = []
         for epoch in range(epochs):
             if epoch < coverage_epochs:
                 start = epoch * self.combos_per_epoch
@@ -52,6 +51,7 @@ class FlowPipeTrainer:
                 active = self.rng.sample(shuffled, min(self.combos_per_epoch, len(shuffled)))
             rewards, losses = [], []
             for env, context in active:
+                trajectory_pool = []
                 self.agent.set_context(context)
                 for _ in range(self.trajectories_per_combo):
                     env.reset()
@@ -70,7 +70,7 @@ class FlowPipeTrainer:
                     trajectory_pool, self.updates_per_combo, self.trajectory_batch_size,
                 )
                 losses.extend(update_losses)
-                self.policy_updates += len(update_losses)
+                self.optimizer_updates += len(update_losses)
                 combo_counter += 1
                 if combo_counter % self.checkpoint_interval == 0:
                     self.agent.save(os.path.join(self.output_dir, f"combo_{combo_counter}_gfn.pt"))

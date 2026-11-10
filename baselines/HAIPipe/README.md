@@ -1,9 +1,10 @@
 # HAIPipe baseline for DPPBench
 
-This implementation trains one HAIPipe instance independently for every
-`task × downstream model` run. It preserves AIPipe reinforcement learning, HAI
-enumeration, and active-learning selection. DPPBench's shared operator space and
-YAML/DAG executor replace the upstream notebook runtime.
+This adapter supports `scratch`, `pretrained`, and `finetune` training modes.
+The default loads source-pretrained AIPipe/scorer weights, fine-tunes the policy
+on the target, then performs HAIPipe active candidate selection. The
+`pretrained` mode freezes the policy but retains original scorer online adaptation.
+See [complete training/deployment instructions](../../scripts/BASELINE_TRAINING.md).
 
 ## Method mapping
 
@@ -15,17 +16,12 @@ YAML/DAG executor replace the upstream notebook runtime.
 | Candidate selection | HAIPipe alternative evaluator and iterative AL |
 | Legality | `finalize_pipeline(...)` and `check_pipeline(...)` |
 
-A normal benchmark run starts both trainable parts from random initialization.
-The AIPipe policy is trained against the current task/model validation objective,
-then the alternative evaluator is fitted online from the actively selected HAI
-candidates. The resulting `aipipe.pt` and `alternative_evaluator.pt` files are
-saved under that run's output directory for audit and reproduction. Standard-test
-data remains unavailable during both training phases.
-
-The published upstream weights are not used by this default path because
-DPPBench's operator vocabulary and task/model protocol differ. They still require
-an explicit vocabulary/component mapping before they can be used in a separate
-transfer-learning experiment.
+Source pretraining produces `aipipe.pt` and `alternative_evaluator.pt` for each
+downstream model. Normal deployment loads both; only explicit `scratch` starts
+from random weights. Target output directories hold independent adapted weights.
+The shared action vocabulary is fixed across datasets; inapplicable and mandatory
+policy actions are masked. Frozen standard-test rows are excluded from policy
+profiles, pretraining and adaptation rewards.
 
 ## Common API usage
 
@@ -49,27 +45,12 @@ It does not maintain a private operator catalog or private parameter factory.
 - `trainer.py`: DQN replay updates at interaction-step intervals
 - `combiner.py`: HI + AI enumeration/sampling and best candidate selection
 
-## Optional cross-task pretraining
+## Cross-task pretraining
 
-`baselines/HAIPipe/pretrain_haipipe.py` remains available for ablation or transfer-learning
-experiments. It is not required by the default baseline runner. A cross-task run
-must receive an explicit training-task split; do not include any target/test task
-in `--data_names`:
-
-```bash
-python baselines/HAIPipe/pretrain_haipipe.py \
-  --data_names <training tasks> \
-  --held_out_data_names <target/test tasks> \
-  --model <model> \
-  --data_dir /mnt/sdb/dengjiale/dppbench/data \
-  --output_dir /mnt/sdb/dengjiale/dppbench/output \
-  --gpu_id <idle GPU>
-```
-
-The command writes `aipipe.pt` and `alternative_evaluator.pt` below
-`<output_dir>/HAIPipe/pretrain/<model>/`. The default per-task runner does not
-load them. Pretraining is a long-running GPU job and should normally be launched
-in tmux after checking the selected GPU.
+Use `scripts/pretrain_baselines.sh` or `scripts/pretrain_baselines.py --baseline HAIPipe`.
+The legacy `baselines/HAIPipe/pretrain_haipipe.py` delegates to the new CLI.
+Explicit held-out task sets must be disjoint from source tasks; seen-task
+pretraining is also supported and recorded in deployment provenance.
 
 ## Model alignment and necessary adaptations
 
@@ -124,8 +105,8 @@ the original six-stage layout; parameterized operators such as ScaleFeature rema
 single shared actions; the model vocabulary contains the selected downstream model;
 and shared YAML/DAG legality, validation fitness, and standard-test replay remain
 in force. We do not add private sklearn operators, expand search budgets, or alter
-shared downstream models/splits. For the default runner, policy learning and
-active candidate evaluation are both part of the task/model baseline training cost.
+shared downstream models/splits. Target policy learning (unless frozen) and active candidate evaluation are
+recorded separately from the one-time source pretraining cost.
 
 Both checkpoint contracts are now version 2. Version-1 DPPBench checkpoints are
 rejected because state/token semantics and the evaluator architecture changed.

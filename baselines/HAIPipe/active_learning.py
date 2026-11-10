@@ -79,11 +79,12 @@ class ActiveCandidateSelector:
             return
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-        targets = torch.as_tensor(labels, dtype=torch.float32)
+        device = next(model.parameters(), torch.empty(0)).device
+        targets = torch.as_tensor(labels, dtype=torch.float32, device=device)
         for _ in range(5):
             output = model(
-                torch.as_tensor(dataset_matrix[ids], dtype=torch.float32),
-                torch.as_tensor(candidate_features[ids], dtype=torch.long),
+                torch.as_tensor(dataset_matrix[ids], dtype=torch.float32, device=next(model.parameters(), torch.empty(0)).device),
+                torch.as_tensor(candidate_features[ids], dtype=torch.long, device=next(model.parameters(), torch.empty(0)).device),
             ).flatten()
             loss = nn.functional.l1_loss(output, targets)
             optimizer.zero_grad(); loss.backward(); optimizer.step()
@@ -91,8 +92,8 @@ class ActiveCandidateSelector:
     def _informative(self, dataset_matrix, candidate_features, ids: list[int]) -> list[int]:
         if not ids:
             return []
-        dataset = torch.as_tensor(dataset_matrix[ids], dtype=torch.float32)
-        pipeline = torch.as_tensor(candidate_features[ids], dtype=torch.long)
+        dataset = torch.as_tensor(dataset_matrix[ids], dtype=torch.float32, device=next(self.model.parameters(), torch.empty(0)).device)
+        pipeline = torch.as_tensor(candidate_features[ids], dtype=torch.long, device=next(self.model.parameters(), torch.empty(0)).device)
         models = [self.model, *self.committee]
         outputs = []
         for model in models:
@@ -144,7 +145,7 @@ class ActiveCandidateSelector:
                 break
             self.model.eval()
             with torch.no_grad():
-                latent = self.model.latent(torch.as_tensor(candidate_features, dtype=torch.long)).cpu().numpy()
+                latent = self.model.latent(torch.as_tensor(candidate_features, dtype=torch.long, device=next(self.model.parameters(), torch.empty(0)).device)).cpu().numpy()
             representative = self._representatives(latent, available, min(batch * 2, len(available)))
             diverse = list(representative)
             if labeled:
@@ -186,8 +187,8 @@ class ActiveCandidateSelector:
         self.model.eval()
         with torch.no_grad():
             predictions = self.model(
-                torch.as_tensor(dataset_matrix, dtype=torch.float32),
-                torch.as_tensor(candidate_features, dtype=torch.long),
+                torch.as_tensor(dataset_matrix, dtype=torch.float32, device=next(self.model.parameters(), torch.empty(0)).device),
+                torch.as_tensor(candidate_features, dtype=torch.long, device=next(self.model.parameters(), torch.empty(0)).device),
             ).flatten().cpu().numpy()
         final_count = max(1, self.k_total - batch * self.iterations)
         ranked = sorted(range(len(candidates)), key=lambda i: float(predictions[i]), reverse=True)
@@ -219,7 +220,7 @@ def pretrain_score_model(
         raise ValueError("Alternative-evaluator pretraining requires at least two labeled pipelines")
     if epochs < 1 or batch_size < 2:
         raise ValueError("ScoreNN requires positive epochs and batch_size >= 2 for BatchNorm")
-    device = next(model.parameters()).device
+    device = next(model.parameters(), torch.empty(0)).device
     dataset_tensor = torch.as_tensor(dataset_matrix, dtype=torch.float32, device=device)
     pipeline_tensor = torch.as_tensor(pipeline_matrix, dtype=torch.long, device=device)
     label_tensor = torch.as_tensor(labels, dtype=torch.float32, device=device).flatten()

@@ -23,6 +23,7 @@ class Transition:
     next_state: np.ndarray
     done: bool
     next_component: str | None = None
+    next_invalid_actions: tuple[int, ...] = ()
 
 
 class ReplayBuffer:
@@ -134,7 +135,10 @@ class HAIPipeAgent:
                 # the next component in this episode's logical pipeline.
                 for next_component in sorted({s.next_component for s in selected if not s.done}):
                     ids = [i for i, s in enumerate(selected) if not s.done and s.next_component == next_component]
-                    future[ids] = self.models[next_component](next_states[ids]).max(1).values
+                    q_next = self.models[next_component](next_states[ids])
+                    for row, i in enumerate(ids):
+                        q_next[row, list(selected[i].next_invalid_actions)] = -torch.inf
+                    future[ids] = q_next.max(1).values
                 expected = rewards + float(gamma) * future
             loss = F.mse_loss(current, expected)
             self.optimizers[component].zero_grad()
@@ -179,6 +183,7 @@ class HAIPipeAgent:
 
     def save(self, path: str, provenance: Optional[dict] = None) -> None:
         torch.save({
+            "checkpoint_metadata": getattr(self, "checkpoint_metadata", None),
             "metadata": self.metadata(),
             "provenance": dict(provenance or {}),
             "logical_model": self.logical_model.state_dict(),

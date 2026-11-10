@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 import sys
@@ -22,6 +23,7 @@ from baselines.HAIPipe.hi_pipeline import build_hi_pipeline
 from baselines.HAIPipe.pretrain import CrossTaskPretrainer, save_alternative_evaluator
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.utils import get_data_ctx
+from baselines.common.training_utils import contract, isolate_training_data
 
 
 def parse_args():
@@ -67,6 +69,7 @@ def main():
             model_name=args.model, verbose=True,
         )
         evaluator.set_evaluate_std_test(False)
+        isolate_training_data(evaluator)
         data = evaluator.load_data()
         ctx = get_data_ctx(task, data, evaluator.task_type)
         environments.append(HAIPipeEnv(
@@ -83,6 +86,10 @@ def main():
         epsilon_start=args.epsilon_start, epsilon_end=args.epsilon_end,
         epsilon_decay=args.epsilon_decay,
     )
+    expected = contract("HAIPipe", environments[0], args.model)
+    if any(contract("HAIPipe", env, args.model) != expected for env in environments):
+        raise ValueError("Source environments have incompatible agent contracts")
+    trainer.agent.checkpoint_metadata = expected
     policy_result = trainer.train(
         aipipe_path, held_out_tasks=args.held_out_data_names,
     )
@@ -105,15 +112,16 @@ def main():
         task_samples = []
         for candidate in candidates:
             result = env.evaluator.evaluate(candidate)
-            if result.success:
+            if result.success and math.isfinite(result.fitness):
                 task_samples.append((candidate, float(result.fitness)))
         if not task_samples:
             continue
         mean = sum(score for _, score in task_samples) / len(task_samples)
+        scale = max(1.0, max(abs(score - mean) for _, score in task_samples))
         for candidate, score in task_samples:
             dataset_rows.append(env.data_feature)
             pipeline_rows.append(pipeline_features(candidate, env.primitive_vocabulary))
-            labels.append(score - mean)
+            labels.append((score - mean) / scale)
 
     if len(labels) < 2:
         raise RuntimeError("Not enough successful HAI candidates to pretrain alternative evaluator")
@@ -126,12 +134,15 @@ def main():
     save_alternative_evaluator(
         model, al_path, data_dim=environments[0].data_dim,
         primitive_vocabulary=environments[0].primitive_vocabulary,
+        checkpoint_metadata=expected,
         provenance={
             "training_tasks": args.data_names,
             "held_out_tasks": args.held_out_data_names,
             "training_samples": len(labels),
         },
     )
+    for env in environments:
+        env.evaluator._executor.cleanup()
     print({
         "policy": policy_result,
         "alternative_evaluator": al_path,

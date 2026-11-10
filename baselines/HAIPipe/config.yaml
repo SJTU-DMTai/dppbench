@@ -1,4 +1,12 @@
-# HAIPipe trains a fresh policy and candidate scorer for each task/model run.
+# Three training modes; missing pretrained weights are an explicit error.
+training_mode: finetune
+pretrained_dir: checkpoints/pretrained
+pretrained_checkpoint: null
+finetune_frames: 2000
+finetune_epochs: 2
+finetune_eps_start: 0.2
+finetune_eps_end: 0.05
+# Scratch budgets; finetune and frozen deployment load shared source weights.
 max_pipeline_len: 8
 small_n: 3000
 eval_full: true
@@ -17,7 +25,7 @@ epsilon_start: 1.0
 epsilon_end: 0.4
 epsilon_decay: 500
 train_interval: 100
-# Match the paper/released policy training count for each task/model run.
+# Full scratch/source policy interaction budget.
 frames: 56000
 
 # Upstream alternative-evaluator pretraining defaults.

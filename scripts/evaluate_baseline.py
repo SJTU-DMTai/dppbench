@@ -297,6 +297,13 @@ def parse_args():
     )
     parser.add_argument("--resume_pipeline", default=None,
                         help="Saved pipeline path for any baseline; supports {task} and {model}. Never searches or rebuilds frozen data.")
+    parser.add_argument("--training_mode", choices=("scratch", "pretrained", "finetune"), default=None,
+                        help="CtxPipe/HAIPipe/FlowPipe training mode; default finetune from config")
+    parser.add_argument("--pretrained_dir", default=None, help="Pretrained checkpoint directory, grouped by baseline/model")
+    parser.add_argument("--pretrained_checkpoint", default=None, help="Explicit pretrained checkpoint; HAIPipe scorer must be alongside it")
+    parser.add_argument("--finetune_frames", type=int, default=None, help="CtxPipe/HAIPipe target interaction budget")
+    parser.add_argument("--finetune_epochs", type=int, default=None, help="FlowPipe target fine-tuning epochs")
+    parser.add_argument("--context_cache_dir", default=None, help="CtxPipe or FlowPipe embedding cache")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--baseline_config_path", default=None,
                         help="Explicit baseline YAML (e.g. short DAGPipe profiler run).")
@@ -522,6 +529,12 @@ def _run_baseline_and_eval(
                 raise ValueError(f"{baseline_name} does not support config_path")
             kwargs["config_path"] = args.baseline_config_path
         _apply_baseline_model_paths(baseline_name, kwargs, args)
+        if baseline_name in {"CtxPipe", "HAIPipe", "FlowPipe"}:
+            for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs"):
+                if getattr(args, key, None) is not None:
+                    kwargs[key] = getattr(args, key)
+            if baseline_name != "HAIPipe" and getattr(args, "context_cache_dir", None):
+                kwargs["context_cache_dir"] = args.context_cache_dir
         if conf["supports_eval_full"]:
             kwargs["eval_full"] = False
         _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
@@ -654,6 +667,8 @@ def _run_baseline_and_eval(
         std_test_primary_name = "unsupported_graph_std_test"
 
     baseline_time_kind = conf.get("time_cost_kind", "search_inference")
+    if result.get("training_mode"):
+        baseline_time_kind = "search_inference" if result["training_mode"] == "pretrained" else "training"
     construct_seconds = round(construct_time, 1) if construct_time is not None else None
     final_eval_seconds = round(eval_time, 1)
     final_inference_seconds = (
@@ -688,6 +703,10 @@ def _run_baseline_and_eval(
         "pipeline_reused": bool(resume_path),
         "pipeline_source": resume_path,
         "pipeline_sha256": pipeline_sha256,
+        "training_mode": result.get("training_mode"),
+        "training_seconds": result.get("training_seconds"),
+        "scorer_adaptation_seconds": result.get("scorer_adaptation_seconds"),
+        "training_provenance": json.dumps(result.get("training_provenance")),
         "search_fitness": (
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
@@ -780,6 +799,7 @@ def _print_json(obj: Any) -> None:
 def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
+        "training_mode", "training_provenance", "training_seconds", "scorer_adaptation_seconds",
         "task", "baseline", "model", "output_dir", "max_pipeline_len",
         "pipeline_reused", "pipeline_source", "pipeline_sha256", "rec_protocol",
         "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",

@@ -79,6 +79,7 @@ def test_environment_updates_state_preserves_skip_and_resets(monkeypatch):
 
     specs = [SimpleNamespace(op_name="ScaleFeature", category=OpCategory.PREPROCESSING),
              SimpleNamespace(op_name="SelectFeature", category=OpCategory.FEATURE_ENGINEERING)]
+    monkeypatch.setattr(module, "CATALOG", {spec.op_name: spec for spec in specs})
     monkeypatch.setattr(module, "get_available_ops", lambda _: specs)
     monkeypatch.setattr(module, "assign_dag_structure", lambda pipe, *_: pipe)
     monkeypatch.setattr(module, "check_pipeline", lambda *_, **__: SimpleNamespace(valid=True))
@@ -182,7 +183,7 @@ def test_score_pretrain_and_checkpoint_round_trip(tmp_path):
         assert torch.equal(output, restored(torch.ones(1, 4), torch.tensor([[1, 2, 0]])))
 
 
-def test_old_policy_checkpoint_is_rejected_before_loading_weights(tmp_path):
+def test_old_pretrained_checkpoint_is_rejected_before_loading_weights(tmp_path):
     import torch
     from .agent import HAIPipeAgent
     import pytest
@@ -265,7 +266,7 @@ def test_policy_round_trip_and_inference_disables_dropout(monkeypatch, tmp_path)
     action = agent.select_component("one", state)
     assert modes == [False]
     assert agent.models["one"].training
-    path = tmp_path / "policy.pt"
+    path = tmp_path / "checkpoint.pt"
     provenance = {"training_tasks": ["train"], "held_out_tasks": ["test"]}
     agent.save(str(path), provenance)
     restored = module.HAIPipeAgent(**options, seed=99)
@@ -312,7 +313,7 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
             return ai, [{"action": 0}]
 
     class FakeTrainer:
-        agent = object()
+        agent = SimpleNamespace(save=lambda *args, **kwargs: None)
 
         def __init__(self, environments, **kwargs):
             calls["trainer_envs"] = environments
@@ -326,7 +327,10 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
         def __init__(self, model, **kwargs):
             calls["selector"] = kwargs
 
-    model = object()
+    model = SimpleNamespace(to=lambda device: model)
+    monkeypatch.setattr(module, "resolved_model", lambda evaluator: "LightGBM")
+    monkeypatch.setattr(module, "contract", lambda *args: {})
+    monkeypatch.setattr(module, "freeze_agent", lambda agent: None)
     monkeypatch.setattr(module, "SearchPipelineEvaluator", FakeEvaluator)
     monkeypatch.setattr(module, "get_data_ctx", lambda *args: SimpleNamespace())
     monkeypatch.setattr(module, "build_hi_pipeline", lambda *args, **kwargs: hi)
@@ -357,7 +361,7 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
     result = module.HAIPipe(
         task_dir="/task", data_name="task", data_dir="/data",
         model_name="LightGBM", output_dir=str(output_dir),
-        eval_full=False, verbose=False,
+        eval_full=False, verbose=False, training_mode="scratch",
     ).run()
 
     assert calls["evaluator"]["model_name"] == "LightGBM"
@@ -365,15 +369,15 @@ def test_runner_trains_fresh_models_per_task_model(monkeypatch, tmp_path):
     assert calls["trainer_kwargs"]["frames"] == 56000
     assert calls["policy_save"] == (
         str(output_dir / "aipipe.pt"),
-        {"training_mode": "target_task_online"},
+        {"training_mode": "scratch"},
     )
     assert calls["rollout"] == (FakeTrainer.agent, 0.0)
     assert calls["al_save"][1] == str(output_dir / "alternative_evaluator.pt")
     provenance = calls["al_save"][2]["provenance"]
     assert provenance["training_tasks"] == ["task"]
     assert provenance["model_name"] == "LightGBM"
-    assert result["training_mode"] == "per_task_model"
-    assert result["policy_training"]["frames"] == 56000
+    assert result["training_mode"] == "scratch"
+    assert result["agent_training"]["frames"] == 56000
 
 
 def test_container_features_remain_finite():

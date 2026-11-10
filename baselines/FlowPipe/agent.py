@@ -144,12 +144,14 @@ class GFNAgent:
         return losses
 
     def save(self, path: str) -> None:
-        torch.save({"model": self.model.state_dict(), "optimizer": self.optimizer.state_dict()}, path)
+        torch.save({"model": self.model.state_dict(), "optimizer": self.optimizer.state_dict(),
+                    "checkpoint_metadata": getattr(self, "checkpoint_metadata", None),
+                    "provenance": getattr(self, "provenance", {})}, path)
 
-    def load(self, path: str) -> None:
+    def load(self, path: str, *, resume_optimizer: bool = False) -> None:
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint["model"])
-        if "optimizer" in checkpoint:
+        if resume_optimizer and "optimizer" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
 
 

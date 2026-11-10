@@ -1,4 +1,12 @@
-# DPPBench adaptation: train a fresh policy on each task; no offline checkpoint.
+# Three training modes; missing pretrained weights are an explicit error.
+training_mode: finetune
+pretrained_dir: checkpoints/pretrained
+pretrained_checkpoint: null
+finetune_frames: 2000
+finetune_epochs: 2
+finetune_eps_start: 0.2
+finetune_eps_end: 0.05
+# Scratch budgets; default deployment loads shared source weights.
 checkpoint_path: null
 train_epochs: 20
 trajectories_per_epoch: 8

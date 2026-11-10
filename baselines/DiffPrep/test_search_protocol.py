@@ -105,7 +105,7 @@ def test_berka_search_reproducible_without_reading_std_test(tmp_path, monkeypatc
     assert first['best_pipeline_yaml'] == second['best_pipeline_yaml']
     contract = json.loads((tmp_path / 'first/search_contract.json').read_text(encoding='utf-8'))
     assert contract == first['search_contract']
-    assert contract['version'] == 3
+    assert contract['version'] == 'tabular_legacy_torch_fixed_partition_v1'
     assert contract['exported_joins']
     assert contract['search_joins'] == contract['exported_joins']
     assert 'district_id' in contract['search_feature_columns'] or any(

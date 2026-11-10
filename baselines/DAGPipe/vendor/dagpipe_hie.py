@@ -77,7 +77,7 @@ class HierarchicalDAGPipe(nn.Module):
                                                   source_input=x, observe=observe)
                     except (ValueError, RuntimeError) as exc:
                         if getattr(self, 'operator_space', None) == 'typed_public_v4':
-                            raise RuntimeError(f'v4 layer={layer_idx} node={op_idx} operator={op.name}: {exc}') from exc
+                            raise RuntimeError(f'DAGPipe layer={layer_idx} node={op_idx} operator={op.name}: {exc}') from exc
                         raise
 
                 if observe is not None:
@@ -117,7 +117,7 @@ class HierarchicalDAGPipe(nn.Module):
 
             layer_outputs.append(layer_output)
             if getattr(self, 'operator_space', None) == 'typed_public_v4' and not torch.isfinite(layer_output).all():
-                raise ValueError(f'Nonfinite v4 DAG aggregate at layer {layer_idx}; no clipping applied')
+                raise ValueError(f'Nonfinite DAGPipe DAG aggregate at layer {layer_idx}; no clipping applied')
             if trace is not None:
                 trace('layer_aggregate', layer_output, layer=layer_idx)
             current_input = layer_output

@@ -146,3 +146,23 @@ python -c "from baselines.AutoPrep.auto_prep import AutoPrep; \
 # 3. CLI help
 python scripts/evaluate_baseline.py --baseline AutoPrep --help
 ```
+
+
+## 连接搜索协议 coverage_first_joins_v1
+
+连接由 JoinModel 统一生成，变换树仅生成表内操作。每个候选包含至多一个
+JoinTable，且在表内变换之前执行。修复后的连接参数必须与所选反馈边一致。
+
+初始覆盖候选使用相同的基础编码、缺失值处理参数及固定覆盖 seed，只改变连接表。
+每轮优先安排尚未尝试的可行连接，再按概率分数填充剩余候选名额。连接数超过
+单轮 n_candidates 时，覆盖分多轮进行，覆盖完成后统一更新概率。实际调用评估器后
+才记录尝试状态，执行失败保留错误，预算拒绝不计入覆盖。
+
+覆盖完成前以及最后一轮覆盖当轮均不提前停止。如果配置轮数不足，最多允许
+ceil(连接数 / n_candidates) + 1 轮，以容纳初始覆盖和一轮反馈引导搜索。
+外部评估次数及时间预算继续生效，预算耗尽时日志可显示覆盖未完成。
+
+候选使用完整 DAG 的规范化 SHA-256 签名去重，签名包含源表、算子、参数和操作顺序。
+参数字典键顺序不影响签名。算子遍历、同分排序及公共流水线修复均使用确定性顺序或
+传入的随机数生成器。日志记录 search_protocol、join_coverage，以及每个候选的
+coverage_probe、pipeline_signature 和 pipeline_yaml。修改后的实验应单独保存结果。

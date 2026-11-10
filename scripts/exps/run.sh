@@ -10,18 +10,26 @@ source scripts/exps/common.sh
 SEED_LIST="42"
 
 # TASK_LIST=(
-#   berka
-#   bike_sharing
-#   citibike_jc_hourly
-#   default_credit
-#   fraud_detection
 #   home_credit
 #   nyc_taxi_hourly
 #   polish_bankruptcy
 # )
 
 TASK_LIST=(
+  amazon_beauty
+  kuairec
+  movielens
+  elliptic_bitcoin
+  beijing_air_quality
   berka
+  bike_sharing
+  citibike_jc_hourly
+  default_credit
+  fraud_detection
+  home_credit
+  nyc_taxi_hourly
+  polish_bankruptcy
+  yelp
 )
 
 HARD_MEMORY_GIB=85

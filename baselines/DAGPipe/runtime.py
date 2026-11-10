@@ -65,7 +65,7 @@ def reference_impute(op, values, reference_rows):
 def reference_operation(op, x, reference_rows, scale_protocol=None, *,
                         unrouted_input=None, routing_weight=None, source_input=None, observe=None):
     """Fit statistics on the training reference prefix, never on query rows."""
-    from .protocol_v4 import TypedOperation
+    from .protocol import TypedOperation
     if isinstance(op, TypedOperation):
         return op.execute(x, reference_rows, source_input, unrouted_input, routing_weight)
     if isinstance(op, FrozenCategoryBranch):
@@ -141,7 +141,7 @@ def reference_operation(op, x, reference_rows, scale_protocol=None, *,
 
 
 def reference_forward(model, queries, reference):
-    if getattr(model, 'frozen_v4', False):
+    if getattr(model, 'frozen_statistics', False):
         return model(queries, reference_rows=0)
     return model(torch.cat([reference, queries], dim=0), reference_rows=len(reference))[len(reference):]
 
@@ -176,7 +176,7 @@ def make_model(layers, n_features, device='cpu', dtype=torch.float64, *,
     if not layers or any(not layer for layer in layers):
         raise ValueError('DAGPipe has empty operation layers')
     if operator_space == 'typed_public_v4':
-        from .protocol_v4 import make_typed_model
+        from .protocol import make_typed_model
         if not specs or len(specs) != n_features:
             raise ValueError('Typed DAG requires a matching feature schema')
         return make_typed_model(layers, specs, category_state or {}, device, dtype)
@@ -277,21 +277,21 @@ class FrozenTransform:
         self.model = make_model(payload['layers'], len(payload['encoder']), device, dtype,
                                 specs=payload['encoder'], category_state=payload.get('category_state'),
                                 scale_protocol=payload.get('scale_protocol'), operator_space=space)
-        self.typed_v4 = space == 'typed_public_v4'
+        self.typed_protocol = space == 'typed_public_v4'
         state = {k: torch.tensor(v, dtype=dtype, device=device)
                  for k, v in payload['state_dict'].items()}
         self.model.load_state_dict(state, strict=True)
         if space == 'typed_public_v4':
-            from .protocol_v4 import install_statistics
+            from .protocol import install_statistics
             install_statistics(self.model, payload['frozen_nodes'])
         self.model.eval()
-        self.reference = torch.tensor(payload['reference'], dtype=dtype, device='cpu' if self.typed_v4 else device)
+        self.reference = torch.tensor(payload['reference'], dtype=dtype, device='cpu' if self.typed_protocol else device)
         if self.reference.ndim != 2 or len(self.reference) < 2:
             raise ValueError('DAGPipe checkpoint requires at least two training reference rows')
         invalid = self.reference.isinf().any() or (space not in ('legacy_daghie', 'typed_public_v4') and self.reference.isnan().any())
         if self.reference.shape[1] != len(payload['encoder']) or invalid:
             raise ValueError('DAGPipe checkpoint has invalid training reference shape/values')
-        if self.typed_v4:
+        if self.typed_protocol:
             # Audit rows remain in the YAML payload. Query execution needs only
             # frozen node statistics, so do not retain a training matrix on GPU.
             self.reference = torch.empty((0, len(payload['encoder'])), dtype=dtype, device=device)
@@ -313,8 +313,8 @@ class FrozenTransform:
         started = time.perf_counter()
         check_resources()
         encoding_started = time.perf_counter()
-        if self.typed_v4:
-            from .protocol_v4 import validate_raw_features
+        if self.typed_protocol:
+            from .protocol import validate_raw_features
             validate_raw_features(frame, self.encoder.state)
         x = self.encoder.transform(frame)
         encoding_seconds = time.perf_counter()-encoding_started

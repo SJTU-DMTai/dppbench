@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import random
-import numpy as np
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Callable, List, Tuple
@@ -96,8 +94,7 @@ class DiffPrepTrainer:
     def _virtual_model_step(self) -> tuple[list[torch.Tensor], float]:
         model_params = self._params(self.surrogate)
         backup = [p.detach().clone() for p in model_params]
-        train_loss = measured_call('proxy_train.virtual', self.train_step_fn,
-                                   self.continuous, self.surrogate)
+        train_loss = measured_call('proxy_train.virtual', self.train_step_fn, self.continuous, self.surrogate)
         grads_w = self._grad_or_zero(train_loss, model_params)
         with torch.no_grad():
             for p, g in zip(model_params, grads_w):
@@ -123,45 +120,19 @@ class DiffPrepTrainer:
         #   eps * ||w|| / ||dL_val/dw||
         r = self.eps * weight_norm / norm
 
-        # Centered differences must evaluate the SAME stochastic function.
-        # Replay sampling/dropout for -r, then advance the random stream once.
-        def capture_rng():
-            return (random.getstate(), np.random.get_state(), torch.get_rng_state(),
-                    torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None)
+        with torch.no_grad():
+            for p, old, v in zip(model_params, backup, vector):
+                p.copy_(old + r * v)
+        loss_pos = measured_call('proxy_train.hvp_positive', self.train_step_fn, self.continuous, self.surrogate)
+        grad_pos = self._grad_or_zero(loss_pos, self.arch_params)
 
-        def restore_rng(state):
-            random.setstate(state[0])
-            np.random.set_state(state[1])
-            torch.set_rng_state(state[2])
-            if state[3] is not None:
-                torch.cuda.set_rng_state_all(state[3])
+        with torch.no_grad():
+            for p, old, v in zip(model_params, backup, vector):
+                p.copy_(old - r * v)
+        loss_neg = measured_call('proxy_train.hvp_negative', self.train_step_fn, self.continuous, self.surrogate)
+        grad_neg = self._grad_or_zero(loss_neg, self.arch_params)
 
-        before_rng = capture_rng()
-        after_rng = before_rng
-        buffers = [(b, b.detach().clone()) for b in self.surrogate.buffers()]
-        try:
-            with torch.no_grad():
-                for p, old, v in zip(model_params, backup, vector):
-                    p.copy_(old + r * v)
-            loss_pos = measured_call('proxy_train.hvp_positive', self.train_step_fn,
-                                     self.continuous, self.surrogate)
-            grad_pos = self._grad_or_zero(loss_pos, self.arch_params)
-            after_rng = capture_rng()
-            restore_rng(before_rng)
-            with torch.no_grad():
-                for b, old in buffers:
-                    b.copy_(old)
-                for p, old, v in zip(model_params, backup, vector):
-                    p.copy_(old - r * v)
-            loss_neg = measured_call('proxy_train.hvp_negative', self.train_step_fn,
-                                     self.continuous, self.surrogate)
-            grad_neg = self._grad_or_zero(loss_neg, self.arch_params)
-        finally:
-            self._restore_model(backup)
-            with torch.no_grad():
-                for b, old in buffers:
-                    b.copy_(old)
-            restore_rng(after_rng)
+        self._restore_model(backup)
         return [(gp - gn) / (2.0 * r) for gp, gn in zip(grad_pos, grad_neg)]
 
     def _step_arch(self) -> Tuple[float, float, float]:
@@ -170,8 +141,7 @@ class DiffPrepTrainer:
         model_params = self._params(self.surrogate)
         backup, virtual_train_loss = self._virtual_model_step()
 
-        val_loss, val_acc = measured_call('proxy_val.architecture', self.val_step_fn,
-                                         self.continuous, self.surrogate)
+        val_loss, val_acc = measured_call('proxy_val.architecture', self.val_step_fn, self.continuous, self.surrogate)
         dval_dalpha = self._grad_or_zero(val_loss, self.arch_params)
 
         if self.second_order:
@@ -193,8 +163,7 @@ class DiffPrepTrainer:
 
     def _step_inner(self) -> float:
         self.opt_w.zero_grad()
-        train_loss = measured_call('proxy_train.inner', self.train_step_fn,
-                                   self.continuous, self.surrogate)
+        train_loss = measured_call('proxy_train.inner', self.train_step_fn, self.continuous, self.surrogate)
         measured_call('gradient.backward', train_loss.backward)
         measured_call('optimizer.weights', self.opt_w.step)
         return float(train_loss.detach().cpu().item())

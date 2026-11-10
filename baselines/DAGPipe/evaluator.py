@@ -15,7 +15,7 @@ from .tabular_adapter import augment_splits
 from .task_adapter import rec_splits, rec_output, graph_splits
 
 
-def training_splits(data, config, include_std_test=False):
+def training_splits(data, config, include_std_test=False, small_n=0, seed=None):
     """Canonical task split applied to the canonical frozen training subset.
 
     In search/HPO, never read std_test.parquet (not even its labels/schema).
@@ -34,7 +34,13 @@ def training_splits(data, config, include_std_test=False):
         if not data.load_std_test_frozen():
             raise FileNotFoundError(f'DAGPipe frozen standard test missing in {std_dir}')
     train = config.get('train', {})
-    return data.split(val_ratio=train.get('val_ratio', .2), seed=train.get('seed', 42))
+    split_seed = train.get('seed', 42) if seed is None else seed
+    splits = data.split(val_ratio=train.get('val_ratio', .2), seed=split_seed)
+    if not include_std_test:
+        from dppbench.tabular_contracts import fixed_search_view, prepare_references
+        splits = fixed_search_view(data, splits, small_n, split_seed)
+        prepare_references(data, splits['train'])
+    return splits
 
 
 class DAGPipeExecutor(TrainingExecutor):

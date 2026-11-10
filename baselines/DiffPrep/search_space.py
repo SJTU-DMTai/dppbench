@@ -31,9 +31,10 @@ class ContinuousPipeline(nn.Module):
 
     ``tau`` has shape ``[slots, features, max_candidates]``.  For a soft slot,
     each feature can choose a different candidate transformation, matching the
-    original DiffPrep design. Required structural adapters have no learned
-    choices here and are executed only by the final dataframe evaluator.
-    Optional unsupported dataframe operations are excluded by the slot planner.
+    original DiffPrep design.  For hard/structural slots we cannot apply the
+    actual dataframe operator in tensor space; we keep a straight-through gate
+    so those logits remain optimisable, and the selected operator is executed by
+    the final common evaluator after discretisation.
     """
 
     def __init__(
@@ -103,8 +104,6 @@ class ContinuousPipeline(nn.Module):
     def beta(self) -> torch.Tensor:
         """Return ``[slots, features, max_candidates]`` softmax weights."""
         logits = self.tau + self._cand_mask
-        if hasattr(self, 'rec_candidate_mask'):
-            logits = logits + self.rec_candidate_mask
         beta = F.softmax(logits, dim=-1)
         forced = self._forced_index
         if (forced >= 0).any():
@@ -162,12 +161,16 @@ class ContinuousPipeline(nn.Module):
                     )
             return softmix(beta_row, outputs)
 
-        # A fixed required structural adapter is replayed in the exported YAML,
-        # not optimized here. Candidate-index scaling is not an implementation
-        # of JoinTable/row filtering and must never supply architecture gradients.
-        if not slot.mandatory or slot.n_candidates != 1:
-            raise ValueError('DiffPrep cannot optimize unsupported hard operation choices')
-        return out
+        if hard_sample and self.training:
+            logits = self.tau[slot_idx, :, : slot.n_candidates]
+            weights = F.gumbel_softmax(logits, tau=gumbel_tau, hard=True, dim=-1)
+        else:
+            weights = beta_row
+
+        idx = torch.arange(slot.n_candidates, device=out.device, dtype=out.dtype)
+        idx = idx - idx.mean()
+        gate = 1.0 + 1e-3 * torch.sum(weights.to(out.dtype) * idx.view(1, -1), dim=-1)
+        return out * gate.view(1, -1)
 
     def forward(
         self,
@@ -177,10 +180,6 @@ class ContinuousPipeline(nn.Module):
         hard_sample: bool = True,
     ) -> torch.Tensor:
         beta = self.beta()
-        if hasattr(self, 'rec_bank'):
-            return self.rec_bank.forward(x, beta, self.alpha() if self.flex else None)
-        if hasattr(self, 'tabular_bank'):
-            return self.tabular_bank.forward(x, mask, beta, self.alpha() if self.flex else None)
         out = x
 
         if not self.flex:

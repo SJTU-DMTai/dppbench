@@ -774,7 +774,7 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _print_json(obj: Any) -> None:
-    print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
+    print(json.dumps(obj, ensure_ascii=False, indent=2, default=str), flush=True)
 
 
 def _write_csv(rows: list[dict[str, Any]], path: str) -> None:

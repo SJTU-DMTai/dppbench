@@ -46,10 +46,9 @@ def graph_search_inputs(data, max_features, device, hidden_dim, tau, hard_sample
         out = continuous(feat, mask, gumbel_tau=tau, hard_sample=hard_sample)
         logits = model(out, context).reshape(-1)
         loss = F.binary_cross_entropy_with_logits(logits[selected], labels[selected])
-        partition = 'train' if selected is tr else 'val'
-        record_work('proxy_work.' + partition, forwarded_rows=len(feat),
-                    supervised_rows=train_rows if selected is tr else val_rows)
         accuracy = ((logits[selected] >= 0) == labels[selected].bool()).float().mean()
+        record_work('proxy_work.' + ('train' if selected is tr else 'val'),
+                    supervised_rows=train_rows if selected is tr else val_rows, forwarded_rows=len(feat))
         return loss, float(accuracy.detach().cpu())
 
     def train_step(continuous, model):

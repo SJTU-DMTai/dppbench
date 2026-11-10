@@ -1,25 +1,86 @@
+#!/usr/bin/env bash
 set -euo pipefail
 
-root=outputs/elliptic_ref16_vs_256
-for seed in 42 44 ; do
-  for arm in ref16 ref256; do
-    checkpoint="$root/seed${seed}/$arm/best_pipeline.yaml"
-    test -s "$checkpoint" || { echo "Missing: $checkpoint" >&2; exit 1; }
+cd "$(dirname "$0")/../.."
 
-    out="$root/final_hpo/seed${seed}/$arm"
-    mkdir -p "$out"
-    python -u scripts/evaluate_baseline.py \
-      --baseline DAGPipe \
-      --data_names elliptic_bitcoin \
-      --model GraphSAGE \
-      --data_dir /mnt/sdb/dengjiale/dppbench/data \
-      --resume_pipeline "$checkpoint" \
-      --final_hpo \
-      --seed "$seed" \
-      --gpu_id 2 \
-      --max_pipeline_len 10 \
-      --output_dir "$out" \
-      --output_csv "$out/results.csv" \
-      2>&1 | tee "$out/run.log"
+# 加载公共配置
+source scripts/exps/common.sh
+
+# 实验配置
+SEED_LIST="43"
+GPU_ID=2
+
+TASK_LIST=(
+  amazon_beauty
+  kuairec
+  movielens
+  elliptic_bitcoin
+  beijing_air_quality
+  berka
+  bike_sharing
+  citibike_jc_hourly
+  default_credit
+  fraud_detection
+  home_credit
+  nyc_taxi_hourly
+  polish_bankruptcy
+  yelp
+)
+
+BASELINES=(
+  DiffPrep
+)
+
+# TASK_LIST=(
+#   kuairec
+# )
+
+HARD_MEMORY_GIB=85
+
+LOG_DIR="logs/exp1_10_30/seed43"
+mkdir -p "$LOG_DIR"
+
+FAILED=()
+
+for seed in $SEED_LIST; do
+  for task in "${TASK_LIST[@]}"; do
+    for baseline in "${BASELINES[@]}"; do
+
+      # 每个实验单独保存日志
+      LOG="${LOG_DIR}/${task}_${baseline}_seed${seed}.log"
+
+      echo "=================================================="
+      echo "[START] task=$task baseline=$baseline seed=$seed"
+      echo "[LOG] $LOG"
+      echo "[TIME] $(date)"
+
+      # 每次执行都会启动新的 Python 进程
+      if GPU_ID="$GPU_ID" \
+          TASKS="$task" \
+          SEEDS="$seed" \
+          BASELINES="$baseline" \
+          DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
+          python scripts/run_memory_limited.py \
+            --memory-gib "$HARD_MEMORY_GIB" -- \
+            bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
+            > "$LOG" 2>&1
+      then
+        echo "[SUCCESS] task=$task baseline=$baseline seed=$seed"
+      else
+        code=$?
+        echo "[FAILED] task=$task baseline=$baseline seed=$seed exit=$code"
+        FAILED+=("$task $baseline seed=$seed exit=$code")
+      fi
+
+    done
   done
 done
+
+echo "=================================================="
+echo "[ALL DONE] $(date)"
+echo "[FAILED COUNT] ${#FAILED[@]}"
+
+if ((${#FAILED[@]} > 0)); then
+  printf '[FAILED] %s\n' "${FAILED[@]}"
+  exit 1
+fi

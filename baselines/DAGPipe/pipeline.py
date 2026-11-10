@@ -30,20 +30,20 @@ class DAGPipePipeline:
             raise ValueError('DAGPipe pipeline has no features')
         if self.payload['format'] in ('dppbench.DAGPipe.reference.v3', 'dppbench.DAGPipe.reference.v4'):
             if self.payload.get('scale_protocol') != 'public_v1':
-                raise ValueError('DAGPipe v3 checkpoint requires the public_v1 scaling protocol')
+                raise ValueError('DAGPipe checkpoint requires the public_v1 scaling protocol')
             if len(self) > 10:
-                raise ValueError('DAGPipe v3 checkpoint exceeds the 10-step budget')
+                raise ValueError('DAGPipe checkpoint exceeds the 10-step budget')
         if self.payload['format'] == 'dppbench.DAGPipe.reference.v4':
-            from .protocol_v4 import REFERENCE_ROWS, SPACE, allocate_layers
+            from .protocol import REFERENCE_ROWS, SPACE, allocate_layers
             import numpy as np
             protocol = self.payload.get('fit_protocol')
             if self.payload.get('operator_space') != SPACE or protocol not in (
                 'all_legal_training_rows', 'seeded_training_sample_16', 'seeded_elliptic_training_sample'
             ):
-                raise ValueError('Unsupported v4 fit protocol')
+                raise ValueError('Unsupported DAGPipe fit protocol')
             training_rows = self.payload.get('training_rows')
             if not isinstance(training_rows, int) or training_rows < 2:
-                raise ValueError('Invalid v4 training row count')
+                raise ValueError('Invalid DAGPipe training row count')
             expected_rows = min(training_rows, REFERENCE_ROWS) if protocol == 'seeded_training_sample_16' else training_rows
             if protocol == 'seeded_elliptic_training_sample':
                 expected_rows = self.payload.get('reference_rows')
@@ -51,16 +51,16 @@ class DAGPipePipeline:
                         or not REFERENCE_ROWS < expected_rows <= training_rows):
                     raise ValueError('Invalid Elliptic reference row count')
             if expected_rows != len(self.payload['reference']):
-                raise ValueError('v4 training reference row count mismatch')
+                raise ValueError('DAGPipe training reference row count mismatch')
             limit = self.payload.get('max_pipeline_len')
             if not isinstance(limit, int) or not 2 <= limit <= 10 or len(self) > limit:
-                raise ValueError('Invalid v4 pipeline budget')
+                raise ValueError('Invalid DAGPipe pipeline budget')
             specs = self.payload['encoder']
             if any(s.get('mean') != 0. or s.get('scale') != 1. or s.get('fill') != 0. for s in specs):
-                raise ValueError('v4 input encoding cannot hide numeric imputation or scaling')
+                raise ValueError('DAGPipe input encoding cannot hide numeric imputation or scaling')
             ablate_second_robust = self.payload.get('ablate_elliptic_second_robust_scaler', False)
             if not isinstance(ablate_second_robust, bool):
-                raise ValueError('Invalid v4 Elliptic ablation flag')
+                raise ValueError('Invalid DAGPipe Elliptic ablation flag')
             expected = allocate_layers(specs, np.array(self.payload['reference']),
                                        limit - 1 - len(self.payload.get('adapter', {}).get('ops', [])),
                                        allow_target=self.payload.get('allow_target_encoding', False),
@@ -68,12 +68,12 @@ class DAGPipePipeline:
                                        task=self.payload['task'],
                                        ablate_elliptic_second_robust_scaler=ablate_second_robust)
             if self.payload['layers'] != expected:
-                raise ValueError('v4 nodes do not match the declared type/budget allocation')
+                raise ValueError('DAGPipe nodes do not match the declared type/budget allocation')
             target = self.payload.get('category_state', {}).get('TargetEncoder')
             if target and target.get('seed') != self.payload['seed']:
                 raise ValueError('TargetEncoder fold seed mismatch')
         elif self.payload.get('operator_space') == 'typed_public_v4':
-            raise ValueError('Typed operators require a v4 checkpoint')
+            raise ValueError('Typed operators require a current-format DAGPipe checkpoint')
         # Validate names/dimensions, and all required parameters via strict load.
         from .runtime import FrozenTransform
         FrozenTransform(self.payload)

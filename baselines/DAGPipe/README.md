@@ -1,16 +1,26 @@
-# DAGPipe v4: typed public semantics and frozen weighted DAG
+# DAGPipe
 
-New training uses only `typed_public_v4`. See [V4_PROTOCOL.md](V4_PROTOCOL.md)
+New searches default to `small_n: 3000` in `config.yaml`, following the common
+TOTAL train+validation search cap. Set `small_n: 0` for full search data, or pass
+`small_n` to the Python constructor. Canonical split boundaries are fixed before
+sampling; final HPO/std-test uses the full partitions. Check `small_n`, `n_train`,
+`n_val`, and `search_partition` in `DAGPipe_search.json` to audit each run.
+
+See [the DAGPipe protocol](PROTOCOL.md)
 for the normative candidate registry, fit/freeze protocol, limits, tests and
 server acceptance command. v2/v3 implementations below are replay compatibility
 documentation, NOT alternate candidate spaces for new formal experiments.
 
-v4 retains the vendor hierarchical weighted DAG, per-feature softmax routers,
-learnable upper-triangular connections, MLP proxy objective, Adam and downstream
+The formal baseline name is `DAGPipe`. The configuration and checkpoint
+identifiers `typed_public_v4`, `dppbench.DAGPipe.reference.v4`, and
+`typed_crossfit_full_train_v4` are retained for compatibility and traceability.
+
+DAGPipe uses the vendor hierarchical weighted DAG, per-feature softmax routers,
+learnable upper-triangular connections, task-specific DiffPrep proxy models, Adam and downstream
 DPPBench evaluation. It is a documented DPPBench adaptation, not an exact
 reproduction of every author preprocessing/deployment choice.
 
-The sole active candidate definition is `protocol_v4.CANDIDATES`. Input encoding
+The sole active candidate definition is `protocol.CANDIDATES`. Input encoding
 only casts types and assigns categorical IDs; real imputer/scaler nodes consume
 the common budget. Numeric statistics use a fixed seeded sample of up to 16 training rows
 during search, then are frozen at the selected weights and serialized. Query
@@ -18,14 +28,14 @@ execution never refits or appends the reference rows. Target encoding uses
 feature-hash out-of-fold tables for batch binary/regression tasks and is skipped
 for temporal tasks. Frequency encoding is also disabled where event-time visibility is unverified.
 
-Run the offline v4 tests:
+Run the offline DAGPipe protocol tests:
 
 ```bash
-python -m unittest baselines.DAGPipe.test_protocol_v4 scripts.test_dagpipe_public_semantics -q
+python -m unittest baselines.DAGPipe.test_protocol scripts.test_dagpipe_public_semantics -q
 ```
 
 No raw data, labels, data splits, downstream models, old checkpoints or formal
-results are changed by this implementation. New v4 results require new searches;
+results are changed by this implementation. Results for the current protocol require checkpoints trained under that protocol;
 historical results remain historical and must not be pooled as the same method.
 
 # Archived v2/v3 compatibility notes
@@ -131,7 +141,7 @@ Default_Credit retains the existing per-customer monthly_history mean/max/min
 features. Search and evaluation use identical joins. No target/status or
 post-loan Berka card/order information is joined.
 
-For Berka, `DAGPipe_search.json` and the console include feature names, split
+For Berka, `DAGPipe_search.json` records feature names, split
 sizes, positive-label counts and training/validation history coverage. A separate
 validation-only ablation is available:
 
@@ -188,7 +198,8 @@ limit of 10 accommodates all shipped tasks. Too-small limits raise an error.
 Elliptic's chronological supervision masks are retained: labeled nodes through
 time step 34 train the transform, steps 35–39 select it. Unknown-label nodes and
 future nodes do not contribute supervised training loss. The search surrogate
-uses node attributes with an MLP; it does not learn graph topology. Final GNN
+uses the same two-layer GraphSAGE architecture as DiffPrep, including original
+transaction edges and all legal context nodes. It does not learn graph topology. Final GNN
 training uses the original graph edges and the transformed `feat_*` attributes.
 Node identifiers, times, labels, and unknown nodes are preserved.
 
@@ -293,3 +304,22 @@ Run all regression tests, including real downstream recovery on synthetic data:
 ```bash
 python -m pytest baselines/DAGPipe -q
 ```
+
+## DiffPrep proxy architectures (2026-11-09)
+
+New searches reuse `baselines.DiffPrep.surrogate.TabularSurrogate` (linear
+classification/regression) and `RecSurrogate` (user/item embeddings plus MLP).
+Graphs reuse the same `GNNModel(model_type="sage", num_layers=2, dropout=0)`
+architecture as DiffPrep's graph adapter. `surrogate_hidden_dim: 32` and
+`rec_emb_dim: 16` match DiffPrep defaults. `hidden` no longer controls the proxy.
+
+Only proxy architectures/loss interfaces change. DAGPipe keeps its float64
+operators, joint Adam, search budgets, train-only reference fitting and final
+pipeline evaluation. This is not DiffPrep bilevel training or identical input
+normalization. Graphs use a full legal context forward per update (and one update
+per epoch), with sampled train/val labels only; `batch_size` does not partition
+message passing. Unknown/future labels never enter the loss. Graph context and
+activation memory can be larger than the supervised small-N tensor memory plan.
+
+Check `surrogate` in the checkpoint and `DAGPipe_search.json`. Old pipelines
+replay unchanged; retrain to obtain results for the new proxy.

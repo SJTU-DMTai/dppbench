@@ -1250,9 +1250,9 @@ def finalize_pipeline(
     this before evaluating or persisting a searched pipeline.
     """
     rng = rng or _random.Random()
-    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps, rng=rng)
     truncate_optional_steps(pipeline, ctx.task_type, max_len)
-    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps, rng=rng)
     assign_dag_structure(pipeline, ctx, rng)
     return pipeline, check_pipeline(pipeline, ctx)
 

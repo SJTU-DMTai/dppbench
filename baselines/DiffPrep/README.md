@@ -1,48 +1,23 @@
+## Restored legacy search with current partitions (2026-11-08)
+
+Search logic comes from the uploaded legacy modules. Observational call/row timing
+has been added to the trainer, proxy closures and graph adapter without changing
+random draws, gradients, operators or partition membership. The orchestrator,
+which calls partition_protocol.py before search and consumes prepared train/val
+indices instead of re-splitting. Search slots, candidate catalog, hard gates,
+tensor approximations, proxy inputs/models, trainer and discretizer are legacy.
+No modern real-transform bank, fixed join override or history proxy is used.
+Partition routines retain current frozen boundaries and train-only small_n caps.
+Graph uses the uploaded legacy graph adapter and existing shared masks.
+search_contract.json records this combination and partition provenance. This does
+not assert real-transform equivalence or reproduce old numerical trajectories.
+Use a fresh output directory; retain shared dppbench modules for current boundaries.
+
 # DiffPrep Baseline
 
 Differentiable preprocessing pipeline search inspired by *DiffPrep: Differentiable Data Preprocessing Pipeline Search for Learning over Tabular Data* (SIGMOD'23, [chu-data-lab/DiffPrep](https://github.com/chu-data-lab/DiffPrep)). This implementation keeps the DiffPrep training structure, while adapting two benchmark-specific aspects: the operator space is DPPBench's shared operator catalog, and final quality is measured by DPPBench's common downstream evaluator/std-test protocol.
 
 ## Method
-
-### Explicit relational adapter (optional)
-
-The supplied `baselines/DiffPrep/config.yaml` now enables this Berka experiment:
-
-```yaml
-join_overrides:
-  berka:
-    table: order
-    key_col: account_id
-    method: agg
-    prefix: null
-    max_cols: null
-```
-
-This is an explicit experiment configuration, not a default recommendation for
-every dataset. Set `join_overrides: {}` to restore all legacy seeded choices.
-For account use `table: account, method: key`. `table`, `key_col`
-and `method` are required; `prefix` and `max_cols` are optional. Only left joins
-are supported. The selected table must have a direct join key in the context;
-key joins require a unique right key. Invalid overrides fail rather than silently
-falling back to a random table. Overrides currently support tabular tasks only.
-
-Unlisted datasets retain the previous independent `Random(seed)` adapter draw
-and candidate ordering. Old custom config files without the new key still work.
-Python callers can supply the same mapping as `DiffPrep(join_overrides=...)`.
-The candidate operators, gradient optimizer, split, sampling and model settings
-are unchanged. The existing evaluation command reads this configuration without
-additional CLI flags. Use a fresh output directory/search; reused old YAMLs do
-not apply new adapter configuration.
-
-The adapter executes before search and is copied into the exported pipeline.
-Before saving, checks compare its parameters and the serialized YAML source
-wiring with the search adapter. `search_contract.json` retains version 3 and adds
-`join_selection` (mode, seed, candidate order, actual parameters, partition row
-counts and added columns) and `join_replay_checked: true`. This asserts join
-replay only, not equivalence of all soft operators and their real counterparts.
-
-Sync `data_protocol.py`, `diffprep.py`, and `config.yaml` for runtime changes;
-also sync this README and `test_explicit_join.py` for documentation and tests.
 
 DiffPrep relaxes discrete pipeline search into continuous architecture parameters:
 
@@ -55,7 +30,7 @@ DiffPrep relaxes discrete pipeline search into continuous architecture parameter
 
 | Topic | Original DiffPrep | DPPBench implementation |
 |---|---|---|
-| Operator space | Tabular preprocessing functions: missing-value imputation, normalization, outlier cleaning, discretization | Supported tensor operators from the shared catalog; fixed structural adapters at export |
+| Operator space | Tabular preprocessing functions: missing-value imputation, normalization, outlier cleaning, discretization | Shared DPPBench operator catalog via `baselines.common.utils.get_available_ops` |
 | Tasks | Tabular classification with differentiable LR | Tabular classification with multinomial LR + recommendation tasks with a differentiable recommendation surrogate |
 | Search objective | Validation loss of the differentiable downstream model | Validation loss of the surrogate during search; final benchmark score from common downstream evaluator/std-test |
 | Final execution | DiffPrep's own transformed tensors | DPPBench YAML `Pipeline` executed by `baselines.common.evaluator` |
@@ -101,34 +76,13 @@ Outputs are written under the selected evaluation output directory, e.g. `output
 | `evaluator.py` | Thin alias for common `SearchPipelineEvaluator`. |
 | `diffprep.py` | Top-level orchestrator. |
 
-## Search protocol audit (2026-10-12)
+## Console results and search accounting
 
-This remains a DPPBench adaptation, not an exact execution-equivalent reproduction
-of all shared operators. The tabular surrogate is a single linear head; final
-LightGBM is a different optimization target. Soft forwards are approximations
-and their selected YAML operators are refitted by the shared evaluator.
-
-Unsupported optional structural operations are no longer assigned artificial
-candidate-index-dependent gates. Mixed categories retain their supported soft
-choices. Required hard adapters have no trainable choice and act as identity
-in tensor search; their real execution happens only in the exported dataframe
-pipeline. A JoinTable inserted by structural repair is therefore not a
-learned selection based on the quality of joined history features.
-
-DiffPrep now passes its seeded RNG through structural repair (including joins
-and mandatory tails). Other callers retain their existing behavior unless they
-supply the new optional rng argument. The saved `search_contract.json` and returned `search_contract`
-record version 2, actual search feature names, exported joins and the structural
-adapter policy. Inspect the join's aux_df/method/key_col before interpreting a
-low Berka score; it is not necessarily an account-only pipeline.
-
-Tabular search loads only train_frozen.parquet, validates split markers and uses
-the task's canonical train/validation split. It never opens std_test.parquet.
-small_n limits the training partition after splitting, not the validation set.
-A previous load_std_test_frozen call loaded held-out labels even though they
-were subsequently excluded; this was unnecessary access, not evidence that
-those labels contributed to the training loss.
-
-These corrections change DiffPrep search/export behavior on all supported tasks.
-Rerun its experiments rather than comparing old and new results as one version.
-No dataset-specific Berka history features were added to DiffPrep.
+Run through `python -u scripts/evaluate_baseline.py --baseline DiffPrep ...` to
+receive the shared final `[eval:full_train]` line and `run_result` JSON (omit
+`--quiet` for the evaluation line). The JSON is printed after final evaluation,
+not after each optimization epoch. SearchCost reports proxy objectives, gradients,
+optimizer steps and actual forwarded/supervised rows. It adds no CUDA sync.
+The shared driver owns std-test metrics, final train/inference times, pipeline
+hash/steps, budgets and errors. Do not expect those fields from `DiffPrep.run()`
+alone. Use current shared driver/accounting modules on the execution server.

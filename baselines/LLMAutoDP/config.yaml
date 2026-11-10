@@ -1,0 +1,11 @@
+llm_backend: api
+llm_model: null
+temperature: 0.6
+max_tokens: 8192
+timeout: 600
+n_rounds: 6
+n_candidates: 4
+max_pipeline_len: 12
+eval_full: false
+seed: 42
+fast_train: false

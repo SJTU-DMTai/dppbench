@@ -22,7 +22,6 @@ import os
 import random as _random
 import time
 import warnings
-import yaml
 from typing import Optional, Tuple
 
 import numpy as np
@@ -47,6 +46,7 @@ from .search_space import ContinuousPipeline
 from .slot_planner import make_slots
 from .surrogate import RecSurrogate, TabularSurrogate
 from .trainer import DiffPrepTrainer
+from baselines.common.search_cost import record_work
 
 
 CONFIG_KEYS = (
@@ -69,26 +69,12 @@ CONFIG_KEYS = (
     "gumbel_tau",
     "hard_sample",
     "seed",
-    "join_overrides",
 )
 
 
 # ---------------------------------------------------------------------------
 # Helpers: extract numeric feature tensors + labels from a loaded data object.
 # ---------------------------------------------------------------------------
-def _condition_tabular_output(output, train_rows):
-    """Existing surrogate z-score/clipping, AFTER the real transformations.
-
-    This is numerical conditioning for the proxy model, never a learned or
-    exported data operator. Validation/query rows cannot fit its statistics.
-    """
-    reference = output[train_rows]
-    mean = reference.mean(0)
-    std = reference.std(0, unbiased=False)
-    std = torch.where(std < 1e-6, torch.ones_like(std), std)
-    return ((output - mean) / std).clamp(-5., 5.)
-
-
 def _zscore(arr: np.ndarray) -> np.ndarray:
     """Column-wise z-score with safe std and clipping."""
     if arr.size == 0:
@@ -107,8 +93,7 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
             f"none found for dataset {ctx.data_name}."
         )
 
-    from dppbench.tabular_contracts import diagnostic_columns
-    protected = {target, ctx.id_col, ctx.time_col, '_sort_idx', *diagnostic_columns(train_df.columns, target)}
+    protected = {target, ctx.id_col, ctx.time_col, "__split__", "_sort_idx"}
     numeric_cols = [c for c in ctx.numeric_cols if c not in protected and c in train_df.columns]
     categorical_cols = [
         c for c in ctx.categorical_cols
@@ -127,8 +112,6 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
         for col in cols:
             if col in numeric_cols:
                 values = pd.to_numeric(train_df[col], errors="coerce")
-            elif pd.api.types.is_datetime64_any_dtype(train_df[col]):
-                values = pd.to_datetime(train_df[col]).astype('int64') / 1e9
             else:
                 # Official DiffPrep keeps categorical inputs and one-hot encodes
                 # them. Category codes preserve that information without
@@ -142,6 +125,11 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
 
     mask = np.isnan(feat).astype(np.float32)
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    fit = feat if fit_indices is None else feat[fit_indices]
+    mu = np.mean(fit, axis=0)
+    sd = np.std(fit, axis=0)
+    feat = (feat - mu) / np.where(sd < 1e-6, 1.0, sd)
+    feat = np.clip(feat, -5.0, 5.0).astype(np.float32)
 
     regression = getattr(ctx, "prediction_task", None) == "regression"
     if regression:
@@ -152,9 +140,8 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
         y = (y - fit_y.mean()) / max(float(fit_y.std()), 1e-6)
         classes = [0]
     else:
-        fit_labels = train_df[target] if fit_indices is None else train_df[target].iloc[fit_indices]
-        classes = sorted(pd.unique(fit_labels.dropna()))
-        y = pd.Categorical(train_df[target], categories=classes).codes.astype(np.int64)
+        y_codes, classes = pd.factorize(train_df[target], sort=True)
+        y = y_codes.astype(np.int64)
         if (y < 0).any():
             raise ValueError("DiffPrep classification targets must not be missing")
 
@@ -162,6 +149,70 @@ def _tabular_feature_tensors(data, ctx: DataContext, max_features: int | None,
     m_t = torch.tensor(mask, dtype=torch.float32, device=device)
     y_t = torch.tensor(y, dtype=torch.float32 if regression else torch.long, device=device)
     return x_t, m_t, y_t, feature_names, max(len(classes), 2)
+
+
+def _rec_feature_tensors(data, ctx: DataContext, max_features: int,
+                         device: torch.device
+                         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
+    inter = data.interaction_df
+    user_col = ctx.user_col
+    item_col = ctx.item_col
+    target = ctx.target_col
+
+    if target is None or target not in inter.columns:
+        raise RuntimeError(
+            f"DiffPrep rec surrogate needs a target column for {ctx.data_name}."
+        )
+
+    # Encode user/item ids with hash mod to keep table small.
+    n_users = max(int(inter[user_col].astype("category").cat.codes.max() + 1), 2) \
+        if user_col in inter.columns else 2
+    n_items = max(int(inter[item_col].astype("category").cat.codes.max() + 1), 2) \
+        if item_col in inter.columns else 2
+
+    if user_col in inter.columns:
+        u_codes = inter[user_col].astype("category").cat.codes.to_numpy(dtype=np.int64)
+    else:
+        u_codes = np.zeros(len(inter), dtype=np.int64)
+    if item_col in inter.columns:
+        i_codes = inter[item_col].astype("category").cat.codes.to_numpy(dtype=np.int64)
+    else:
+        i_codes = np.zeros(len(inter), dtype=np.int64)
+
+    # Context also describes side tables, which have not been joined here.
+    cols = [c for c in ctx.numeric_cols
+            if c not in (target, user_col, item_col) and c in inter.columns][:max_features]
+    if cols:
+        feat = inter[cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float32)
+    else:
+        feat = np.zeros((len(inter), 1), dtype=np.float32)
+    mask = np.isnan(feat).astype(np.float32)
+    feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    feat = _zscore(feat)
+    feat = np.clip(feat, -5.0, 5.0).astype(np.float32)
+
+    y = pd.to_numeric(inter[target], errors="coerce").to_numpy(dtype=np.float32)
+    y = np.nan_to_num(y, nan=0.0)
+    if not set(np.unique(y)).issubset({0.0, 1.0}):
+        thresh = float(np.median(y))
+        y = (y > thresh).astype(np.float32)
+
+    return (
+        torch.tensor(feat, dtype=torch.float32, device=device),
+        torch.tensor(mask, dtype=torch.float32, device=device),
+        torch.tensor(u_codes, dtype=torch.long, device=device),
+        torch.tensor(i_codes, dtype=torch.long, device=device),
+        torch.tensor(y, dtype=torch.float32, device=device),
+        n_users,
+        n_items,
+    )
+
+
+def _train_val_split(n: int, val_ratio: float = 0.3, seed: int = 42):
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(n)
+    n_val = max(int(n * val_ratio), 1)
+    return idx[n_val:], idx[:n_val]
 
 
 # ---------------------------------------------------------------------------
@@ -197,16 +248,10 @@ class DiffPrep:
         device: str = "cpu",
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
-        join_overrides: Optional[dict] = None,
     ) -> None:
-        path = config_path or default_config_path(__file__)
-        # New optional key must not invalidate existing server config files.
-        with open(path, encoding='utf-8') as f:
-            declared = yaml.safe_load(f)
-        keys = CONFIG_KEYS if isinstance(declared, dict) and 'join_overrides' in declared else tuple(
-            k for k in CONFIG_KEYS if k != 'join_overrides')
-        cfg = load_baseline_config(path, keys)
-        cfg.setdefault('join_overrides', {})
+        cfg = load_baseline_config(
+            config_path or default_config_path(__file__), CONFIG_KEYS
+        )
         n_epochs = resolve_config_value(cfg, "n_epochs", n_epochs)
         small_n = resolve_config_value(cfg, "small_n", small_n)
         lr_w = resolve_config_value(cfg, "lr_w", lr_w)
@@ -234,9 +279,6 @@ class DiffPrep:
         gumbel_tau = resolve_config_value(cfg, "gumbel_tau", gumbel_tau)
         hard_sample = resolve_config_value(cfg, "hard_sample", hard_sample)
         seed = resolve_config_value(cfg, "seed", seed)
-        self.join_overrides = resolve_config_value(cfg, 'join_overrides', join_overrides)
-        if not isinstance(self.join_overrides, dict):
-            raise ValueError('DiffPrep join_overrides must map dataset names to join configurations')
 
         self.task_dir = task_dir
         self.data_name = data_name
@@ -300,23 +342,19 @@ class DiffPrep:
         train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
-        structural_steps = []
-        join_config = self.join_overrides.get(self.data_name)
-        if join_config is not None and task_type != 'tabular':
-            raise ValueError('Explicit DiffPrep joins currently support tabular tasks only')
+        partition_audit = None
         if task_type == "tabular":
-            from .data_protocol import prepare_tabular_search
-            splits, ctx, structural_steps = prepare_tabular_search(
-                data, train_evaluator._executor.get_model_config(), ctx,
-                self.seed, self.small_n, join_config=join_config,
-            )
+            from .partition_protocol import tabular_search_splits
+            splits = tabular_search_splits(
+                data, train_evaluator._executor.get_model_config(), self.seed, self.small_n)
+            partition_audit = dict(data._tabular_split_contract)
         elif task_type == "rec":
-            from .rec_search import prepare_rec_search
-            ctx, structural_steps, rec_audit = prepare_rec_search(
+            from .partition_protocol import recommendation_search_partition
+            partition_audit = recommendation_search_partition(
                 data, train_evaluator._executor.get_model_config(), self.seed, self.small_n)
             from dppbench.rec_partition import persist_partition
-            rec_audit['partition'] = persist_partition(data, os.path.join(self.output_dir, 'partition_audits'))
-            ctx.data_name = self.data_name
+            partition_audit['partition'] = persist_partition(
+                data, os.path.join(self.output_dir, 'partition_audits'))
 
         if self.verbose:
             print("=" * 60)
@@ -345,59 +383,77 @@ class DiffPrep:
                 self.gumbel_tau, self.hard_sample,
             )
         elif task_type == "rec":
-            from .rec_search import RecTransformBank, fixed_rec_list_inputs
-            from baselines.common.pipeline import PipelineStep
-            import copy
-            rec_bank = RecTransformBank(data, ctx, slots, self.seed, flex=self.flex, max_features=self.max_features)
-            # Canonical train-fitted discrete IDs and deployed item history.
-            data.interaction_df = rec_bank.frame.copy()
-            data._remap_ids()
+            (feat, mask, u_ids, i_ids, y, n_users, n_items) = _rec_feature_tensors(
+                data, ctx, self.max_features, self.device,
+            )
+            surrogate: nn.Module = RecSurrogate(
+                n_users=n_users,
+                n_items=n_items,
+                feat_dim=feat.shape[1],
+                emb_dim=self.rec_emb_dim,
+                hidden=self.surrogate_hidden_dim,
+            ).to(self.device)
+
             frame = data.interaction_df
-            target = ctx.target_col
-            labels = pd.to_numeric(frame[target], errors="raise")
-            if labels.isna().any() or not labels.isin([0, 1]).all():
-                raise ValueError("Frozen recommendation labels must be binary and non-null")
-            feat = torch.arange(len(frame), device=self.device, dtype=torch.long).reshape(-1, 1)
-            mask = torch.zeros_like(feat)
-            u_ids = torch.tensor(frame[ctx.user_col].to_numpy(), dtype=torch.long, device=self.device)
-            i_ids = torch.tensor(frame[ctx.item_col].to_numpy(), dtype=torch.long, device=self.device)
-            y = torch.tensor(labels.to_numpy(dtype=np.float32), device=self.device)
-            from dppbench.models.inputs import pad_sequences
-            history_array, history_length_array = pad_sequences(frame['item_id_seq'].tolist(),
-                data.model_cfg.get('feature', {}).get('seq_max_len', 20))
-            histories = torch.tensor(history_array, dtype=torch.long, device=self.device)
-            history_lengths = torch.tensor(history_length_array, dtype=torch.long, device=self.device)
-            history_mask = torch.arange(histories.size(1), device=self.device).unsqueeze(0) < history_lengths.unsqueeze(1)
-            list_specs, fixed_lists = fixed_rec_list_inputs(data, self.device)
-            rec_audit['fixed_list_features'] = list_specs
-            surrogate = RecSurrogate(
-                n_users=max(len(data.category_maps_.get(ctx.user_col, {}))+1, 2),
-                n_items=max(len(data.category_maps_.get(ctx.item_col, {}))+1, 2),
-                feat_dim=rec_bank.output_dim, emb_dim=self.rec_emb_dim,
-                hidden=self.surrogate_hidden_dim, history=True,
-                list_feature_specs=list_specs).to(self.device)
+            if not frame['__split__'].isin(['train', 'val']).all():
+                raise ValueError('Recommendation search cannot include standard-test rows')
             tr_idx = np.flatnonzero(frame['__split__'].eq('train').to_numpy())
             va_idx = np.flatnonzero(frame['__split__'].eq('val').to_numpy())
+            if not len(tr_idx) or not len(va_idx):
+                raise ValueError('Prepared recommendation partitions must be nonempty')
             tr_idx_t = torch.tensor(tr_idx, dtype=torch.long, device=self.device)
             va_idx_t = torch.tensor(va_idx, dtype=torch.long, device=self.device)
 
-            from baselines.common.search_cost import record_work
+            def make_step_fn(idx_t: torch.Tensor):
+                def step(continuous: ContinuousPipeline, model: nn.Module):
+                    n = idx_t.numel()
+                    if n == 0:
+                        zero = torch.zeros((), device=self.device, requires_grad=True)
+                        return zero, 0.0
+                    bsz = min(self.batch_size, n)
+                    sel = idx_t[torch.randperm(n, device=self.device)[:bsz]]
+                    fx = feat[sel]
+                    mx = mask[sel]
+                    ux = u_ids[sel]
+                    ix = i_ids[sel]
+                    yy = y[sel]
+                    out = continuous(
+                        fx, mx,
+                        gumbel_tau=self.gumbel_tau,
+                        hard_sample=self.hard_sample,
+                    )
+                    logits = model(ux, ix, out)
+                    loss = F.binary_cross_entropy_with_logits(logits, yy)
+                    record_work('proxy_work.train', supervised_rows=len(sel), forwarded_rows=len(sel))
+                    return loss
+                return step
 
-            def rec_loss(continuous, model, indices, partition):
-                sel = indices[torch.randperm(len(indices), device=self.device)[:min(self.batch_size, len(indices))]]
-                transformed = continuous(feat[sel], mask[sel],
-                    gumbel_tau=self.gumbel_tau, hard_sample=self.hard_sample)
-                batch_lists = {name: {key: tensor[sel] for key, tensor in values.items()}
-                               for name, values in fixed_lists.items()}
-                logits = model(u_ids[sel], i_ids[sel], transformed, histories[sel],
-                               history_lengths[sel], history_mask[sel], batch_lists)
-                loss = F.binary_cross_entropy_with_logits(logits, y[sel])
-                record_work('proxy_work.' + partition, supervised_rows=len(sel), forwarded_rows=len(sel))
-                acc = ((torch.sigmoid(logits) > .5).float() == y[sel]).float().mean().item()
+            train_step = lambda c, m: make_step_fn(tr_idx_t)(c, m)
+
+            def val_step(continuous: ContinuousPipeline, model: nn.Module):
+                n = va_idx_t.numel()
+                if n == 0:
+                    z = torch.zeros((), device=self.device, requires_grad=True)
+                    return z, 0.0
+                bsz = min(self.batch_size, n)
+                sel = va_idx_t[torch.randperm(n, device=self.device)[:bsz]]
+                fx = feat[sel]
+                mx = mask[sel]
+                ux = u_ids[sel]
+                ix = i_ids[sel]
+                yy = y[sel]
+                out = continuous(
+                    fx, mx,
+                    gumbel_tau=self.gumbel_tau,
+                    hard_sample=self.hard_sample,
+                )
+                logits = model(ux, ix, out)
+                loss = F.binary_cross_entropy_with_logits(logits, yy)
+                with torch.no_grad():
+                    pred = (torch.sigmoid(logits) > 0.5).float()
+                    acc = (pred == yy).float().mean().item()
+                record_work('proxy_work.val', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss, acc
-
-            train_step = lambda c, m: rec_loss(c, m, tr_idx_t, 'train')[0]
-            val_step = lambda c, m: rec_loss(c, m, va_idx_t, 'val')
         else:
             # Use the task's frozen training pool and its own split protocol.
             # In particular, time-series validation must remain chronological.
@@ -411,17 +467,11 @@ class DiffPrep:
             feat, mask, y, feature_names, n_classes = _tabular_feature_tensors(
                 data, ctx, self.max_features, self.device, fit_indices=tr_idx,
             )
-            from .tabular_bank import TabularTransformBank
-            tabular_bank = TabularTransformBank(data, ctx, slots, data.train_df,
-                                                tr_idx, feature_names, self.seed)
-            feat, mask = tabular_bank.inputs(self.device)
             surrogate = TabularSurrogate(
-                in_dim=tabular_bank.output_dim, n_classes=n_classes, regression=regression,
+                in_dim=feat.shape[1], n_classes=n_classes, regression=regression,
             ).to(self.device)
             tr_idx_t = torch.tensor(tr_idx, dtype=torch.long, device=self.device)
             va_idx_t = torch.tensor(va_idx, dtype=torch.long, device=self.device)
-
-            from baselines.common.search_cost import record_work
 
             def train_step(continuous: ContinuousPipeline, model: nn.Module):
                 n = tr_idx_t.numel()
@@ -429,15 +479,17 @@ class DiffPrep:
                     return torch.zeros((), device=self.device, requires_grad=True)
                 bsz = min(self.batch_size, n)
                 sel = tr_idx_t[torch.randperm(n, device=self.device)[:bsz]]
+                fx = feat[sel]
+                mx = mask[sel]
                 yy = y[sel]
                 out = continuous(
-                    feat, mask,
+                    fx, mx,
                     gumbel_tau=self.gumbel_tau,
                     hard_sample=self.hard_sample,
                 )
-                logits = model(_condition_tabular_output(out, tr_idx_t)[sel].float())
+                logits = model(out)
                 loss = F.mse_loss(logits.squeeze(-1), yy) if regression else F.cross_entropy(logits, yy)
-                record_work('proxy_work.train', supervised_rows=len(sel), forwarded_rows=len(feat))
+                record_work('proxy_work.train', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss
 
             def val_step(continuous: ContinuousPipeline, model: nn.Module):
@@ -447,38 +499,32 @@ class DiffPrep:
                     return z, 0.0
                 bsz = min(self.batch_size, n)
                 sel = va_idx_t[torch.randperm(n, device=self.device)[:bsz]]
+                fx = feat[sel]
+                mx = mask[sel]
                 yy = y[sel]
                 out = continuous(
-                    feat, mask,
+                    fx, mx,
                     gumbel_tau=self.gumbel_tau,
                     hard_sample=self.hard_sample,
                 )
-                logits = model(_condition_tabular_output(out, tr_idx_t)[sel].float())
+                logits = model(out)
                 loss = F.mse_loss(logits.squeeze(-1), yy) if regression else F.cross_entropy(logits, yy)
-                record_work('proxy_work.val', supervised_rows=len(sel), forwarded_rows=len(feat))
                 with torch.no_grad():
                     if regression:
                         acc = -float(torch.sqrt(loss).item())
                     else:
                         pred = logits.argmax(dim=1)
                         acc = (pred == yy).float().mean().item()
+                record_work('proxy_work.val', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss, acc
 
         cont = ContinuousPipeline(
             slots,
             flex=self.flex,
             init_scale=self.continuous_init_scale,
-            n_features=(len(rec_bank.feature_names) if task_type == "rec" else int(feat.shape[1])),
-            feature_names=(rec_bank.feature_names if task_type == "rec" else feature_names),
+            n_features=int(feat.shape[1]),
+            feature_names=(feature_names if task_type in {"tabular", "graph"} else None),
         ).to(self.device)
-
-        if task_type == "rec":
-            cont.rec_bank = rec_bank
-            cont.register_buffer('rec_candidate_mask', torch.tensor(rec_bank.valid_mask, device=self.device))
-            cont.rec_context, cont.rec_seed, cont.rec_data = ctx, self.seed, data
-            cont.rec_sequence_step = copy.deepcopy(data._diffprep_sequence_step)
-        elif task_type == "tabular":
-            cont.tabular_bank = tabular_bank
 
         # 4) Bilevel training
         trainer = DiffPrepTrainer(
@@ -499,49 +545,7 @@ class DiffPrep:
 
         # 5) Discretise
         rng = _random.Random(self.seed)
-        try:
-            pipe = discretize(cont, slots, ctx, rng=rng, structural_steps=structural_steps)
-        except Exception as exc:
-            os.makedirs(self.output_dir, exist_ok=True)
-            torch.save({'tau': cont.tau.detach().cpu(),
-                        'theta': cont.theta.detach().cpu() if cont.theta is not None else None,
-                        'best_epoch': trainer.best_epoch},
-                       os.path.join(self.output_dir, 'failed_export_weights.pt'))
-            trainer.save_history(os.path.join(self.output_dir, 'failed_export_history.json'))
-            with open(os.path.join(self.output_dir, 'failed_export.json'), 'w', encoding='utf-8') as f:
-                json.dump({'error': str(exc), 'raw_steps': getattr(cont, 'export_candidate_raw', None),
-                           'candidate_yaml': getattr(cont, 'export_candidate_yaml', None)}, f, indent=2)
-            raise
-        if hasattr(cont, 'export_candidate_raw'):
-            pipe.metadata['diffprep_export_counts'] = {
-                'raw_steps': len(cont.export_candidate_raw), 'canonical_steps': len(pipe)}
-            with open(os.path.join(self.output_dir, 'export_audit.json'), 'w', encoding='utf-8') as f:
-                json.dump({'counts': pipe.metadata['diffprep_export_counts'],
-                           'raw_steps': cont.export_candidate_raw,
-                           'candidate_yaml': pipe.to_yaml()}, f, indent=2)
-        if task_type == 'tabular' and self.max_pipeline_len and len(pipe.steps) > self.max_pipeline_len:
-            raise ValueError('Faithful DiffPrep projection exceeds original pipeline-length budget; refusing to trim learned operators')
-        if task_type == 'tabular':
-            from .data_protocol import assert_join_replay
-            assert_join_replay(structural_steps, pipe)
-        pipe.metadata['diffprep_search_contract'] = {
-            'version': 5 if task_type == 'rec' else 'tabular_real_ops_v1',
-            'structural_operations': 'fixed_seeded_adapters_not_differentiably_optimized',
-            'structural_replay': 'same_join_params_in_search_and_export',
-            'search_joins': [s.params for s in structural_steps],
-            'search_feature_columns': list(cont.feature_names),
-            'exported_joins': [s.params for s in pipe.steps if s.op == 'JoinTable'],
-        }
-        if task_type == 'rec':
-            pipe.metadata['diffprep_search_contract'].update(rec_audit, representation=rec_bank.contract(),
-                search_joins=[step.params for step in structural_steps], join_replay_checked=True)
-        if task_type == 'tabular':
-            pipe.metadata['diffprep_search_contract']['representation'] = tabular_bank.contract()
-            pipe.metadata['diffprep_search_contract']['partition'] = data._tabular_split_contract
-            pipe.metadata['diffprep_search_contract']['feature_slot_orders'] = tabular_bank.feature_orders(cont)
-            pipe.metadata['diffprep_search_contract']['surrogate_conditioning'] = 'train_zscore_clip5_after_real_ops'
-            pipe.metadata['diffprep_search_contract']['join_selection'] = data._diffprep_join_selection
-            pipe.metadata['diffprep_search_contract']['join_replay_checked'] = True
+        pipe = discretize(cont, slots, ctx, rng=rng)
         discrete_slot_order = slot_order(cont)
         check_report = check_pipeline(pipe, ctx)
         if not check_report.valid:
@@ -550,17 +554,18 @@ class DiffPrep:
                 + "; ".join(check_report.errors)
             )
 
+        search_contract = {
+            'version': 'legacy_logic_current_partitions_v1',
+            'partition': partition_audit,
+            'search_logic': 'uploaded_legacy_slots_hard_gate_proxy_trainer_and_export',
+        }
+        with open(os.path.join(self.output_dir, 'search_contract.json'), 'w', encoding='utf-8') as f:
+            json.dump(search_contract, f, ensure_ascii=False, indent=2)
+
         # 6) Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
         with open(out_yaml_path, "w", encoding="utf-8") as f:
             f.write(pipe.to_yaml())
-        # The common Pipeline YAML does not serialize arbitrary metadata.
-        # Persist the audit explicitly rather than silently losing it at export.
-        search_contract = pipe.metadata['diffprep_search_contract']
-        with open(os.path.join(self.output_dir, 'search_contract.json'), 'w', encoding='utf-8') as f:
-            json.dump(search_contract, f, ensure_ascii=False, indent=2)
-        if self.verbose:
-            print('[DiffPrep search contract] ' + json.dumps(search_contract, ensure_ascii=False))
 
         weights_path = os.path.join(self.output_dir, "pipeline_weights.pt")
         try:
@@ -621,7 +626,7 @@ class DiffPrep:
             print(f"[DiffPrep] DONE in {duration:.1f}s")
             fit_str = f"{best_fitness:.4f}" if isinstance(best_fitness, float) else "n/a"
             print(f"[DiffPrep] best fitness = {fit_str}")
-            print(f"[DiffPrep] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
+            print(f"[DiffPrep] best metrics = {best_metrics}")
             print(f"[DiffPrep] best pipeline saved to: {out_yaml_path}")
             print(f"[DiffPrep] weights saved to: {weights_path}")
             print(f"[DiffPrep] history saved to: {history_path}")

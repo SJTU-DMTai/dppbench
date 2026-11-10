@@ -43,7 +43,7 @@ def rec_adapter(data, config):
     }
 
 
-def rec_splits(data, config, include_std_test=False, adapter=None):
+def rec_splits(data, config, include_std_test=False, adapter=None, small_n=0):
     # The original checkout uses " operators" (a leading space), so these
     # files are not necessarily importable as dppbench.operators. Respect the
     # dataset's dynamic loader; also support checkouts with the normal name.
@@ -95,6 +95,10 @@ def rec_splits(data, config, include_std_test=False, adapter=None):
                                max_len=adapter['max_len']).transform(frame)
         frame[history_length_col(sequence)] = frame[sequence].map(len).astype(float)
     data.interaction_df = frame
+    if small_n and not include_std_test:
+        from dppbench.rec_partition import public_search_view
+        public_search_view(data, small_n)
+        frame = data.interaction_df
     return {name: frame.loc[frame['__split__'].eq(name)].reset_index(drop=True)
             for name in ('train', 'val', 'std_test')}
 

@@ -1,6 +1,7 @@
+small_n: 3000  # Total search train+validation rows; 0 disables. Final HPO/test stays full.
 # Released README's daghie variant, not a claimed paper reimplementation.
 operator_space: typed_public_v4
-# v4 fits numeric nodes on a fixed seeded sample of up to 16 legal training rows.
+# DAGPipe fits numeric nodes on a fixed seeded sample of up to 16 legal training rows.
 target_encoding_folds: 5
 epochs: 200
 batch_size: 256
@@ -8,7 +9,9 @@ learning_rate: 0.01
 lambda_dag: 0.1
 lambda_sparse: 0.0001
 patience: 20
-hidden: 64
+# Same proxy architectures as DiffPrep; DAGPipe keeps joint Adam optimization.
+surrogate_hidden_dim: 32
+rec_emb_dim: 16
 # Original RobustScaler can overflow float32 gradients on tied categorical values.
 dtype: float64
 transform_cache_entries: 3

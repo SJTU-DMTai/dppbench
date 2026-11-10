@@ -21,6 +21,10 @@ class TabularTransformBank:
         self.names = list(feature_names)
         self.train_rows = np.asarray(train_rows, dtype=int)
         self.frame = frame.reset_index(drop=True).copy()
+        self.synthetic_constant = self.names == ['__constant__'] and '__constant__' not in self.frame
+        if self.synthetic_constant:
+            self.frame['__constant__'] = 0.0
+        frame = self.frame
         self.categories = {}
         self.raw_kinds = {}
         self.params = {}
@@ -61,6 +65,17 @@ class TabularTransformBank:
         self.context_columns = [c for c in frame if c not in self.names and c not in (ctx.target_col, ctx.id_col)
                                 and (c in (ctx.time_col, getattr(data, '_sort_col', None))
                                      or pd.api.types.is_datetime64_any_dtype(frame[c]))]
+        # IDs stay outside the learned operator space, but the shared downstream
+        # model retains them. Encode string IDs as fixed, train-fitted context.
+        self.context_categories = {}
+        c = ctx.id_col
+        if (c in frame and c not in self.names and c not in (ctx.target_col, ctx.time_col)
+                and not pd.api.types.is_numeric_dtype(frame[c])
+                and not pd.api.types.is_datetime64_any_dtype(frame[c])):
+            categories = pd.unique(frame.iloc[self.train_rows][c].dropna())
+            self.context_categories[c] = {value: i for i, value in enumerate(categories)}
+            if c not in self.context_columns:
+                self.context_columns.append(c)
         self.output_dim += len(self.context_columns)
         from dppbench.memory import require_memory_headroom
         require_memory_headroom(len(frame) * self.output_dim * 8 * 4, 'DiffPrep real operator blocks')
@@ -270,7 +285,10 @@ class TabularTransformBank:
         for c in self.context_columns:
             s = self.frame[c]
             from dppbench.tabular_contracts import datetime_seconds
-            values = datetime_seconds(s) if pd.api.types.is_datetime64_any_dtype(s) else pd.to_numeric(s, errors='raise')
+            if c in self.context_categories:
+                values = s.map(self.context_categories[c]).fillna(-1)
+            else:
+                values = datetime_seconds(s) if pd.api.types.is_datetime64_any_dtype(s) else pd.to_numeric(s, errors='raise')
             context.append(out.new_tensor(values.to_numpy(dtype=float))[:, None])
         return torch.cat([out, *context], dim=1) if context else out
 
@@ -299,6 +317,8 @@ class TabularTransformBank:
                         cols[col] = output[:, sl.start+k].detach().cpu().numpy()
         for k, c in enumerate(self.context_columns):
             cols[c] = output[:, self.transform_width+k].detach().cpu().numpy()
+        if self.synthetic_constant:
+            cols = {c: cols[c] for c in self.context_columns}
         return pd.DataFrame(cols)
 
     def feature_orders(self, continuous):
@@ -317,6 +337,11 @@ class TabularTransformBank:
         return orders
 
     def selected_steps(self, continuous):
+        # A proxy-only placeholder must never become an exported column name.
+        if self.synthetic_constant:
+            from baselines.common.pipeline import PipelineStep
+            return ([PipelineStep('LabelEncode', params={'cols': list(self.context_categories)})]
+                    if self.context_categories else [])
         import json
         from baselines.common.pipeline import PipelineStep
         from .discretizer import featurewise_op_names, slot_order
@@ -344,6 +369,12 @@ class TabularTransformBank:
                     if name == 'LabelEncode':
                         kinds[c] = 'numeric'
             steps.extend(groups.values())
+        if self.context_categories:
+            label_steps = [step for step in steps if step.op == 'LabelEncode']
+            if not label_steps:
+                raise ValueError('Categorical ID context requires the fixed LabelEncode stage')
+            cols = label_steps[0].params.get('cols', [])
+            label_steps[0].params['cols'] = list(dict.fromkeys(cols + list(self.context_categories)))
         return steps
 
     def contract(self):
@@ -352,5 +383,7 @@ class TabularTransformBank:
                 'reference': 'fixed_training_partition', 'feature_columns': self.names,
                 'training_reference_sha256': frame_hash(self.frame.iloc[self.train_rows]),
                 'surrogate_width': self.output_dim,
+                'fixed_categorical_context': list(self.context_categories),
+                'context_encoding': 'train_fitted_label_encode_unknown_minus_one',
                 'candidate_params': {f'{i}:{n}': p for (i, n), p in self.params.items()},
                 'expanded_outputs': True, 'query_labels_used_for_fit': False}

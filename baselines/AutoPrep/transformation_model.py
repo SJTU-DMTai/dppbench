@@ -172,7 +172,10 @@ class JoinModel:
                 self.logp[edge.name] = 30.0  # mandatory -> sigmoid≈1
                 self.mandatory_keys.add(edge.name)
         else:
-            for aux in ctx.aux_dfs:
+            for aux in sorted(ctx.aux_dfs):
+                table = ctx.tables.get(aux)
+                if table is None or not table.join_keys_to_primary:
+                    continue
                 e = JoinEdge(name=f"JoinTable({aux})", op_name="JoinTable",
                              target="both", aux_ref=aux)
                 self.edges.append(e)

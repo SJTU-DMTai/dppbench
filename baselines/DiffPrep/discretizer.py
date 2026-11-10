@@ -12,7 +12,6 @@ been omitted (e.g. ``LabelEncode`` + ``HandleMV`` for tabular data).
 from __future__ import annotations
 
 import random as _random
-import copy
 from collections import Counter
 from typing import Dict, List, Optional
 
@@ -76,39 +75,14 @@ def discretize(
     slots: List[Slot],
     ctx: DataContext,
     rng: Optional[_random.Random] = None,
-    structural_steps=None,
 ) -> Pipeline:
     """Materialise a :class:`Pipeline` from the continuous parameters."""
     rng = rng or _random.Random(0)
-    if hasattr(continuous, 'tabular_bank'):
-        pipe = Pipeline(steps=copy.deepcopy(structural_steps or []))
-        pipe.steps.extend(continuous.tabular_bank.selected_steps(continuous))
-        assign_dag_structure(pipe, ctx, rng)
-        report = check_pipeline(pipe, ctx)
-        if not report.valid:
-            raise ValueError('; '.join(report.errors))
-        pipe.metadata = {'diffprep_tabular_contract': continuous.tabular_bank.contract(),
-                         'diffprep_slot_order': slot_order(continuous)}
-        return pipe
-    if hasattr(continuous, 'rec_bank'):
-        pipe = Pipeline(steps=copy.deepcopy(structural_steps or []))
-        pipe.steps.extend(continuous.rec_bank.selected_steps(continuous))
-        # The fixed history adapter is the same operation executed before search.
-        pipe.steps.append(copy.deepcopy(continuous.rec_sequence_step))
-        continuous.export_candidate_raw = [s.to_dict() for s in pipe.steps]
-        assign_dag_structure(pipe, ctx, rng)
-        continuous.export_candidate_yaml = pipe.to_yaml()
-        report = check_pipeline(pipe, ctx)
-        if not report.valid:
-            raise ValueError('; '.join(report.errors))
-        pipe.metadata = {'diffprep_featurewise_projection': continuous.rec_bank.contract(),
-                         'diffprep_slot_order': slot_order(continuous)}
-        return pipe
     order = slot_order(continuous)
     per_feature = featurewise_op_names(continuous)
     feature_names = list(continuous.feature_names)
 
-    pipe = Pipeline(steps=copy.deepcopy(structural_steps or []))
+    pipe = Pipeline(steps=[])
     projection: dict[str, object] = {}
     for slot_idx in order:
         slot = slots[slot_idx]
@@ -123,8 +97,6 @@ def discretize(
 
         materialized = False
         for op_name, cols in groups.items():
-            if op_name == "ExtractDateTimeFeature":
-                raise ValueError("Legacy DiffPrep datetime relaxation is unsupported; rerun pipeline search")
             step = diffprep_make_step(op_name, ctx, rng)
             if step is None or "cols" not in step.params:
                 continue
@@ -152,7 +124,7 @@ def discretize(
                 "feature_choices": selected,
             }
 
-    repair(pipe, ctx.task_type, ctx, sort_steps=not continuous.flex, rng=rng)
+    repair(pipe, ctx.task_type, ctx, sort_steps=not continuous.flex)
     assign_dag_structure(pipe, ctx, rng)
 
     flex_order_repaired = False
@@ -161,7 +133,7 @@ def discretize(
         if not report.valid:
             # Operator-level and DAG legality remain part of the benchmark
             # contract. Preserve metadata if structural repair is needed.
-            repair(pipe, ctx.task_type, ctx, sort_steps=True, rng=rng)
+            repair(pipe, ctx.task_type, ctx, sort_steps=True)
             assign_dag_structure(pipe, ctx, rng)
             flex_order_repaired = True
 

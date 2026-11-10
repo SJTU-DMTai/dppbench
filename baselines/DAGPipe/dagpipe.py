@@ -20,7 +20,8 @@ from .evaluator import training_splits
 from .pipeline import DAGPipePipeline
 from .tabular_adapter import tabular_adapter, augment_splits
 from .runtime import make_model, check_resources, reference_forward
-from .protocol_v4 import REFERENCE_ROWS, CANDIDATES, fit_input_encoder, validate_raw_features, allocate_layers, fit_tables, row_folds
+from .surrogate import make_surrogate, rec_ids, graph_context
+from .protocol import REFERENCE_ROWS, CANDIDATES, fit_input_encoder, validate_raw_features, allocate_layers, cover_reference, fit_tables, row_folds
 from .task_adapter import rec_adapter, rec_splits, fit_rec_schema, graph_splits
 from .performance import (clip_gradients, legacy_clip_gradients, TrainingData, ProfileWindow,
                           StepMeasurements, ResourceGuard)
@@ -29,16 +30,19 @@ from .performance import (clip_gradients, legacy_clip_gradients, TrainingData, P
 class DAGPipe:
     def __init__(self, task_dir, data_name, data_dir=None, seed=42,
                  output_dir=None, verbose=True, device='cpu', eval_full=False,
-                 max_pipeline_len=None, model_name=None, config_path=None):
+                 max_pipeline_len=None, model_name=None, config_path=None, small_n=None):
         self.task_dir, self.data_name, self.data_dir = task_dir, data_name, data_dir
         self.seed, self.device, self.verbose = int(seed), device, verbose
         self.model_name = model_name
         self.output_dir = Path(output_dir or Path('outputs')/'DAGPipe'/data_name)
         self.cfg = yaml.safe_load(Path(config_path or Path(__file__).with_name('config.yaml')).read_text(encoding='utf-8'))
+        self.small_n = int(self.cfg.get('small_n', 3000) if small_n is None else small_n)
+        if self.small_n < 0:
+            raise ValueError('DAGPipe small_n must be nonnegative')
         if self.cfg.get('operator_space') != 'typed_public_v4':
-            raise ValueError('New DAGPipe training requires typed_public_v4; v2/v3 are replay-only')
+            raise ValueError('DAGPipe training requires the current operator space (typed_public_v4); legacy formats are replay-only')
         if self.cfg.get('dtype', 'float64') != 'float64':
-            raise ValueError('v4 requires float64 for numerical precision and stable feature-hash folds')
+            raise ValueError('DAGPipe requires float64 for numerical precision and stable feature-hash folds')
         if self.cfg.get('dtype', 'float64') not in ('float32', 'float64'):
             raise ValueError('DAGPipe dtype must be float32 or float64')
         self.dtype = getattr(torch, self.cfg.get('dtype', 'float64'))
@@ -81,7 +85,7 @@ class DAGPipe:
             adapter = {'task_type': task_type}
             if task_type == 'rec':
                 adapter = rec_adapter(data, cfg)
-                splits = rec_splits(data, cfg, adapter=adapter)
+                splits = rec_splits(data, cfg, adapter=adapter, small_n=self.small_n)
                 from dppbench.rec_partition import persist_partition
                 adapter['partition'] = persist_partition(data, self.output_dir / 'partition_audits')
                 target = adapter['target']
@@ -91,17 +95,26 @@ class DAGPipe:
                     'CreateSequence' for _ in adapter['sequences']] + ['DAGPipeRecEncoding']
             elif task_type == 'graph':
                 splits = graph_splits(data)
+                from dppbench.tabular_contracts import fixed_search_view
+                splits = fixed_search_view(data, splits, self.small_n, self.seed)
                 target = data.target_col
                 columns = [c for c in splits['train'] if c.startswith('feat_')]
                 exclude = {target, data.id_col, 'time_step', '__split__', 'sample_weight'}
             else:
-                splits = training_splits(data, cfg, include_std_test=False)
+                splits = training_splits(data, cfg, include_std_test=False,
+                                         small_n=self.small_n, seed=self.seed)
                 adapter = tabular_adapter(self.data_name)
                 adapter['task_type'] = task_type
                 splits = augment_splits(data, splits, adapter)
                 target = data.target_col
                 exclude = {target, data.id_col, 'sample_weight', '__split__', getattr(data, '_sort_col', None)}
                 columns = [c for c in splits['train'] if c not in exclude]
+            search_partition = dict(getattr(data, '_tabular_split_contract', {}))
+            if task_type == 'rec':
+                search_partition = dict(adapter['partition'])
+            if self.verbose:
+                print(f'[DAGPipe] small_n={self.small_n or "OFF"} '
+                      f'search_train={len(splits["train"])} search_val={len(splits["val"])}')
             train, val = splits['train'], splits['val']
             exclude.update(self.cfg.get('exclude_columns', {}).get(self.data_name, []))
             columns = [c for c in columns if c not in exclude]
@@ -116,7 +129,6 @@ class DAGPipe:
                         'rows_with_preloan_history': int((frame['trans__count'] > 0).sum()),
                     } for name, frame in (('train', train), ('val', val))},
                 }
-                print('[DAGPipe inputs] ' + json.dumps(input_diagnostics, ensure_ascii=False))
             if len(train) < 2 or len(val) < 2:
                 raise ValueError('DAGPipe needs >=2 train and >=2 validation rows')
             categorical_columns = {col for col, kind in (getattr(data, 'col_types', {}) or {}).items()
@@ -156,6 +168,11 @@ class DAGPipe:
                 n_outputs = len(classes)
                 if not pd.api.types.is_numeric_dtype(fit_labels):
                     fit_labels = fit_labels.map(mapping)
+            proxy_context = None
+            if task_type == 'graph':
+                proxy_context = graph_context(data, splits, columns, encoder)
+            elif task_type == 'rec':
+                proxy_context = {'train': rec_ids(train, adapter), 'val': rec_ids(val, adapter)}
             if not torch.isfinite(y_train).all() or not torch.isfinite(y_val).all():
                 raise ValueError('DAGPipe encountered non-finite train/validation labels')
         finally:
@@ -169,7 +186,7 @@ class DAGPipe:
             raise ValueError(f'DAGPipe {task_type} needs max_pipeline_len >= {fixed_steps + 1} '
                              'to include task adapters and a learned operation')
         categorical = any(spec['kind'] == 'category' for spec in encoder.state)
-        v4 = operator_space == 'typed_public_v4'
+        typed_protocol = operator_space == 'typed_public_v4'
         allow_target = not temporal and (regression or n_outputs == 2)
         folds = int(self.cfg.get('target_encoding_folds', 5))
         if folds < 2:
@@ -194,10 +211,7 @@ class DAGPipe:
             self.data_name != 'elliptic_bitcoin' or reference_rows > len(x_train)
         ):
             raise ValueError('Custom reference row counts require enough Elliptic training rows')
-        print(f'[DAGPipe] protocol={operator_space} nodes={layers} reference={min(reference_rows, len(x_train))} '
-              f'steps={fixed_steps + sum(map(len, layers))}/{limit} adapters_and_encoding={fixed_steps}')
-        if v4:
-            print('[DAGPipe] unavailable=' + json.dumps({n: reason for n, (_, enabled, reason) in CANDIDATES.items() if not enabled}))
+        if typed_protocol:
             if temporal:
                 print('[DAGPipe] TargetEncoder and FrequencyEncoder disabled: event-time visibility is not established')
             elif categorical and not allow_target:
@@ -205,17 +219,28 @@ class DAGPipe:
         model = make_model(layers, len(columns), self.device, self.dtype, specs=encoder.state,
                            category_state=category_state, scale_protocol='public_v1',
                            operator_space=operator_space)
-        predictor = nn.Sequential(nn.Linear(len(columns), int(self.cfg['hidden'])), nn.ReLU(),
-                                  nn.Linear(int(self.cfg['hidden']), n_outputs)).to(device=self.device, dtype=self.dtype)
+        predictor, surrogate_name = make_surrogate(
+            task_type, len(columns), n_outputs, regression, self.cfg, adapter, self.device, self.dtype)
+        if task_type == 'graph':
+            proxy_context = {key: value.to(device=self.device, dtype=self.dtype if key == 'features' else value.dtype)
+                             if isinstance(value, torch.Tensor) else value
+                             for key, value in proxy_context.items()}
+        print(f'[DAGPipe] surrogate={surrogate_name}')
         optimizer = torch.optim.Adam(list(model.parameters())+list(predictor.parameters()),
                                      lr=float(self.cfg['learning_rate']))
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
         generator = torch.Generator().manual_seed(self.seed)
         # Fixed before optimization and reused by validation and deployment.
-        reference_idx = torch.randperm(len(x_train), generator=generator)[:reference_rows]
-        sampled = x_train[reference_idx]
+        permutation = torch.randperm(len(x_train), generator=generator)
+        sampled = x_train[permutation[:reference_rows]]
         numeric = [i for i, spec in enumerate(encoder.state) if spec['kind'] != 'category']
+        reference_sampling = None
         missing = [encoder.state[i]['column'] for i in numeric if sampled[:, i].isnan().all()]
+        if missing and self.data_name == 'fraud_detection':
+            indices = cover_reference(x_train.numpy(), encoder.state, permutation.numpy(), reference_rows)
+            sampled = x_train[indices]
+            reference_sampling = {'strategy': 'seeded_greedy_training_coverage', 'initially_missing': missing}
+            missing = [encoder.state[i]['column'] for i in numeric if sampled[:, i].isnan().all()]
         if missing:
             raise ValueError(f'DAGPipe sampled reference has no observed values for: {missing}')
         reference = sampled.to(self.device)
@@ -230,7 +255,26 @@ class DAGPipe:
         from baselines.common.search_cost import measured_call, record_work
 
         def task_loss(z, y):
+            if task_type in ('rec', 'graph'):
+                return nn.functional.binary_cross_entropy_with_logits(z.reshape(-1), y.to(self.dtype))
             return nn.functional.mse_loss(z.squeeze(-1), y) if regression else nn.functional.cross_entropy(z, y)
+
+        def proxy_logits(x, idx, validation):
+            part = 'val' if validation else 'train'
+            if task_type == 'graph':
+                # Full context participates in messages; only selected labels enter loss.
+                transformed = reference_forward(model, proxy_context['features'], reference)
+                logits = predictor(transformed, proxy_context).reshape(-1)
+                return logits[proxy_context[part][idx.to(self.device) if isinstance(idx, torch.Tensor) else idx]]
+            transformed = reference_forward(model, x, reference)
+            if task_type == 'rec':
+                cpu_idx = idx.cpu() if isinstance(idx, torch.Tensor) else idx
+                users, items = (values[cpu_idx].to(self.device) for values in proxy_context[part])
+                return predictor(users, items, transformed)
+            return predictor(transformed)
+
+        def forwarded_rows(query_rows):
+            return (proxy_context['num_nodes'] if task_type == 'graph' else query_rows) + len(reference)
 
         batch_size = int(self.cfg['batch_size'])
         profiler = ProfileWindow(self.cfg.get('profile_steps', 0), self.device, self.output_dir)
@@ -261,7 +305,7 @@ class DAGPipe:
                 model.train(); predictor.train()
                 perm = training_data.indices(torch.randperm(len(x_train), generator=generator))
                 total_train = torch.zeros((), dtype=torch.float64, device=self.device)
-                for idx in perm.split(batch_size):
+                for idx in ([perm] if task_type == 'graph' else perm.split(batch_size)):
                     measurements.enabled = bool(self.diagnostic_steps or profiler.profiler is not None)
                     with measurements.scope('resource_check'):
                         resources()
@@ -269,9 +313,9 @@ class DAGPipe:
                         x, y = training_data.batch(False, idx)
                     with measurements.scope('forward'):
                         loss = measured_call('proxy_train.joint', lambda:
-                            task_loss(predictor(reference_forward(model, x, reference)), y))
+                            task_loss(proxy_logits(x, idx, False), y))
                         record_work('proxy_work.train', supervised_rows=len(y),
-                                    forwarded_rows=len(y) + len(reference))
+                                    forwarded_rows=forwarded_rows(len(y)))
                         sparse = torch.triu(torch.sigmoid(model.layer_adj_logits), diagonal=1).sum()
                         sparse = sparse + sum(torch.triu(torch.sigmoid(a), diagonal=1).sum() for a in model.intra_adj_logits)
                         loss = loss + float(self.cfg['lambda_sparse'])*sparse
@@ -312,13 +356,14 @@ class DAGPipe:
                 total_val = torch.zeros((), dtype=torch.float64, device=self.device)
                 val_finite = torch.ones((), dtype=torch.bool, device=self.device)
                 with torch.no_grad():
-                    for start in range(0, len(x_val), batch_size):
+                    for start in range(0, len(x_val), len(x_val) if task_type == 'graph' else batch_size):
                         resources()
-                        x, y = training_data.batch(True, slice(start, start+batch_size))
+                        val_idx = slice(start, start + (len(x_val) if task_type == 'graph' else batch_size))
+                        x, y = training_data.batch(True, val_idx)
                         loss = measured_call('proxy_val.selection', lambda:
-                            task_loss(predictor(reference_forward(model, x, reference)), y))
+                            task_loss(proxy_logits(x, val_idx, True), y))
                         record_work('proxy_work.val', supervised_rows=len(y),
-                                    forwarded_rows=len(y) + len(reference))
+                                    forwarded_rows=forwarded_rows(len(y)))
                         if self.legacy_sync and not torch.isfinite(loss):
                             raise RuntimeError('DAGPipe non-finite validation loss')
                         val_finite &= torch.isfinite(loss)
@@ -356,8 +401,8 @@ class DAGPipe:
             raise RuntimeError('DAGPipe produced no valid checkpoint')
         frozen_nodes = None
         freeze_verification = None
-        if v4:
-            from .protocol_v4 import freeze_statistics
+        if typed_protocol:
+            from .protocol import freeze_statistics
             model.load_state_dict(best_state, strict=True)
             probe = x_val[:int(self.cfg['batch_size'])].to(self.device)
             with torch.no_grad():
@@ -381,6 +426,9 @@ class DAGPipe:
             'operator_space': operator_space,
             'fit_protocol': 'seeded_training_sample_16',
             'training_rows': len(x_train),
+            'surrogate': surrogate_name,
+            'search_small_n': self.small_n,
+            'search_partition': search_partition,
             'max_pipeline_len': limit,
             'allow_target_encoding': allow_target,
             'allow_frequency_encoding': not temporal,
@@ -401,8 +449,10 @@ class DAGPipe:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         pipeline.save(self.output_dir/'best_pipeline.yaml')
         log = {'variant': payload['variant'], 'config': self.cfg, 'seed': self.seed,
-               'task_type': task_type,
-               'surrogate': 'node_attribute_mlp' if task_type == 'graph' else 'feature_mlp',
+               'task_type': task_type, 'small_n': self.small_n,
+               'search_partition': search_partition,
+               'surrogate': surrogate_name,
+               'proxy_graph_nodes': proxy_context['num_nodes'] if task_type == 'graph' else None,
                'n_train': len(x_train), 'n_val': len(x_val), 'n_features': len(columns),
                'epochs_completed': len(history), 'architecture_steps': updates,
                'n_unique_evaluations': 0, 'best_epoch': best_epoch,
@@ -416,8 +466,8 @@ class DAGPipe:
                'timing_kind': 'synchronized phase wall time; includes Python/resource/statistics/profiler overhead',
                'search_metric': 'negative_normalized_mse' if regression else 'negative_cross_entropy',
                'budget': budget.snapshot() if budget else None}
-        if v4:
-            from .protocol_v4 import numerical_report
+        if typed_protocol:
+            from .protocol import numerical_report
             log['numerical_nodes'] = numerical_report(model)
             log['candidate_registry'] = CANDIDATES
             log['reference_protocol'] = 'fixed seeded sample of up to 16 legal training rows; node statistics frozen at selected weights for query-only inference'
@@ -426,6 +476,8 @@ class DAGPipe:
                                   'device': str(self.device), 'cuda': torch.version.cuda}
         if input_diagnostics is not None:
             log['input_diagnostics'] = input_diagnostics
+        if reference_sampling is not None:
+            log['reference_sampling'] = reference_sampling
         (self.output_dir/'DAGPipe_search.json').write_text(json.dumps(log, indent=2), encoding='utf-8')
         check_resources()
         return {'best_pipeline_yaml': pipeline.to_yaml(), 'best_fitness': -best_loss,

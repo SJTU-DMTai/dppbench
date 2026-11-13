@@ -567,6 +567,13 @@ def _run_baseline_and_eval(
         )
         raise RuntimeError(error)
 
+    if result.get("no_valid_scored_candidate"):
+        raise RuntimeError(
+            f"{baseline_name}: no successfully scored candidate; skipping final HPO/test. "
+            f"Candidate errors: {result.get('candidate_errors')}. "
+            f"See {result.get('agent_log_path')}"
+        )
+
     pipeline_yaml = result.get("best_pipeline_yaml")
     if result.get('diagnostic_only'):
         raise ValueError('Diagnostic-only DAGPipe run ended safely; no final HPO/test was run. '

@@ -40,6 +40,7 @@ from .prompts import (
     render_protocol_error,
     render_user_initial,
 )
+from .rec_validation import lookup_reference_errors, check_deepprep_pipeline
 from .sandbox import Sandbox
 from .target_schema import TargetSchema
 from .tree_node import SearchNode, SearchTree, canonical_path
@@ -211,10 +212,11 @@ def chain_to_steps(
     *,
     drop_terminate: bool = True,
     strict_instances: bool = False,
+    validate_rec_lookup: bool = False,
 ) -> list[PipelineStep]:
     """Parse a concrete operator chain.
 
-    ``strict_instances=True`` is used by DeepPrep and never derives random or
+    ``strict_instances=True, validate_rec_lookup=True`` is used by DeepPrep and never derives random or
     dataset-dependent parameters. The compatibility default retains the old
     common ``make_step`` behavior for baselines that import this helper.
     """
@@ -254,6 +256,8 @@ def chain_to_steps(
             params.update(supplied)
             target = base.target
         errors = validate_step_params(op_name, params, ctx, strict=True)
+        if validate_rec_lookup:
+            errors.extend(lookup_reference_errors(op_name, params, ctx))
         if errors:
             raise ChainParseError(
                 "; ".join(errors)
@@ -420,7 +424,7 @@ class TreeAgent:
         else:
             try:
                 steps = chain_to_steps(
-                    path, self.ctx, self._rng, strict_instances=True
+                    path, self.ctx, self._rng, strict_instances=True, validate_rec_lookup=True
                 )
             except ChainParseError as exc:
                 return None, f"Invalid parent path: {exc}"
@@ -431,7 +435,7 @@ class TreeAgent:
 
     def _resolve_expansion(self, chain: str) -> tuple[SearchNode, list[PipelineStep]]:
         full_steps = chain_to_steps(
-            chain, self.ctx, self._rng, strict_instances=True
+            chain, self.ctx, self._rng, strict_instances=True, validate_rec_lookup=True
         )
         for prefix_len in range(len(full_steps), -1, -1):
             parent = self.tree.find_by_steps(full_steps[:prefix_len])
@@ -464,7 +468,7 @@ class TreeAgent:
                     f"Unencoded categorical features: {remaining}. "
                     "Use LabelEncode(cols=None) to select all categorical features automatically."
                 )
-        report = check_pipeline(self._pipeline_for_node(node), self.ctx)
+        report = check_deepprep_pipeline(self._pipeline_for_node(node), self.ctx)
         errors.extend(report.errors)
         return errors
 
@@ -473,7 +477,7 @@ class TreeAgent:
         if scored:
             best = max(scored, key=lambda r: r['fitness'])
             return self._pipeline_for_node(self.tree.find_by_steps(
-                chain_to_steps(best['path'], self.ctx, self._rng, strict_instances=True)))
+                chain_to_steps(best['path'], self.ctx, self._rng, strict_instances=True, validate_rec_lookup=True)))
         if self._validated_pipelines:
             return copy.deepcopy(max(self._validated_pipelines.values(), key=lambda p: len(p.steps)))
         candidates = sorted(self.tree.nodes.values(), key=lambda node: node.depth, reverse=True)
@@ -532,15 +536,22 @@ class TreeAgent:
                 if self.n_errors >= self.max_err_cnt:
                     break
                 continue
+            generation = getattr(self.llm, "last_generation", None)
+            generation = generation if isinstance(generation, dict) else None
             messages.append({"role": "assistant", "content": response})
-            self.transcript.append({"role": "assistant", "content": response, "turn": turn})
+            self.transcript.append({"role": "assistant", "content": response, "turn": turn,
+                                    "generation": generation})
             action = parse_response(response)
             turns_left = self.max_explore_turn - turn
 
             if action.kind not in ("expand", "answer"):
                 self.n_errors += 1
                 feedback = render_protocol_error(
-                    "Missing concrete operator chain or a complete action tag.",
+                    "Missing concrete operator chain or a complete action tag. "
+                    + str({"parsed_kind": action.kind,
+                           "generation": generation,
+                           "expand_open": response.count("<expand"), "expand_close": response.count("</expand>"),
+                           "answer_open": response.count("<answer"), "answer_close": response.count("</answer>")}),
                     turns_left,
                 )
                 feedback += "\n" + self._revision_hint()
@@ -609,7 +620,7 @@ class TreeAgent:
                         raise ChainParseError(parent_error)
                     steps = chain_to_steps(
                         action.chain_str or "", self.ctx, self._rng,
-                        strict_instances=True,
+                        strict_instances=True, validate_rec_lookup=True,
                     )
                 else:
                     parent, steps = self._resolve_expansion(action.chain_str or "")
@@ -685,6 +696,9 @@ class TreeAgent:
             if self.n_errors >= self.max_err_cnt:
                 break
 
+        # A later unscored answer must not replace the best successful candidate.
+        if self.downstream_evaluator is not None and any(r['fitness'] is not None for r in self.candidate_scores.values()):
+            final_pipeline = self._fallback_pipeline()
         success = final_pipeline is not None
         if final_pipeline is None:
             final_pipeline = self._fallback_pipeline()

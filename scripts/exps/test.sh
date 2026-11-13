@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -8,7 +9,7 @@ source scripts/exps/common.sh
 
 # 实验配置
 SEED_LIST="43"
-GPU_ID=2
+GPU_ID=0
 
 TASK_LIST=(
   amazon_beauty
@@ -28,21 +29,21 @@ TASK_LIST=(
 )
 
 BASELINES=(
-  DiffPrep
+  LLMAutoDP
+  BAT
+  DeepPrep
 )
 
-# TASK_LIST=(
-#   kuairec
-# )
-
 HARD_MEMORY_GIB=85
-
-LOG_DIR="logs/exp1_10_30/seed43"
-mkdir -p "$LOG_DIR"
 
 FAILED=()
 
 for seed in $SEED_LIST; do
+
+  # 日志目录随 seed 自动变化
+  LOG_DIR="logs/exp1_10_30_llm/seed${seed}"
+  mkdir -p "$LOG_DIR"
+
   for task in "${TASK_LIST[@]}"; do
     for baseline in "${BASELINES[@]}"; do
 

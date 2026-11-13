@@ -79,7 +79,8 @@ class DeepPrepProtocolTest(unittest.TestCase):
         self.assertEqual(action.chain_str, "root")
 
     def test_rec_single_edge_executes_without_requiring_future_join(self):
-        from unittest.mock import Mock, mock_open, patch
+        from unittest.mock import Mock, patch
+        import tempfile
         from baselines.DeepPrep.sandbox import Sandbox
         from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
         ctx = DataContext(
@@ -97,12 +98,13 @@ class DeepPrepProtocolTest(unittest.TestCase):
         sandbox.data = Mock()
         sandbox.seed = 42
         sandbox.small_n = 0
-        sandbox._tmpdir = "/tmp/deepprep-unit"
+        tmpdir = tempfile.TemporaryDirectory(prefix="deepprep-unit-")
+        self.addCleanup(tmpdir.cleanup)
+        sandbox._tmpdir = tmpdir.name
         sandbox._context = Mock(return_value=ctx)
         sandbox.snapshot = Mock(return_value=b"snapshot")
         sandbox._observe = Mock()
-        with patch("builtins.open", mock_open()):
-            result = sandbox.execute_chain([step])
+        result = sandbox.execute_chain([step])
         self.assertTrue(result.success, result.error)
         sandbox.data._run_relation_dag.assert_called_once()
         sandbox.data.run_pre_process.assert_not_called()
@@ -124,14 +126,24 @@ class DeepPrepProtocolTest(unittest.TestCase):
         data.col_types = {}
         data.model_cfg = {}
         sandbox.data = data
-        with patch('builtins.open', mock_open()):
-            first = sandbox.execute_chain([step])
-            joined = sandbox.execute_chain([PipelineStep('JoinTable', 'interaction',
-                {'method': 'rec', 'item_df': 'item', 'item_col': 'item_id'})])
+        # Restore real pickle snapshots before exercising real data/operators.
+        del sandbox.snapshot
+        first = sandbox.execute_chain([step])
+        joined = sandbox.execute_chain([PipelineStep('JoinTable', 'interaction',
+            {'method': 'rec', 'item_df': 'item', 'item_col': 'item_id'})])
         self.assertTrue(first.success, first.error)
         self.assertTrue(joined.success, joined.error)
         self.assertEqual(data.interaction_df['item_id'].tolist(), [23746, 22572])
         self.assertEqual(data.interaction_df['brand'].tolist(), [7, 8])
+
+        # A genuine operator failure must return its cause and restore data,
+        # rather than failing to unpickle a dummy snapshot and hiding it.
+        before = sandbox.data.interaction_df.copy(deep=True)
+        with patch.object(RecData, '_run_relation_dag', side_effect=ValueError('fixture failure')):
+            failed = sandbox.execute_chain([step])
+        self.assertFalse(failed.success)
+        self.assertIn('fixture failure', failed.error)
+        pd.testing.assert_frame_equal(sandbox.data.interaction_df, before)
 
     def test_revision_hint_provides_exact_sequence_continuation(self):
         agent = TreeAgent(object(), object(), _ctx(), verbose=False)

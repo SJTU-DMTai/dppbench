@@ -96,6 +96,7 @@ class LLMClient:
         self._local_model = None    # transformers model
         self._local_tokenizer = None
         self.total_tokens_used = 0
+        self.last_generation = None
         self.last_response: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -114,6 +115,7 @@ class LLMClient:
         """Send a list of ``{"role", "content"}`` messages and return the
         assistant text. ``system`` is prepended to ``messages`` if provided.
         """
+        self.last_generation = None
         budget = get_active_budget()
         if budget is not None:
             budget.consume_llm_call()
@@ -159,6 +161,11 @@ class LLMClient:
         usage = getattr(completion, "usage", None)
         if usage is not None and getattr(usage, "total_tokens", None):
             self.total_tokens_used += int(usage.total_tokens)
+        self.last_generation = {
+            "backend": "api", "finish_reason": getattr(completion.choices[0], "finish_reason", None),
+            "generated_tokens": getattr(usage, "completion_tokens", None),
+            "max_tokens": self.cfg.max_tokens if max_tokens is None else max_tokens,
+        }
         ans = completion.choices[0].message.content or ""
         self.last_response = ans
         return ans
@@ -244,6 +251,14 @@ class LLMClient:
         gen_ids = out[0][inputs["input_ids"].shape[1]:]
         # DeepPrep action markers may be registered as special tokens. They
         # must survive decoding so the protocol parser can see them.
+        limit = self.cfg.max_tokens if max_tokens is None else max_tokens
+        token_count = int(gen_ids.shape[0])
+        self.last_generation = {
+            "backend": "local", "generated_tokens": token_count, "max_tokens": limit,
+            "hit_token_limit": token_count >= limit,
+            "finish_reason": "stop_token" if token_count and int(gen_ids[-1]) in eos_ids else
+                             "length" if token_count >= limit else "unknown",
+        }
         ans = tok.decode(gen_ids, skip_special_tokens=False)
         self.last_response = ans
         return ans

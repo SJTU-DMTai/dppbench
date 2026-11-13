@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 import time
 from typing import Optional
 
@@ -24,6 +25,7 @@ from baselines.common.utils import get_data_ctx
 
 from .evaluator import DeepPrepEvaluator
 from .llm_client import LLMClient
+from .rec_validation import check_deepprep_pipeline
 from .sandbox import Sandbox
 from .tree_agent import TreeAgent
 
@@ -198,6 +200,7 @@ class DeepPrep:
             data_dir=self.data_dir,
             small_n=self.small_n,
             seed=self.seed,
+            validate_rec_lookup=True,
         )
         try:
             ctx = self._infer_context(sandbox)
@@ -247,7 +250,7 @@ class DeepPrep:
             # 3. Assign serialization-only DAG metadata, then hard-validate.
             # No semantic repair or mandatory operator insertion is allowed.
             assign_dag_structure(pipeline, ctx)
-            check_report = check_pipeline(pipeline, ctx)
+            check_report = check_deepprep_pipeline(pipeline, ctx)
             legal = check_report.valid
 
             if self.verbose:
@@ -258,11 +261,14 @@ class DeepPrep:
         finally:
             sandbox.cleanup()
 
+        scored_candidates = [r for r in run.solution_attempts
+                             if r.get("fitness") is not None and math.isfinite(r["fitness"]) and not r.get("error")]
+        no_valid_scored_candidate = self.downstream_feedback and not scored_candidates
         # 4. Final downstream evaluation (NOT fed back to the agent).
         eval_metrics: dict = {}
         eval_fitness: Optional[float] = None
         eval_error: Optional[str] = None
-        if self.eval_full:
+        if self.eval_full and not no_valid_scored_candidate:
             evaluator = DeepPrepEvaluator(
                 task_dir=self.task_dir,
                 data_name=self.data_name,
@@ -346,6 +352,8 @@ class DeepPrep:
             "best_fitness": reported_fitness,
             "best_metrics": reported_metrics,
             "eval_error": eval_error,
+            "no_valid_scored_candidate": no_valid_scored_candidate,
+            "candidate_errors": [r.get("error") for r in run.solution_attempts if r.get("error")],
             "agent_success": run.success,
             "agent_n_turns": run.n_turns,
             "agent_n_errors": run.n_errors,

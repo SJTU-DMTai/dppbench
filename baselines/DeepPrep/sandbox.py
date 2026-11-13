@@ -85,12 +85,14 @@ class Sandbox:
         data_dir: Optional[str] = None,
         small_n: int = 0,
         seed: int = 42,
+        validate_rec_lookup: bool = False,
     ) -> None:
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
+        self.validate_rec_lookup = bool(validate_rec_lookup)
         self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir, seed=self.seed)
         if self._executor.task_type == 'rec':
             self._executor.set_evaluate_std_test(False)
@@ -184,7 +186,11 @@ class Sandbox:
             for step in pipe.steps:
                 referenced.update(step.prev)
             pipe.sources = [s for s in pipe.sources or [] if s['id'] in referenced]
-            report = check_pipeline(pipe, ctx, require_mandatory=False)
+            validator = check_pipeline
+            if getattr(self, "validate_rec_lookup", False):
+                from .rec_validation import check_deepprep_pipeline
+                validator = check_deepprep_pipeline
+            report = validator(pipe, ctx, require_mandatory=False)
             if not report.valid:
                 self.data = pickle.loads(pre_snapshot)
                 return ExecutionResult(

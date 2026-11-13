@@ -26,7 +26,8 @@ from baselines.DeepPrep.llm_client import LLMClient
 
 CONFIG_KEYS = ("llm_backend", "llm_model", "temperature", "max_tokens", "timeout",
                "n_rounds", "n_candidates", "max_pipeline_len", "eval_full", "seed",
-               "fast_train")
+               "fast_train", "top_p", "torch_dtype", "device_map", "enable_thinking",
+               "repetition_penalty", "downstream_eval_n")
 
 
 def parse_group(text, limit):
@@ -61,7 +62,7 @@ def decode_pipeline(candidate):
 
 
 class LLMAutoDP:
-    """LLM-AutoDP-Adapted: compare groups against a mandatory-only anchor."""
+    """LLMAutoDP: compare groups against a mandatory-only anchor."""
 
     def __init__(self, task_dir, data_name, data_dir=None, output_dir=None,
                  seed=None, verbose=True, device="cpu", model_name=None,
@@ -78,12 +79,12 @@ class LLMAutoDP:
                 raise ValueError(f"{key} must be a positive integer")
         self.task_dir, self.data_name, self.data_dir = task_dir, data_name, data_dir
         self.verbose, self.device, self.model_name = verbose, device, model_name
-        self.output_dir = Path(output_dir or Path("outputs") / "LLM-AutoDP-Adapted" / data_name)
+        self.output_dir = Path(output_dir or Path("outputs") / "LLMAutoDP" / data_name)
 
     def _make_evaluator(self):
         evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir, data_name=self.data_name, data_dir=self.data_dir,
-            small_n=0, seed=self.cfg["seed"], verbose=self.verbose,
+            small_n=self.cfg["downstream_eval_n"], seed=self.cfg["seed"], verbose=self.verbose,
             device=self.device, model_name=self.model_name)
         evaluator.set_evaluate_std_test(False)
         evaluator.set_fast_mode(bool(self.cfg["fast_train"]))
@@ -92,7 +93,10 @@ class LLMAutoDP:
     def _make_llm(self):
         return LLMClient(backend=self.cfg["llm_backend"], model=self.cfg["llm_model"],
                          temperature=self.cfg["temperature"], max_tokens=self.cfg["max_tokens"],
-                         timeout=self.cfg["timeout"])
+                         timeout=self.cfg["timeout"], top_p=self.cfg["top_p"],
+                         torch_dtype=self.cfg["torch_dtype"], device_map=self.cfg["device_map"],
+                         enable_thinking=self.cfg["enable_thinking"],
+                         repetition_penalty=self.cfg["repetition_penalty"])
 
     def _search(self, evaluator, llm, ctx):
         # No task prepare.yaml is loaded. Required structural operators are the
@@ -129,7 +133,7 @@ class LLMAutoDP:
         history.append({"round": 0, "anchor": yaml.safe_load(anchor.to_yaml()), **anchor_result})
         catalog = [asdict(spec) for spec in get_available_ops(ctx.task_type)]
         system = (
-            "You are LLM-AutoDP-Adapted, searching data preparation strategies for DPPBench. "
+            "You are LLMAutoDP, searching data preparation strategies for DPPBench. "
             "Generate multiple diverse complete strategies, compare each group's validation "
             "fitness and improvement relative to the fixed anchor, then revise operator choices "
             "and order. Higher fitness is better (error metrics are already negated). "
@@ -183,7 +187,7 @@ class LLMAutoDP:
                 history.append(feedback)
                 messages.append({"role": "user", "content": json.dumps(feedback, default=str)})
                 if self.verbose:
-                    print(f"[LLM-AutoDP-Adapted] round={turn} best={best_fit}", flush=True)
+                    print(f"[LLMAutoDP] round={turn} best={best_fit}", flush=True)
             except BudgetExceededError as exc:
                 stop_reason = str(exc)
                 break
@@ -203,6 +207,7 @@ class LLMAutoDP:
         if self.cfg["eval_full"]:
             evaluator = self._make_evaluator()
             try:
+                evaluator.set_small_n(0)
                 evaluator.set_fast_mode(False)
                 final = evaluator.evaluate(best)
             finally:
@@ -211,7 +216,7 @@ class LLMAutoDP:
         pipeline_path = self.output_dir / "best_pipeline.yaml"
         pipeline_path.write_text(best.to_yaml(), encoding="utf-8")
         summary = {
-            "method": "LLM-AutoDP-Adapted", "original_paper_reproduction": False,
+            "method": "LLMAutoDP", "original_paper_reproduction": False,
             "data_name": self.data_name, "task_type": ctx.task_type,
             "best_pipeline_yaml": best.to_yaml(), "best_pipeline_path": str(pipeline_path.resolve()),
             "best_fitness_in_loop": fit, "best_metrics_in_loop": metrics,

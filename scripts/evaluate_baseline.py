@@ -85,7 +85,7 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
-    "LLM-AutoDP-Adapted": {
+    "LLMAutoDP": {
         "cls_path": "baselines.LLMAutoDP.llm_autodp.LLMAutoDP",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
@@ -440,7 +440,7 @@ def _apply_baseline_model_paths(
             "llm_backend": "local",
             "llm_model": args.deepprep_model_path,
         })
-    elif baseline_name == "BAT":
+    elif baseline_name in {"BAT", "LLMAutoDP"}:
         kwargs.update({
             "llm_backend": "local",
             "llm_model": args.qwen3_model_path,
@@ -833,6 +833,9 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
 
 
 def _canonical_baseline_name(name: str) -> str:
+    # Accept the former public name while keeping new outputs canonical.
+    if name.strip().casefold() == "llm-autodp-adapted":
+        return "LLMAutoDP"
     for canonical in BASELINE_CONFIGS:
         if canonical.casefold() == name.strip().casefold():
             return canonical

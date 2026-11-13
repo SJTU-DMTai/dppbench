@@ -1,7 +1,7 @@
-# LLM-AutoDP-Adapted
+# LLMAutoDP
 
 本实现把 LLM-AutoDP 的分组策略搜索迁移到 DPPBench。实验表中请使用
-**LLM-AutoDP-Adapted**，不要标注为官方完整复现。
+**LLMAutoDP**，不要标注为官方完整复现。
 
 参考：[论文 §3.2](https://www.vldb.org/pvldb/vol19/p794-cheng.pdf)、
 [官方源码](https://github.com/secretflow/ACoLab/tree/main/Autodp-paper-code)、
@@ -72,23 +72,23 @@ README 根目录还提及 tenrec，但它不在上述 14 个任务清单内。
 多个服务时设置 DPPBENCH_LLM_PROVIDER。模型可以通过 config.yaml 的 llm_model
 或 LLM_MODEL 环境变量指定；默认客户端模型不一定被你的服务支持。
 本地模型设置 `llm_backend: local`、`llm_model: /path/to/model`。
-`--qwen3_model_path` 不会覆盖本 baseline，使用 `--baseline_config_path` 选择配置。
+评测入口通过 `--qwen3_model_path` 传入本地模型路径（shell 启动器读取 `QWEN3_MODEL_PATH`），覆盖 YAML 的 backend/model；直接构造类时使用 YAML 配置。
 
 单任务命令（数据目录应包含 `<task>/data`）：
 
 ```bash
-python scripts/evaluate_baseline.py --baseline LLM-AutoDP-Adapted --data_names default_credit --model LightGBM --data_dir /path/to/datasets --output_dir outputs/autodp --max_evaluations 25 --max_llm_calls 6 --seed 42
+python scripts/evaluate_baseline.py --baseline LLMAutoDP --data_names default_credit --model LightGBM --data_dir /path/to/datasets --output_dir outputs/autodp --max_evaluations 25 --max_llm_calls 6 --seed 42
 ```
 
 全部 14 个任务，分别沿用任务默认模型：
 
 ```bash
-python scripts/evaluate_baseline.py --baseline LLM-AutoDP-Adapted --data_names amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy --data_dir /path/to/datasets --output_dir outputs/autodp --max_evaluations 25 --max_llm_calls 6 --seed 42
+python scripts/evaluate_baseline.py --baseline LLMAutoDP --data_names amazon_beauty,kuairec,movielens,yelp,elliptic_bitcoin,beijing_air_quality,berka,bike_sharing,citibike_jc_hourly,default_credit,fraud_detection,home_credit,nyc_taxi_hourly,polish_bankruptcy --data_dir /path/to/datasets --output_dir outputs/autodp --max_evaluations 25 --max_llm_calls 6 --seed 42
 ```
 
 25 次是 1 个起点加 6×4 个候选的上限；重复和无效候选可能减少实际训练次数。
 最终评估按公共 harness 协议执行。和其他方法比较时统一模型、数据划分、LLM、预算及种子。
-结果位于 `outputs/autodp/LLM-AutoDP-Adapted/<task>_<model>/`：best_pipeline.yaml、
+结果位于 `outputs/autodp/LLMAutoDP/<task>_<model>/`：best_pipeline.yaml、
 trajectory.json（分组分数和错误）、agent_log.json（对话）、run_summary.json（适配标记）。
 
 测试：`python -m pytest baselines/LLMAutoDP/test_llm_autodp.py -q`。
@@ -101,3 +101,16 @@ analysis/test_dependencies 作为 PYTHONPATH，没有修改全局环境。另以
 数据、快速 LightGBM 和模拟停止响应验证了训练与产物链路（验证 RMSE 125.3485），
 见 outputs/llm_autodp_smoke/bike_sharing/SMOKE_ONLY.md；该数值不是正式 LLM 搜索结果。
 尚未执行真实 LLM 调用及全部 14 个数据集的完整实验。
+
+命令中的正式名称为 `LLMAutoDP`；旧名称 `LLM-AutoDP-Adapted` 仍作为兼容别名。两者的新运行结果均写入 `LLMAutoDP` 目录；已有结果目录不会重命名。
+
+
+## 运行配置对齐（2026-11-13）
+
+与 BAT / DeepPrep 对齐：max_tokens=2048、timeout=600、enable_thinking=false、bfloat16、device_map=auto，沿用共享量化策略。搜索下游评分使用 downstream_eval_n=10000、fast_train=true。
+
+保留方法自己的 temperature=0.6、top_p=1.0、repetition_penalty=1.0；BAT 对应为 0.4/0.8/1.0，DeepPrep 为 0.01/1.0/1.1。保留 n_rounds=6、n_candidates=4，公共入口统一控制长度和调用预算。DeepPrep 使用其专用 DeepPrep-Qwen3-8B 权重，LLMAutoDP 与 BAT 使用基础 Qwen3-8B。
+
+保留 eval_full=false，最终全量评估由公共入口独立执行。直接调用并开启 eval_full 时会取消搜索采样上限并关闭快速训练后再评估。
+
+2048 token 上限也适用于一次生成多个完整候选的 LLMAutoDP，长候选可能截断，需观察实验日志；未为此改变候选数量。

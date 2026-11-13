@@ -1,11 +1,19 @@
-llm_backend: api
-llm_model: null
+llm_backend: local
+llm_model: /mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
+# Method-specific sampling; BAT and DeepPrep also use different temperatures.
 temperature: 0.6
-max_tokens: 8192
+top_p: 1.0
+# Match the shared local loading defaults and disable Qwen thinking.
+torch_dtype: bfloat16
+device_map: auto
+enable_thinking: false
+repetition_penalty: 1.0
+max_tokens: 2048
 timeout: 600
 n_rounds: 6
 n_candidates: 4
 max_pipeline_len: 12
+downstream_eval_n: 10000
 eval_full: false
 seed: 42
-fast_train: false
+fast_train: true

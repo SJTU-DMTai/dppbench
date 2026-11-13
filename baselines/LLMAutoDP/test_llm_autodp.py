@@ -115,6 +115,7 @@ def test_run_artifacts_and_validation_only(tmp_path):
     obj._make_evaluator = lambda: evaluator
     obj._make_llm = lambda: llm
     result = obj.run()
+    assert result["method"] == "LLMAutoDP"
     assert result["original_paper_reproduction"] is False
     assert Path(result["best_pipeline_path"]).exists()
     assert json.loads((tmp_path / "run_summary.json").read_text())["best_fitness_in_loop"] == .7
@@ -128,8 +129,59 @@ def test_all_fourteen_task_evaluator_contracts(task, model, device, tmp_path):
     try:
         cfg = yaml.safe_load((ROOT / "dppbench/tasks" / task / "model.yaml").read_text())
         assert evaluator.metric_key == cfg["train"]["metrics"][0]
-        assert evaluator.small_n == 0
+        assert evaluator.small_n == obj.cfg["downstream_eval_n"] == 10000
         assert evaluator._executor._evaluate_std_test is False
         assert evaluator.task_type in {"rec", "graph", "tabular"}
     finally:
         evaluator._executor.cleanup()
+
+
+@pytest.mark.parametrize("name", ["LLMAutoDP", "llmautodp", " LLM-AutoDP-Adapted "])
+def test_public_name_and_legacy_alias(name):
+    from scripts.evaluate_baseline import BASELINE_CONFIGS, _canonical_baseline_name
+    canonical = _canonical_baseline_name(name)
+    assert canonical == "LLMAutoDP"
+    assert BASELINE_CONFIGS[canonical]["cls_path"] == "baselines.LLMAutoDP.llm_autodp.LLMAutoDP"
+
+
+def test_default_output_uses_public_name():
+    obj = LLMAutoDP(str(ROOT / "dppbench/tasks/default_credit"), "default_credit")
+    assert obj.output_dir == Path("outputs") / "LLMAutoDP" / "default_credit"
+
+
+def test_local_llm_runtime_configuration(tmp_path):
+    obj = runner(tmp_path)
+    client = obj._make_llm()
+    assert client.cfg.backend == "local"
+    assert client.cfg.model == obj.cfg["llm_model"]
+    assert client.cfg.max_tokens == 2048
+    assert client.cfg.timeout == 600
+    assert client.cfg.enable_thinking is False
+    assert client.cfg.torch_dtype == "bfloat16"
+    assert client.cfg.device_map == "auto"
+    assert client.cfg.temperature == .6
+    assert client.cfg.top_p == 1.0
+    assert client.cfg.repetition_penalty == 1.0
+    assert obj.cfg["fast_train"] is True
+
+
+def test_qwen_path_is_forwarded():
+    from scripts.evaluate_baseline import _apply_baseline_model_paths
+    kwargs = {}
+    _apply_baseline_model_paths("LLMAutoDP", kwargs, SimpleNamespace(qwen3_model_path="/custom/Qwen3-8B"))
+    assert kwargs == {"llm_backend": "local", "llm_model": "/custom/Qwen3-8B"}
+
+
+def test_optional_full_evaluation_removes_search_cap(tmp_path):
+    obj = runner(tmp_path)
+    obj.cfg["eval_full"] = True
+    evaluator = Mock()
+    evaluator._get_data_context.return_value = context()
+    evaluator.evaluate.return_value = SimpleNamespace(success=True, fitness=.7, metrics={}, error=None)
+    llm = Mock()
+    llm.chat.return_value = '{"stop":true}'
+    obj._make_evaluator = lambda: evaluator
+    obj._make_llm = lambda: llm
+    obj.run()
+    evaluator.set_small_n.assert_called_once_with(0)
+    evaluator.set_fast_mode.assert_called_with(False)

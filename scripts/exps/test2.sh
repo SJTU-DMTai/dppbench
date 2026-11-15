@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -7,42 +8,27 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="44"
-GPU_ID=2
+SEED_LIST="43"
+GPU_ID=1
 
 TASK_LIST=(
   amazon_beauty
-  kuairec
-  movielens
-  elliptic_bitcoin
-  beijing_air_quality
-  berka
-  bike_sharing
-  citibike_jc_hourly
-  default_credit
-  fraud_detection
-  home_credit
-  nyc_taxi_hourly
-  polish_bankruptcy
-  yelp
 )
 
 BASELINES=(
-  DiffPrep
+  LLMAutoDP
 )
 
-# TASK_LIST=(
-#   kuairec
-# )
-
 HARD_MEMORY_GIB=85
-
-LOG_DIR="logs/exp1_10_30/seed44"
-mkdir -p "$LOG_DIR"
 
 FAILED=()
 
 for seed in $SEED_LIST; do
+
+  # 日志目录随 seed 自动变化
+  LOG_DIR="logs/exp1_10_30_llm/seed${seed}"
+  mkdir -p "$LOG_DIR"
+
   for task in "${TASK_LIST[@]}"; do
     for baseline in "${BASELINES[@]}"; do
 

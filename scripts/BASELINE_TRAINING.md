@@ -72,8 +72,8 @@ Source and explicitly held-out task sets must be disjoint. Build the frozen
 training artifacts first when using the Python CLI directly. Target train/validation
 feedback can be used in target adaptation; the frozen standard test cannot.
 To compare independent pretraining seeds, use a different `PRETRAINED_DIR` per seed.
-FlowPipe graph tasks are unsupported. Tenrec has no shipped loader. For a graph
-experiment with CtxPipe/HAIPipe, use the Python CLI with graph sources and a
+FlowPipe also accepts graph node-feature tables and uses the configured GNN validation reward. Tenrec has no shipped loader. For a graph
+experiment with CtxPipe/HAIPipe/FlowPipe, use the Python CLI with graph sources and a
 compatible GNN model; the default launcher does not include this extension.
 
 ## Artifacts

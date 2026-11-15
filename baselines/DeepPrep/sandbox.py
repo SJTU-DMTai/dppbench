@@ -86,6 +86,7 @@ class Sandbox:
         small_n: int = 0,
         seed: int = 42,
         validate_rec_lookup: bool = False,
+        graph_training_only: bool = False,
     ) -> None:
         self.task_dir = task_dir
         self.data_name = data_name
@@ -93,8 +94,9 @@ class Sandbox:
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
         self.validate_rec_lookup = bool(validate_rec_lookup)
+        self.graph_training_only = bool(graph_training_only)
         self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir, seed=self.seed)
-        if self._executor.task_type == 'rec':
+        if self._executor.task_type == 'rec' or (self._executor.task_type == 'graph' and self.graph_training_only):
             self._executor.set_evaluate_std_test(False)
         self._tmpdir = tempfile.mkdtemp(prefix="deepprep_sandbox_")
         self.task_type: str = self._executor.task_type
@@ -117,6 +119,11 @@ class Sandbox:
             data._search_small_n = self.small_n
             data._search_seed = self.seed
         data.load_data()
+        if self.task_type == "graph" and self.graph_training_only:
+            # The executor installs a one-shot frozen-pool loader as a local
+            # closure. Materialization is complete: restore the class method
+            # before pickle snapshots without reloading raw or held-out data.
+            data.__dict__.pop("load_data", None)
         self._executor._restrict_rec_training(data)
         # run_pre_process() loads frozen std-test lazily and may replace the
         # sampled training frame with the full frozen frame. Load it first so
@@ -237,7 +244,7 @@ class Sandbox:
     # Observation rendering
     # ------------------------------------------------------------------
     def _primary_df(self):
-        if self.task_type == "tabular":
+        if self.task_type in {"tabular", "graph"}:
             return getattr(self.data, "train_df", None)
         return getattr(self.data, "interaction_df", None)
 
@@ -277,7 +284,7 @@ class Sandbox:
 
     def _collect_tables(self) -> dict:
         named = {}
-        if self.task_type == "tabular":
+        if self.task_type in {"tabular", "graph"}:
             named["main"] = getattr(self.data, "train_df", None)
             named.update(getattr(self.data, "auxiliary_dfs", {}) or {})
         else:

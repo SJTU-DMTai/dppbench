@@ -102,8 +102,6 @@ def build_sources(args):
         else:
             from baselines.FlowPipe.env import FlowPipeEnv
             from baselines.FlowPipe.context import SemanticContextLoader
-            if evaluator.task_type == "graph":
-                raise ValueError("FlowPipe graph tasks are unsupported; remove graph sources")
             env = FlowPipeEnv(evaluator, ctx, max_steps=runner.max_steps, seed=args.seed)
             runner.precompute_context(device=args.device)
             contexts.append(SemanticContextLoader(args.context_cache_dir, runner.llm_name,

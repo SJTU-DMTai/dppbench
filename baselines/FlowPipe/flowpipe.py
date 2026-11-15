@@ -126,27 +126,28 @@ class FlowPipe:
     ) -> str:
         """Precompute and persist this task's frozen Llama embedding."""
         evaluator = self._build_evaluator()
-        data = evaluator.load_data()
-        if evaluator.task_type == "graph":
-            raise ValueError("Official FlowPipe does not support graph tasks")
-        ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
-        frame = (
-            getattr(data, "interaction_df", None)
-            if evaluator.task_type == "rec"
-            else getattr(data, "train_df", None)
-        )
-        if frame is None:
-            raise ValueError(f"[{self.data_name}] primary dataframe is unavailable")
-        # Keep the target in the semantic prompt, while excluding frozen test rows.
-        frame = primary_feature_frame(frame, target_col=None)
-        loader = SemanticContextLoader(
-            self.context_cache_dir, self.llm_name, self.ctx_dim,
-            llama_model_path=self.llama_model_path,
-        )
-        return str(loader.precompute(
-            self.data_name, frame, ctx, device=device or self.device,
-            max_length=max_length, overwrite=overwrite,
-        ))
+        try:
+            data = evaluator.load_data()
+            ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
+            frame = (
+                getattr(data, "interaction_df", None)
+                if evaluator.task_type == "rec"
+                else getattr(data, "train_df", None)
+            )
+            if frame is None:
+                raise ValueError(f"[{self.data_name}] primary dataframe is unavailable")
+            # Keep the target in the semantic prompt, while excluding frozen test rows.
+            frame = primary_feature_frame(frame, target_col=None)
+            loader = SemanticContextLoader(
+                self.context_cache_dir, self.llm_name, self.ctx_dim,
+                llama_model_path=self.llama_model_path,
+            )
+            return str(loader.precompute(
+                self.data_name, frame, ctx, device=device or self.device,
+                max_length=max_length, overwrite=overwrite,
+            ))
+        finally:
+            evaluator._executor.cleanup()
 
     def run(self) -> dict:
         started = time.time()
@@ -155,13 +156,6 @@ class FlowPipe:
         torch.manual_seed(self.seed)
         evaluator = self._build_evaluator()
         data = evaluator.load_data()
-        if evaluator.task_type == "graph":
-            return {
-                "unsupported_task_type": "graph",
-                "error": "Official FlowPipe defines tabular classification pipelines; graph tasks are unsupported.",
-                "best_pipeline_yaml": None,
-                "duration_seconds": time.time() - started,
-            }
         if not self._explicit_context_cache and self.training_mode != "scratch":
             self.context_cache_dir = os.path.join(os.path.dirname(pretrained_path(
                 "FlowPipe", resolved_model(evaluator), self.pretrained_checkpoint or self.checkpoint_path,

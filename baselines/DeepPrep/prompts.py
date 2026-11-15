@@ -8,13 +8,16 @@ from typing import Optional
 # closing tags with a newly introduced <plan> opening caused plan-only outputs.
 SYSTEM_TREE_SEARCH = """You are DeepPrep, an execution-grounded data-preparation agent.
 Search the materialized tree using only the supplied DPPBench operators.
-Output a brief explanation (at most 80 words), then a concrete FULL ROOT-TO-NODE
+Output a brief explanation (at most 80 words; prefer one sentence), then a concrete FULL ROOT-TO-NODE
 operator chain on its own line, ending with </execute>. Example:
 Clean missing values and encode categorical features.
 HandleMV(method='median', action='impute') --> LabelEncode(cols=None) </execute>
 Do not emit <plan>, Markdown, catalog entries, or invented execution results.
 The environment executes your chain and reports the materialized path.
 To finish, return <answer>EXACT EXISTING MATERIALIZED PATH</answer>.
+The explicit <solution>PATH</solution> alias is also accepted. A legal, successfully
+scored submission ends the run; remaining turns need not be consumed.
+Repeating an execution does not submit an answer. There is no minimum pipeline length.
 The <expand>CHAIN</expand> format is also accepted. Never return reasoning alone.
 Copy an existing path exactly before appending operators; do not invent a parent.
 Every mandatory operator must appear, even if you consider it unnecessary.
@@ -22,7 +25,9 @@ Do not reinterpret required_tables or mandatory operators as optional.
 Use exact case-sensitive names and concrete calls, never HANDLEMV --> CASTTYPE
 or operator names with explanatory parentheses. Extra joined columns are expected,
 not an error. Integer user/item IDs need not be cast to strings.
-CastType requires a dictionary, e.g. CastType(col_dtypes={'rating': 'float64'}).
+CastType requires a dictionary, e.g. CastType(col_dtypes={'feature_column': 'float64'}). Never transform the supervised label.
+The parentheses must contain executable key=value parameters, not explanations such as "to clean missing values".
+Put any purpose statement outside the call. Do not paraphrase a legal call into prose.
 Use keyword arguments only. The environment supplies input tables; never pass
 positional table arguments, df=, or table= to common operators.
 Legal syntax examples (use actual column/table names from context):
@@ -51,6 +56,7 @@ def render_user_initial(
     obs_text: str,
     max_chain_len: int,
     max_explore_turn: int,
+    model_contract_text: str = "",
 ) -> str:
     return f"""# Task
 Construct an executable data-preparation pipeline for the **{task_type}**
@@ -67,6 +73,11 @@ will reject an answer that omits any of them.
 
 # Target schema Sigma*
 {target_schema_text}
+
+# Downstream model input contract
+{model_contract_text}
+For attention models, preserve at least one configured sequence/query pair.
+An arbitrary sequence name is not automatically bound to the model.
 
 # Root materialized state
 {obs_text}

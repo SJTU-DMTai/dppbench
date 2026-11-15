@@ -77,6 +77,7 @@ class ParsedAction:
     think: Optional[str] = None
     plan: Optional[str] = None
     parent_chain: Optional[str] = None
+    error: Optional[str] = None
 
 
 def _extract_reasoning(text: str, regex: re.Pattern) -> Optional[str]:
@@ -84,7 +85,7 @@ def _extract_reasoning(text: str, regex: re.Pattern) -> Optional[str]:
     return match.group(1).strip() if match else None
 
 
-def parse_response(text: str) -> ParsedAction:
+def parse_response(text: str, *, strict_native: bool = False) -> ParsedAction:
     plan = _extract_reasoning(text, _PLAN_RE)
     think = _extract_reasoning(text, _THINK_RE)
     if not think and "</think>" in text:
@@ -109,6 +110,9 @@ def parse_response(text: str) -> ParsedAction:
                 prefix,
             ):
                 continue
+            if strict_native and action_text[:match.start()].rstrip().endswith("-->"):
+                return ParsedAction("noop", think=think, plan=plan,
+                                    error="Dangling prefix before tagged action. No operator was executed; resubmit the entire chain.")
             attrs = match.group("attrs") or ""
             body = match.group("body").strip()
             parent_match = _PARENT_RE.search(attrs)
@@ -129,6 +133,14 @@ def parse_response(text: str) -> ParsedAction:
         # The released checkpoint may emit its concrete chain directly and
         # terminate it with </execute>, without an opening action tag.
         native = _NATIVE_EXECUTE_RE.search(text)
+        if native and strict_native:
+            matches = list(_NATIVE_EXECUTE_RE.finditer(text))
+            prefix_lines = text[:native.start()].rstrip().splitlines()
+            previous = prefix_lines[-1].strip() if prefix_lines else ""
+            if len(matches) != 1 or previous.endswith("-->"):
+                return ParsedAction("noop", think=think, plan=plan,
+                    error="Ambiguous or incomplete action chain: dangling prefix " + repr(previous) +
+                          ". No operator was executed. Resubmit the entire chain with concrete calls; no prefix may be silently discarded.")
         if native:
             found.append(("expand", native.group("chain").strip(), None))
             if not plan:
@@ -141,6 +153,8 @@ def parse_response(text: str) -> ParsedAction:
     if len(found) != 1:
         return ParsedAction("noop", think=think, plan=plan)
     kind, body, parent = found[0]
+    if strict_native:
+        kind = {"solution": "answer", "operator": "expand"}.get(kind, kind)
     return ParsedAction(kind, chain_str=body, think=think, plan=plan, parent_chain=parent)
 
 
@@ -238,6 +252,19 @@ def chain_to_steps(
             raise ChainParseError(f"Unknown operator {op_name!r}.") from exc
         if op_name not in valid_ops:
             raise ChainParseError(f"Operator {op_name!r} is unavailable for {ctx.task_type}.")
+        if "__positional__" in supplied and validate_rec_lookup:
+            # DeepPrep-only diagnostics; shared callers keep the old contract.
+            values = supplied["__positional__"]
+            prose = any(isinstance(v, str) and v.strip().lower().startswith(("to ", "for ", "用于", "为了")) for v in values)
+            category = "natural-language explanation inside parentheses" if prose else "positional arguments"
+            raise ChainParseError(
+                f"Rejected call: {raw!r}. Found {category}: {values!r}. "
+                f"Operator {op_name!r} requires keyword arguments. "
+                f"Accepted keywords: {sorted(get_operator_param_names(op_name) or [])}. "
+                "Descriptions are not executable arguments. Choose concrete key=value parameters "
+                "from the catalog; do not put a purpose statement in parentheses. "
+                "The environment supplies the input table. No call was executed or rewritten."
+            )
         if "__positional__" in supplied:
             raise ChainParseError(
                 f"Operator {op_name!r} requires keyword arguments. "
@@ -263,8 +290,11 @@ def chain_to_steps(
                 "; ".join(errors)
                 + f". {op_name} accepted keywords: {sorted(get_operator_param_names(op_name) or [])}; "
                 + f"required: {list(spec.required_params)}; defaults: {spec.default_params}. "
-                + "Do not pass df= or table=; the environment supplies the input. "
-                + "Resubmit a corrected full path inside <expand>, with a brief <plan>."
+                + (f" Rejected call: {raw!r}. Correct the reported parameter; use only catalog keywords. "
+                   "Return the corrected full path on one line ending in </execute>; no <plan> block."
+                   if validate_rec_lookup else
+                   "Do not pass df= or table=; the environment supplies the input. "
+                   "Resubmit a corrected full path inside <expand>, with a brief <plan>.")
             )
         steps.append(PipelineStep(op=op_name, target=target, params=params))
     if not steps:
@@ -281,6 +311,7 @@ class AgentRunResult:
     transcript: list[dict] = field(default_factory=list)
     tree: dict = field(default_factory=dict)
     solution_attempts: list[dict] = field(default_factory=list)  # compatibility
+    stop_reason: str = "unknown"
 
 
 class TreeAgent:
@@ -297,7 +328,10 @@ class TreeAgent:
         seed: int = 42,
         downstream_evaluator=None,
         max_solution_attempts: int = 1,
+        max_repeated_paths: int = 2,
+        model_config=None,
     ) -> None:
+        self.model_config = model_config or {}
         self.llm = llm
         self.sandbox = sandbox
         self.ctx = ctx
@@ -306,6 +340,12 @@ class TreeAgent:
         self.max_chain_len = int(max_chain_len)
         self.max_depth = int(max_depth)
         self.max_err_cnt = int(max_err_cnt)
+        self.max_repeated_paths = int(max_repeated_paths)
+        if self.max_repeated_paths < 2:
+            raise ValueError("max_repeated_paths must be >= 2 (one warning before stopping)")
+        self.stop_reason = "round_limit"
+        self._repeat_path = None
+        self._repeat_count = 0
         self.verbose = bool(verbose)
         self._rng = random.Random(seed)
         self.tree = SearchTree()
@@ -314,26 +354,47 @@ class TreeAgent:
         self._validated_pipelines: dict[str, Pipeline] = {}
         self.downstream_evaluator = downstream_evaluator
         self.candidate_scores: dict[str, dict] = {}
+        self.search_stats = {"response_attempts": 0, "response_parse_failures": 0,
+                             "expansion_validation_failures": 0, "score_requests": 0, "cache_hits": 0,
+                             "unique_candidates_scored": 0, "successful_candidates": 0,
+                             "repeated_paths": 0}
 
     def _downstream_feedback(self, node: SearchNode) -> str:
         pipeline = self._pipeline_for_node(node)
         key = canonical_path(node.accumulated_steps)
+        self.search_stats["score_requests"] += 1
+        cached = key in self.candidate_scores
+        if cached:
+            self.search_stats["cache_hits"] += 1
         if key not in self.candidate_scores:
-            fitness, metrics, error = self.downstream_evaluator.evaluate_for_agent(pipeline)
+            from .model_contract import sequence_input_errors
+            errors = sequence_input_errors(pipeline, self.ctx, self.model_config)
+            if errors:
+                fitness, metrics, error = None, {}, "; ".join(errors)
+            else:
+                fitness, metrics, error = self.downstream_evaluator.evaluate_for_agent(pipeline)
             if fitness is None or not math.isfinite(fitness):
                 error = error or 'No finite validation fitness (higher is better) returned'
             self.candidate_scores[key] = dict(path=key, fitness=fitness if not error else None,
                                               metric_name=getattr(self.downstream_evaluator, 'metric_key', None),
-                                              metrics=metrics, error=error)
+                                              metrics=metrics, error=error, evaluated=not bool(errors))
         record = self.candidate_scores[key]
+        # Keep protocol manifests in the artifact, not in the model feedback.
+        feedback_record = {k: record[k] for k in ("path", "fitness", "metric_name", "error")}
+        feedback_record["cache_hit"] = cached
+        self.search_stats["unique_candidates_checked"] = len(self.candidate_scores)
+        self.search_stats["model_contract_failures"] = sum(not r.get('evaluated', True) for r in self.candidate_scores.values())
+        self.search_stats["unique_candidates_scored"] = sum(r.get('evaluated', True) for r in self.candidate_scores.values())
+        self.search_stats["successful_candidates"] = sum(r['fitness'] is not None for r in self.candidate_scores.values())
         valid = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
         best = max(valid, key=lambda r: r['fitness']) if valid else None
         return (
-            '\nSampled downstream feedback: ' + json.dumps(record, default=str)
+            '\nSampled downstream feedback: ' + json.dumps(feedback_record, default=str)
             + '\nBest sampled validation fitness (higher is better) so far: ' + (str(best['fitness']) if best else 'none')
-            + '\nContinue exploring a different legal full path to improve validation fitness (higher is better). '
-            'Use training errors to revise operators; do not repeat the same path. '
-            'Do not use test metrics or force extra operators merely to increase length.'
+            + ('\nThis path was successfully scored. You may submit this exact path with <answer>, or explore a different legal path.'
+               if record['fitness'] is not None else
+               '\nThis path FAILED scoring and cannot be submitted as a successful answer. Correct the reported error in the full path; appending unrelated operators does not fix it.')
+            + ' Do not use test metrics or force extra operators merely to increase length.'
         )
 
     def _log(self, message: str) -> None:
@@ -356,16 +417,16 @@ class TreeAgent:
         remaining = sorted(set(mandatory_ops_for_context(self.ctx)) - set(s.op for s in cursor.accumulated_steps))
         lines = [f"Current materialized path (copy exactly): {path}",
                  f"Mandatory operators still required: {remaining}. These are not optional.",
-                 "Keep exact names such as CreateSequence and JoinTable; do not lowercase them. "
-                 "Use keyword arguments inside parentheses, never explanatory prose or numbered lists."]
+                 "Use exact names; do not lowercase them. Use keyword arguments, never explanatory prose inside parentheses.",
+                 "Correct only the reported problem. Reply with at most one explanatory sentence and a concrete full chain ending in </execute>."]
+        examples = []
         if 'CreateSequence' in remaining:
             params = dict(user_col=self.ctx.user_col or 'user_id', item_col=self.ctx.item_col or 'item_id',
                           time_col=self.ctx.time_col or 'timestamp', seq_col='item_id_seq', max_len=50)
             example = canonical_path([PipelineStep('CreateSequence', 'interaction', params)])
             lines.append("CreateSequence syntax for this task: " + example)
-            lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + example + " </execute>")
+            examples.append(example)
         if 'JoinTable' in remaining:
-            lines.append("JoinTable remains mandatory; extra joined feature columns are expected, not a schema violation.")
             if self.ctx.task_type == 'rec':
                 params = dict(method='rec', user_col=self.ctx.user_col or 'user_id',
                               item_col=self.ctx.item_col or 'item_id', how='left')
@@ -374,11 +435,12 @@ class TreeAgent:
                         params[table + '_df'] = '$' + table + '_df'
                 example = canonical_path([PipelineStep('JoinTable', 'interaction', params)])
                 lines.append("JoinTable syntax for this task: " + example)
-                lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '')
-                             + example + " </execute>")
-            lines.append("JoinTable needs two input table branches, not two preceding operators. "
-                         "method='key'/'agg' uses aux_df and key_col; method='rec' uses item_df/user_df. "
-                         "A chain without the current path starts a new branch from root.")
+                examples.append(example)
+            lines.append("JoinTable needs two input table branches, not two preceding operators. Extra joined columns are expected.")
+        if examples:
+            # One illustrative extension, not an automatically completed solution.
+            lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + examples[0] + " </execute>")
+            lines.append("This illustrates syntax only; retain all mandatory operators in your chosen final path.")
         return '\n'.join(lines)
 
     def _initial_messages(self, observation: str) -> list[dict]:
@@ -413,6 +475,7 @@ class TreeAgent:
             obs_text=observation,
             max_chain_len=self.max_chain_len,
             max_explore_turn=self.max_explore_turn,
+            model_contract_text=str({"model": self.model_config.get("model"), "sequence_mappings": self.model_config.get("feature", {}).get("seq_cols", {})}),
         )
         return [{"role": "system", "content": SYSTEM_TREE_SEARCH}, {"role": "user", "content": user}]
 
@@ -493,15 +556,22 @@ class TreeAgent:
         try:
             return self._run_search()
         except BudgetExceededError as exc:
+            self.stop_reason = "budget_exhausted"
+            self.search_stats["stop_reason"] = self.stop_reason
             # Evaluating or executing the next candidate must not discard a
             # previously scored pipeline when the shared budget expires.
             if not self.tree.nodes:
                 raise
             turns = max((item.get('turn', 0) for item in self.transcript), default=0)
             self.transcript.append({'role': 'environment', 'content': str(exc), 'turn': turns})
+            fallback = self._fallback_pipeline()
+            count = self.search_stats["successful_candidates"]
+            self.search_stats["candidate_coverage"] = "none" if count == 0 else "single_candidate" if count == 1 else "multiple_candidates"
+            self.search_stats["selected_path"] = canonical_path(fallback.steps)
             return AgentRunResult(
-                pipeline=self._fallback_pipeline(),
+                pipeline=fallback,
                 success=any(r['fitness'] is not None for r in self.candidate_scores.values()),
+                stop_reason=self.stop_reason,
                 n_turns=turns, n_errors=self.n_errors, transcript=self.transcript,
                 tree=self.tree.to_dict(), solution_attempts=list(self.candidate_scores.values()),
             )
@@ -509,15 +579,17 @@ class TreeAgent:
     def _run_search(self) -> AgentRunResult:
         reset = self.sandbox.reset()
         if not reset.success or reset.obs is None or reset.snapshot is None:
-            return AgentRunResult(Pipeline(), False, 0, 1)
+            self.stop_reason = "initialization_failed"
+            self.search_stats["stop_reason"] = self.stop_reason
+            return AgentRunResult(Pipeline(), False, 0, 1, stop_reason=self.stop_reason)
         self.tree.add_root(reset.snapshot, reset.obs.text)
         messages = self._initial_messages(reset.obs.text)
         if self.downstream_evaluator is not None:
             messages[0]['content'] += (
-                '\nSearch objective: maximize sampled validation fitness (higher is better) under the shared budget. '
-                'A legal pipeline is only a candidate, not an instruction to stop. '
-                'Use validation fitness and training errors to compare and revise distinct legal paths. '
-                'Do not repeatedly finalize the first candidate; explore alternative operators or parameters.'
+                '\nDPPBench adaptation: use sampled validation feedback to assess candidates. '
+                'You may finish with <answer>PATH</answer> or <solution>PATH</solution> once the path is legal and successfully scored. '
+                'Unused turns are a limit, not a requirement. No minimum number of operators or candidates is required. '
+                'Alternatively propose a different full path; repeating an execution is not a new candidate.'
             )
         final_pipeline = None
         turn = 0
@@ -526,6 +598,7 @@ class TreeAgent:
             try:
                 response = self.llm.chat(messages)
             except BudgetExceededError as exc:
+                self.stop_reason = "budget_exhausted"
                 self.transcript.append({"role": "environment", "content": str(exc), "turn": turn})
                 break
             except LocalModelInitializationError:
@@ -541,13 +614,17 @@ class TreeAgent:
             messages.append({"role": "assistant", "content": response})
             self.transcript.append({"role": "assistant", "content": response, "turn": turn,
                                     "generation": generation})
-            action = parse_response(response)
+            self.search_stats["response_attempts"] += 1
+            action = parse_response(response, strict_native=True)
             turns_left = self.max_explore_turn - turn
 
             if action.kind not in ("expand", "answer"):
+                self._repeat_path = None
+                self._repeat_count = 0
+                self.search_stats["response_parse_failures"] += 1
                 self.n_errors += 1
                 feedback = render_protocol_error(
-                    "Missing concrete operator chain or a complete action tag. "
+                    (action.error or "Missing concrete operator chain or a complete action tag.") + " "
                     + str({"parsed_kind": action.kind,
                            "generation": generation,
                            "expand_open": response.count("<expand"), "expand_close": response.count("</expand>"),
@@ -580,7 +657,12 @@ class TreeAgent:
                         feedback = self._downstream_feedback(parent)
                         messages.append({'role': 'user', 'content': feedback})
                         self._record_feedback(feedback, turn)
-                        continue
+                        record = self.candidate_scores[canonical_path(parent.accumulated_steps)]
+                        if record['fitness'] is None:
+                            self.n_errors += 1
+                            continue
+                    self.stop_reason = "model_answer"
+                    self.search_stats['submitted_path'] = canonical_path(parent.accumulated_steps)
                     parent.is_terminal = True
                     final_pipeline = self._pipeline_for_node(parent)
                     break
@@ -604,9 +686,23 @@ class TreeAgent:
                 if existing is not None and existing.node_id in self._validated_pipelines:
                     if self.downstream_evaluator is not None:
                         feedback = self._downstream_feedback(existing)
+                        key = canonical_path(existing.accumulated_steps)
+                        self._repeat_count = self._repeat_count + 1 if key == self._repeat_path else 1
+                        self._repeat_path = key
+                        self.search_stats['repeated_paths'] += 1
+                        if self._repeat_count >= self.max_repeated_paths:
+                            self.stop_reason = "repeat_stagnation"
+                            self._record_feedback("Repeated execution limit reached; returning the best successfully scored candidate if available.", turn)
+                            break
+                        feedback += ("\nRepeated execution: no new candidate was scored. " +
+                                     (("Submit <answer>" + key + "</answer> to finish, or send a different complete path. ")
+                                      if self.candidate_scores[key]["fitness"] is not None else
+                                      "This path failed scoring; fix the reported error. It cannot be submitted as a successful answer. ") +
+                                     f"Repeating this path {self.max_repeated_paths} consecutive times stops as repeat_stagnation, not model_answer.")
                         messages.append({'role': 'user', 'content': feedback})
                         self._record_feedback(feedback, turn)
                         continue
+                    self.stop_reason = "validated_native_repeat"
                     existing.is_terminal = True
                     final_pipeline = copy.deepcopy(self._validated_pipelines[existing.node_id])
                     self.transcript.append({
@@ -614,6 +710,8 @@ class TreeAgent:
                         "content": '<execute status="OK">Repeated validated path accepted as final answer.</execute>',
                     })
                     break
+                self._repeat_path = None
+                self._repeat_count = 0
                 if action.parent_chain is not None:
                     parent, parent_error = self._parent(action.parent_chain)
                     if parent_error:
@@ -632,6 +730,7 @@ class TreeAgent:
                 if parent.depth + len(steps) > self.max_depth:
                     raise ChainParseError(f"Expansion exceeds max tree depth {self.max_depth}.")
             except ChainParseError as exc:
+                self.search_stats["expansion_validation_failures"] += 1
                 self.n_errors += 1
                 feedback = render_execute(
                     parent_path="unchanged",
@@ -665,6 +764,7 @@ class TreeAgent:
                     if not candidate_errors:
                         self._validated_pipelines[cursor.node_id] = self._pipeline_for_node(cursor)
                 except BudgetExceededError as exc:
+                    self.stop_reason = "budget_exhausted"
                     self.transcript.append({"role": "environment", "content": str(exc), "turn": turn})
                     break
             feedback = render_execute(
@@ -704,7 +804,14 @@ class TreeAgent:
             final_pipeline = self._fallback_pipeline()
         if self.downstream_evaluator is not None:
             success = any(r['fitness'] is not None for r in self.candidate_scores.values())
+        if self.stop_reason == "round_limit" and self.n_errors >= self.max_err_cnt:
+            self.stop_reason = "error_limit"
+        self.search_stats["stop_reason"] = self.stop_reason
+        count = self.search_stats["successful_candidates"]
+        self.search_stats["candidate_coverage"] = "none" if count == 0 else "single_candidate" if count == 1 else "multiple_candidates"
+        self.search_stats["selected_path"] = canonical_path(final_pipeline.steps)
         return AgentRunResult(
+            stop_reason=self.stop_reason,
             pipeline=final_pipeline,
             success=success,
             n_turns=turn,

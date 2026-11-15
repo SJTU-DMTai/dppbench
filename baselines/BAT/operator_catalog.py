@@ -40,7 +40,7 @@ def _param_space_text(spec: OpSpec) -> str:
 
 def format_op_descriptions(task_type: str) -> str:
     """Render a rich operator whitelist for BAT prompts."""
-    if task_type not in ("tabular", "rec"):
+    if task_type not in ("tabular", "rec", "graph"):
         raise ValueError(f"Unknown task_type {task_type}")
     by_cat: dict[OpCategory, list[OpSpec]] = {}
     for spec in get_available_ops(task_type):
@@ -50,6 +50,7 @@ def format_op_descriptions(task_type: str) -> str:
     lines.append(", ".join(cat.value for cat in get_category_order(task_type)))
     lines.append("")
     lines.append("# Operators")
+    lines.append("LabelEncode accepts scalar categorical columns only. Never explicitly select categorical_list columns; keep multi-valued categories for token-wise encoding.")
     for cat in get_category_order(task_type):
         specs = by_cat.get(cat, [])
         if not specs:
@@ -85,7 +86,7 @@ def format_mandatory_examples(ctx: DataContext) -> str:
         if params is None:
             lines.append(f"- {name}: required; choose valid keyword arguments from the catalog")
             continue
-        if ctx.task_type == "tabular" and name in {"HandleMV", "LabelEncode"}:
+        if ctx.task_type in {"tabular", "graph"} and name in {"HandleMV", "LabelEncode"}:
             params["cols"] = None
         args = ", ".join(f"{key}={value!r}" for key, value in params.items())
         lines.append(f"- {name}({args})")
@@ -117,7 +118,7 @@ FUNCTION_FAMILY_MAP: dict[str, list[str]] = {
 
 def function_family_descriptions(task_type: str) -> str:
     """Render populated BAT function families for the current task type."""
-    if task_type not in ("tabular", "rec"):
+    if task_type not in ("tabular", "rec", "graph"):
         raise ValueError(f"Unknown task_type {task_type}")
     valid_ops = {spec.op_name for spec in get_available_ops(task_type)}
     lines: list[str] = []

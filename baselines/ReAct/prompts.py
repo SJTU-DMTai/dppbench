@@ -119,6 +119,8 @@ def render_user_initial(
     target_text = (
         "downstream LightGBM (binary AUC; metrics on the validation split)"
         if task_type == "tabular"
+        else "downstream graph node-classification model configured for this task (GCN/GraphSAGE/GAT; validation metrics only)"
+        if task_type == "graph"
         else "downstream DIN recommender (AUC; metrics on the held-out eval split)"
     )
     return f"""# Task

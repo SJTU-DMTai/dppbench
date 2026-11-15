@@ -45,6 +45,7 @@ CONFIG_KEYS = (
     "max_chain_len",
     "max_depth",
     "max_err_cnt",
+    "max_repeated_paths",
     "small_n",
     "eval_full",
     "downstream_feedback",
@@ -146,6 +147,7 @@ class DeepPrep:
         self.max_chain_len = int(max_chain_len)
         self.max_depth = int(max_depth)
         self.max_err_cnt = int(max_err_cnt)
+        self.max_repeated_paths = int(cfg["max_repeated_paths"])
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
@@ -195,6 +197,7 @@ class DeepPrep:
 
         # 1. Sandbox (also drives schema-based context inference)
         sandbox = Sandbox(
+            graph_training_only=True,
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
@@ -240,11 +243,15 @@ class DeepPrep:
                 max_chain_len=self.max_chain_len,
                 max_depth=self.max_depth,
                 max_err_cnt=self.max_err_cnt,
+                max_repeated_paths=self.max_repeated_paths,
                 verbose=self.verbose,
                 seed=self.seed,
                 downstream_evaluator=agent_evaluator,
+                model_config=(agent_evaluator._executor.get_model_config() if agent_evaluator is not None else sandbox._executor.get_model_config()),
             )
             run = agent.run()
+            if self.verbose:
+                print("[DeepPrep] search_stats=" + json.dumps(agent.search_stats), flush=True)
             pipeline: Pipeline = run.pipeline
 
             # 3. Assign serialization-only DAG metadata, then hard-validate.
@@ -309,6 +316,7 @@ class DeepPrep:
                     "data_name": self.data_name,
                     "task_type": ctx.task_type,
                     "success": run.success,
+                    "stop_reason": run.stop_reason,
                     "n_turns": run.n_turns,
                     "n_errors": run.n_errors,
                     "transcript": run.transcript,
@@ -321,6 +329,7 @@ class DeepPrep:
                     "downstream_feedback": self.downstream_feedback,
                     "downstream_eval_n": self.downstream_eval_n,
                     "candidate_scores": run.solution_attempts,
+                    "search_stats": agent.search_stats,
                 },
                 f,
                 ensure_ascii=False,
@@ -354,10 +363,12 @@ class DeepPrep:
             "eval_error": eval_error,
             "no_valid_scored_candidate": no_valid_scored_candidate,
             "candidate_errors": [r.get("error") for r in run.solution_attempts if r.get("error")],
+            "stop_reason": run.stop_reason,
             "agent_success": run.success,
             "agent_n_turns": run.n_turns,
             "agent_n_errors": run.n_errors,
             "agent_solution_attempts": run.solution_attempts,
+            "search_stats": agent.search_stats,
             "final_pipeline_ops": [s.op for s in pipeline.steps],
             "is_legal": legal,
             "check_errors": check_report.errors,

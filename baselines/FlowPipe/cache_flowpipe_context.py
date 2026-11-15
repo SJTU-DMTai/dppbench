@@ -48,16 +48,10 @@ def main() -> int:
             llm_name=args.llm_name, ctx_dim=args.ctx_dim,
             device=device, verbose=True,
         )
-        try:
-            path = baseline.precompute_context(
-                device=device, max_length=args.max_length,
-                overwrite=args.overwrite,
-            )
-        except ValueError as exc:
-            if "graph" in str(exc).lower():
-                print(f"[{data_name}] skipped: {exc}")
-                continue
-            raise
+        path = baseline.precompute_context(
+            device=device, max_length=args.max_length,
+            overwrite=args.overwrite,
+        )
         print(f"[{data_name}] saved: {path}")
     return 0
 

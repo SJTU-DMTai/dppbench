@@ -50,7 +50,7 @@ def format_op_descriptions(task_type: str) -> str:
     targets and descriptions so the LLM is less likely to invent parameter
     names or violate the shared operator contract.
     """
-    if task_type not in ("tabular", "rec"):
+    if task_type not in ("tabular", "rec", "graph"):
         raise ValueError(f"Unknown task_type {task_type}")
     by_cat: dict[OpCategory, list[OpSpec]] = {}
     for spec in get_available_ops(task_type):

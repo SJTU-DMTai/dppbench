@@ -227,6 +227,7 @@ class ReAct:
             return agent_evaluator.evaluate_for_agent(pipeline)
 
         sandbox = Sandbox(
+            graph_training_only=True,
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,

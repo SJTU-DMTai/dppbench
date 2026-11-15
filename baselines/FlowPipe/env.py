@@ -11,6 +11,7 @@ import numpy as np
 from baselines.common.op_spec import CATALOG, OpCategory, is_mandatory
 from baselines.common.budget import BudgetExceededError
 from baselines.common.search_reward import fitness_to_reward
+from baselines.common.utils import get_available_ops
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step
 from baselines.common.state_features import dataframe_state_features, primary_feature_frame
 
@@ -44,9 +45,14 @@ class FlowPipeEnv:
             ActionSpec(i + self.n_logic, spec.op_name, spec.category)
             for i, spec in enumerate(specs)
         ]
+        # Preserve the global action vocabulary/checkpoint dimensions. Graph
+        # node tables use the shared graph whitelist and topology-safe masking.
+        allowed = ({s.op_name for s in get_available_ops("graph")}
+                   if ctx.task_type == "graph" else set(CATALOG))
         self.applicable_gids = {
             action.gid for action in self.actions
-            if CATALOG[action.name].task_type in ("both", ctx.task_type)
+            if action.name in allowed
+            and CATALOG[action.name].task_type in ("both", ctx.task_type)
             and self._can_instantiate(action.name)
         }
         self.action_by_gid = {action.gid: action for action in self.actions}

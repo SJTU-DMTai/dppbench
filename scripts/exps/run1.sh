@@ -8,11 +8,10 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="42 44"
-GPU_ID=1
+SEED_LIST="43 44"
+GPU_ID=0
 
 TASK_LIST=(
-  amazon_beauty
   kuairec
   movielens
   elliptic_bitcoin
@@ -25,13 +24,10 @@ TASK_LIST=(
   home_credit
   nyc_taxi_hourly
   polish_bankruptcy
-  yelp
 )
 
 BASELINES=(
-  LLMAutoDP
   BAT
-  DeepPrep
 )
 
 HARD_MEMORY_GIB=85

@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import os
 import unittest
+from baselines.DeepPrep.tree_agent import ChainParseError
 
 from baselines.common.data_ctx import DataContext, TableContext
 from baselines.common.pipeline import PipelineStep
@@ -404,6 +405,41 @@ class DeepPrepProtocolTest(unittest.TestCase):
         self.assertEqual(searched.pipeline.steps[0].params['method'], 'mean')
         self.assertEqual(len(searched.solution_attempts), 2)
         self.assertTrue(any('Sampled downstream feedback' in t['content'] for t in searched.transcript))
+
+
+    def test_deepprep_prose_calls_receive_specific_diagnostics(self):
+        for call in ("HandleMV (to handle any missing values)", "SortRows (to order chronologically)"):
+            with self.assertRaises(ChainParseError) as caught:
+                chain_to_steps(call, _ctx(), random.Random(1), strict_instances=True, validate_rec_lookup=True)
+            error = str(caught.exception)
+            self.assertIn("natural-language explanation", error)
+            self.assertIn(call, error)
+            self.assertNotIn("remove positional table arguments", error)
+
+    def test_deepprep_positional_arguments_are_not_misreported_as_prose(self):
+        with self.assertRaises(ChainParseError) as caught:
+            chain_to_steps("SortRows(['timestamp'])", _ctx(), random.Random(1), strict_instances=True, validate_rec_lookup=True)
+        self.assertIn("Found positional arguments", str(caught.exception))
+        self.assertNotIn("natural-language explanation", str(caught.exception))
+
+    def test_deepprep_unknown_keyword_has_consistent_native_retry_format(self):
+        with self.assertRaises(ChainParseError) as caught:
+            chain_to_steps("HandleMV(bogus=1)", _ctx(), random.Random(1), strict_instances=True, validate_rec_lookup=True)
+        error = str(caught.exception)
+        self.assertIn("unknown params", error)
+        self.assertIn("Rejected call", error)
+        self.assertIn("ending in </execute>", error)
+        self.assertNotIn("with a brief <plan>", error)
+
+    def test_revision_feedback_is_compact_and_has_one_continuation(self):
+        from scripts.test_deepprep_join_protocol import context
+        agent = TreeAgent(object(), object(), context(), verbose=False)
+        agent.tree.add_root(b'root', 'root')
+        hint = agent._revision_hint()
+        self.assertEqual(hint.count("Continuation syntax:"), 1)
+        self.assertIn("CreateSequence syntax", hint)
+        self.assertIn("JoinTable syntax", hint)
+        self.assertLess(len(hint), 1500)
 
 
 if __name__ == "__main__":

@@ -239,6 +239,7 @@ class DataMaster:
 
         # 1. Sandbox (also drives schema-based context inference)
         sandbox = Sandbox(
+            graph_training_only=True,
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,

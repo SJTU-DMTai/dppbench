@@ -173,7 +173,7 @@ def _observation_text(obs) -> str:
 def expected_target_columns(ctx: DataContext) -> list[str]:
     """Compute the BAT target-instance-free schema expectation."""
     cols: list[str] = []
-    if ctx.task_type == "tabular":
+    if ctx.task_type in {"tabular", "graph"}:
         cols.extend(ctx.numeric_cols)
         cols.extend(ctx.categorical_cols)
         if ctx.target_col:
@@ -201,7 +201,7 @@ def expected_target_columns(ctx: DataContext) -> list[str]:
 def _sandbox_columns(sandbox: "Sandbox") -> list[str]:
     if sandbox.data is None:
         return []
-    if sandbox.task_type == "tabular":
+    if sandbox.task_type in {"tabular", "graph"}:
         df = getattr(sandbox.data, "train_df", None)
     else:
         df = getattr(sandbox.data, "interaction_df", None)
@@ -585,6 +585,22 @@ def _parse_chain_safe(
         return [], "empty pipeline chain"
     try:
         steps = chain_to_steps(chain_str, ctx, rng, strict_instances=True)
+        list_columns = set(ctx.list_cols)
+        for step in steps:
+            if step.op == 'CreateSequence':
+                list_columns.add(step.params.get('seq_col', 'item_id_seq'))
+            elif step.op == 'RenameColumn':
+                for old, new in (step.params.get('rename_map') or {}).items():
+                    if old in list_columns:
+                        list_columns.remove(old)
+                        list_columns.add(new)
+            cols = step.params.get("cols")
+            cols = [cols] if isinstance(cols, str) else (cols or [])
+            bad = sorted(set(cols).intersection(list_columns))
+            if step.op == "LabelEncode" and bad:
+                return [], f"LabelEncode cannot encode list-valued columns {bad} as scalar categories; preserve them for token-wise encoding"
+            if step.op == 'DropColumns':
+                list_columns.difference_update(cols)
     except ChainParseError as e:
         return [], f"ChainParseError: {e}"
     except Exception as e:  # pragma: no cover - defensive

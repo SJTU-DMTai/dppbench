@@ -81,6 +81,8 @@ class SemanticContextLoader:
                 f"- {column}: dtype={series.dtype}, role={role}, "
                 f"missing={missing:.4f}, unique={unique}"
             )
+        graph_note = ("Graph input is a node-feature table. Preserve node IDs, labels, time/split metadata and the separately maintained topology; rewards come from the configured GNN validation score.\n"
+                      if ctx.task_type == "graph" else "")
         categories = ", ".join(category.value for category in OpCategory)
         return (
             "EMBED-ONLY PROMPT -- GLOBAL CONTEXT FOR AUTOML PIPELINES\n"
@@ -88,7 +90,8 @@ class SemanticContextLoader:
             "Do not generate a pipeline or discuss model training. The static "
             "embedding will condition a FiLM-modulated GFlowNet.\n"
             f"Dataset: {data_name}\nTask type: {ctx.task_type}\n"
-            f"Shape: {frame.shape[0]} rows x {frame.shape[1]} columns\n"
+            + graph_note
+            + f"Shape: {frame.shape[0]} rows x {frame.shape[1]} columns\n"
             f"Target: {ctx.target_col}\nAvailable component categories: {categories}\n"
             "Summarize missingness, types, categorical cardinality, numeric scale, "
             "skew/outliers, redundancy, useful feature interactions, and operator "

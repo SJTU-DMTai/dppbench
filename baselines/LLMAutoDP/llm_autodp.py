@@ -18,8 +18,10 @@ import yaml
 
 from baselines.common.budget import BudgetExceededError, get_active_budget
 from baselines.common.config import default_config_path, load_baseline_config
-from baselines.common.pipeline import Pipeline, check_pipeline, repair
+from baselines.common.pipeline import Pipeline, repair
 from baselines.common.search_evaluator import SearchPipelineEvaluator
+from .validation import check_candidate, task_contract
+from baselines.DeepPrep.model_contract import sequence_input_errors
 from baselines.common.utils import get_available_ops
 from baselines.DeepPrep.llm_client import LLMClient
 
@@ -33,6 +35,11 @@ CONFIG_KEYS = ("llm_backend", "llm_model", "temperature", "max_tokens", "timeout
 def parse_group(text, limit):
     """Reject ambiguous/truncated responses rather than treating them as no-op."""
     text = text.strip()
+    # Transport terminators only: never discard arbitrary JSON suffixes or
+    # repair truncated candidates. Preserve the raw response in agent_log.
+    while text.endswith(("<|im_end|>", "<|endoftext|>")):
+        marker = "<|im_end|>" if text.endswith("<|im_end|>") else "<|endoftext|>"
+        text = text[:-len(marker)].rstrip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
     obj = json.loads(text)
@@ -58,6 +65,9 @@ def decode_pipeline(candidate):
         raise ValueError("dag.sources must be a nonempty list")
     if not isinstance(dag.get("ops"), list) or not isinstance(dag.get("train"), dict):
         raise ValueError("dag.ops and dag.train are required")
+    prev = dag["train"].get("prev")
+    if not isinstance(prev, list) or len(prev) != 1:
+        raise ValueError("dag.train.prev must contain exactly one node; connect or remove unused branches")
     return Pipeline.from_yaml(yaml.safe_dump({"dag": dag}, sort_keys=False))
 
 
@@ -104,31 +114,51 @@ class LLMAutoDP:
         anchor = repair(Pipeline(), ctx.task_type, ctx, rng=random.Random(self.cfg["seed"]))
         history, cache = [], {}
         best, best_fit, best_metrics = None, None, {}
+        executor = getattr(evaluator, "_executor", None)
+        model_config = executor.get_model_config() if executor is not None else {}
+        if not isinstance(model_config, dict):
+            model_config = {}
+        contract = task_contract(ctx, model_config)
         allowed_ops = {spec.op_name for spec in get_available_ops(ctx.task_type)}
 
-        def score(pipeline):
+        stats = {"parsed_rounds": 0, "parse_failed_rounds": 0, "generated_candidates": 0,
+                 "legal_candidate_requests": 0, "invalid_candidates": 0,
+                 "cache_hits": 0, "new_candidate_evaluations": 0, "successful_new_candidates": 0}
+
+        def score(pipeline, is_anchor=False):
             nonlocal best, best_fit, best_metrics
             if any(step.op not in allowed_ops for step in pipeline.steps):
                 return {"fitness": None, "error": "Operator outside the task whitelist"}
-            report = check_pipeline(pipeline, ctx)
+            report = check_candidate(pipeline, ctx)
             if not report.valid:
                 return {"fitness": None, "error": "; ".join(report.errors)}
             if len(pipeline.steps) > self.cfg["max_pipeline_len"]:
                 return {"fitness": None, "error": "max_pipeline_len exceeded"}
+            model_errors = sequence_input_errors(pipeline, ctx, model_config)
+            if model_errors:
+                return {"fitness": None, "error": "; ".join(model_errors)}
             key = pipeline.hash()
+            if not is_anchor:
+                stats["legal_candidate_requests"] += 1
             if key in cache:
+                if not is_anchor:
+                    stats["cache_hits"] += 1
                 return {**cache[key], "cache_hit": True}
+            if not is_anchor:
+                stats["new_candidate_evaluations"] += 1
             ev = evaluator.evaluate(pipeline)
             if ev.error and "BudgetExceededError" in ev.error:
                 raise BudgetExceededError(ev.error)
-            fit = float(ev.fitness) if ev.success and math.isfinite(ev.fitness) else None
-            record = {"fitness": fit, "error": ev.error, "cache_hit": False}
+            fit = float(ev.fitness) if ev.success and not ev.error and math.isfinite(ev.fitness) else None
+            if not is_anchor and fit is not None and not ev.error:
+                stats["successful_new_candidates"] += 1
+            record = {"fitness": fit, "error": ev.error, "cache_hit": False, "evaluated": True}
             cache[key] = record
             if fit is not None and (best_fit is None or fit > best_fit):
                 best, best_fit, best_metrics = pipeline.copy(), fit, dict(ev.metrics or {})
             return record
 
-        anchor_result = score(anchor)
+        anchor_result = score(anchor, is_anchor=True)
         r0 = anchor_result["fitness"]
         history.append({"round": 0, "anchor": yaml.safe_load(anchor.to_yaml()), **anchor_result})
         catalog = [asdict(spec) for spec in get_available_ops(ctx.task_type)]
@@ -152,7 +182,7 @@ class LLMAutoDP:
             "{\"stop\": true, \"candidates\": []}. No untested final strategies."
         )
         messages = [{"role": "user", "content": json.dumps({
-            "context": asdict(ctx), "operators": catalog, "anchor": history[0],
+            "context": asdict(ctx), "contract": contract, "operators": catalog, "anchor": history[0],
             "rounds": self.cfg["n_rounds"]}, default=str)}]
         stop_reason = "round_limit"
         for turn in range(1, self.cfg["n_rounds"] + 1):
@@ -165,8 +195,11 @@ class LLMAutoDP:
                 try:
                     stop, candidates = parse_group(response, self.cfg["n_candidates"])
                 except (ValueError, TypeError) as exc:
+                    stats["parse_failed_rounds"] += 1
                     feedback = {"round": turn, "error": str(exc)}
                 else:
+                    stats["parsed_rounds"] += 1
+                    stats["generated_candidates"] += len(candidates)
                     if stop:
                         stop_reason = "llm_stop"
                         break
@@ -179,11 +212,19 @@ class LLMAutoDP:
                             raise
                         except (ValueError, TypeError, KeyError, AttributeError) as exc:
                             result = {"fitness": None, "error": str(exc)}
+                        if not result.get("evaluated") and not result.get("cache_hit"):
+                            stats["invalid_candidates"] += 1
                         fit = result["fitness"]
                         group.append({"candidate": candidate, **result,
                                       "relative_improvement": fit - r0 if fit is not None and r0 is not None else None})
                     feedback = {"round": turn, "group": group, "anchor_fitness": r0,
                                 "best_fitness": best_fit}
+                generation = getattr(llm, "last_generation", None)
+                if isinstance(generation, dict):
+                    feedback["generation"] = generation
+                previous_errors = {entry.get("error") for r in history for entry in r.get("group", []) if entry.get("error")}
+                feedback["repeated_errors"] = sorted({entry["error"] for entry in feedback.get("group", []) if entry.get("error") in previous_errors})
+                feedback["instruction"] = "Correct all reported errors in the complete DAG. Appending steps does not fix invalid prefixes. Submit stop=true only with an empty candidates list."
                 history.append(feedback)
                 messages.append({"role": "user", "content": json.dumps(feedback, default=str)})
                 if self.verbose:
@@ -193,6 +234,12 @@ class LLMAutoDP:
                 break
         if best is None:
             raise RuntimeError("LLM-AutoDP produced no successful validation candidate: " + json.dumps(history, default=str))
+        stats["selected_source"] = "anchor" if best.hash() == anchor.hash() else "llm_candidate"
+        stats["status"] = ("anchor_only" if stats["new_candidate_evaluations"] == 0 else
+                           "no_successful_new_candidate" if stats["successful_new_candidates"] == 0 else "searched")
+        self.search_stats = stats
+        if self.verbose:
+            print("[LLMAutoDP] search_stats=" + json.dumps(stats), flush=True)
         return best, best_fit, best_metrics, history, messages, stop_reason
 
     def run(self):
@@ -226,6 +273,7 @@ class LLMAutoDP:
             "duration_seconds": time.monotonic() - started,
             "adaptations": {"DPS": False, "PTS": False, "LESS": False,
                             "processed_prefix_cache": False, "full_candidate_cache": True},
+            "search_stats": self.search_stats,
             "config": self.cfg,
         }
         for name, value in (("run_summary.json", summary), ("trajectory.json", history),

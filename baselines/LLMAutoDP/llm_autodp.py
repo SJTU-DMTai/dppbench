@@ -21,6 +21,7 @@ from baselines.common.config import default_config_path, load_baseline_config
 from baselines.common.pipeline import Pipeline, repair
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from .validation import check_candidate, task_contract
+from .instantiation import instantiate_candidate
 from baselines.DeepPrep.model_contract import sequence_input_errors
 from baselines.common.utils import get_available_ops
 from baselines.DeepPrep.llm_client import LLMClient
@@ -161,21 +162,23 @@ class LLMAutoDP:
         anchor_result = score(anchor, is_anchor=True)
         r0 = anchor_result["fitness"]
         history.append({"round": 0, "anchor": yaml.safe_load(anchor.to_yaml()), **anchor_result})
-        catalog = [asdict(spec) for spec in get_available_ops(ctx.task_type)]
+        catalog = [{k: v for k, v in asdict(spec).items()
+                    if k not in {'default_params', 'param_space', 'required_params'}}
+                   for spec in get_available_ops(ctx.task_type)]
         system = (
             "You are LLMAutoDP, searching data preparation strategies for DPPBench. "
             "Generate multiple diverse complete strategies, compare each group's validation "
             "fitness and improvement relative to the fixed anchor, then revise operator choices "
             "and order. Higher fitness is better (error metrics are already negated). "
             "The anchor contains only benchmark-required preparation, not a reference solution. "
-            "Use only the supplied operators and valid parameters; preserve target, ID, time, "
+            "Choose only operator names and order. The benchmark's public make_step factory "
+            "generates all parameters, auxiliary sources, and DAG edges using a fixed seed per strategy. "
+            "Do not emit params, sources, dag or train. Preserve target, ID, time, "
             "split columns, recommendation histories and graph node/edge alignment. "
             "Never use test data or change labels. Do not generate code. "
-            "Return JSON only: {\"stop\": false, \"candidates\": [{\"dag\": "
-            "{\"sources\": [{\"id\": \"s0\", \"table\": \"main\"}], "
-            "\"ops\": [{\"id\": \"o1\", \"op\": \"HandleMV\", \"prev\": [\"s0\"], "
-            "\"params\": {}}], \"train\": {\"prev\": [\"o1\"]}}}]}. "
-            "Sources must use this task's table names; retain mandatory operators. "
+            "Return JSON only: {\"stop\": false, \"candidates\": "
+            "[{\"operators\": [\"HandleMV\", \"LabelEncode\"]}]}. "
+            "Retain mandatory operators; missing required operators are not added to your candidates. "
             f"Return 1 to {self.cfg['n_candidates']} candidates per round; at most "
             f"{self.cfg['max_pipeline_len']} operators per candidate. Start with simple diverse "
             "strategies. To stop and select the highest-scoring evaluated strategy return "
@@ -206,8 +209,10 @@ class LLMAutoDP:
                     group = []
                     for candidate in candidates:
                         try:
-                            pipeline = decode_pipeline(candidate)
+                            pipeline = instantiate_candidate(candidate, ctx, self.cfg['seed'], self.cfg['max_pipeline_len'])
                             result = score(pipeline)
+                            result['instantiated_pipeline'] = yaml.safe_load(pipeline.to_yaml())
+                            result['parameter_source'] = 'public_make_step_fixed_strategy_seed_v1'
                         except BudgetExceededError:
                             raise
                         except (ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -224,7 +229,7 @@ class LLMAutoDP:
                     feedback["generation"] = generation
                 previous_errors = {entry.get("error") for r in history for entry in r.get("group", []) if entry.get("error")}
                 feedback["repeated_errors"] = sorted({entry["error"] for entry in feedback.get("group", []) if entry.get("error") in previous_errors})
-                feedback["instruction"] = "Correct all reported errors in the complete DAG. Appending steps does not fix invalid prefixes. Submit stop=true only with an empty candidates list."
+                feedback["instruction"] = "Revise operator choices and order using the reported instantiated pipeline and errors. Return operators lists only, without params or DAG edges. Submit stop=true only with an empty candidates list."
                 history.append(feedback)
                 messages.append({"role": "user", "content": json.dumps(feedback, default=str)})
                 if self.verbose:
@@ -264,6 +269,7 @@ class LLMAutoDP:
         pipeline_path.write_text(best.to_yaml(), encoding="utf-8")
         summary = {
             "method": "LLMAutoDP", "original_paper_reproduction": False,
+            "parameter_source": "public_make_step_fixed_strategy_seed_v1",
             "data_name": self.data_name, "task_type": ctx.task_type,
             "best_pipeline_yaml": best.to_yaml(), "best_pipeline_path": str(pipeline_path.resolve()),
             "best_fitness_in_loop": fit, "best_metrics_in_loop": metrics,

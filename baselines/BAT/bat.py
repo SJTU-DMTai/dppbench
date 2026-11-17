@@ -15,6 +15,8 @@ Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep`:
 """
 from __future__ import annotations
 
+from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+
 import json
 import os
 import time
@@ -27,7 +29,7 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
+from baselines.common.pipeline import Pipeline
 from baselines.common.utils import get_data_ctx
 
 from baselines.DeepPrep.llm_client import LLMClient
@@ -318,7 +320,7 @@ class BAT:
             # candidate. Never insert operators or repair BAT's answer.
             assign_dag_structure(pipeline, ctx)
             check_report = check_pipeline(pipeline, ctx)
-            legal = check_report.valid
+            legal = best_node is not None and check_report.valid
 
             if self.verbose:
                 print(f"[BAT] mcts done. rollouts={mcts_res.n_rollouts}  "
@@ -446,6 +448,8 @@ class BAT:
             print("=" * 60)
 
         result_dict = {
+            "no_valid_scored_candidate": best_node is None,
+            "candidate_errors": [n.exec_error or n.downstream_error for n in mcts_res.end_nodes if n.exec_error or n.downstream_error],
             "best_pipeline_yaml": yaml_text,
             "best_pipeline_path": out_yaml_path,
             "best_fitness": reported_fitness,

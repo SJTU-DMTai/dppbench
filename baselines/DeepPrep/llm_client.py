@@ -181,12 +181,16 @@ class LLMClient:
         except LocalModelInitializationError:
             raise
         except Exception as exc:
+            from baselines.DeepPrep.resource_errors import raise_if_resource_error
+            raise_if_resource_error(exc)
             raise LocalModelInitializationError(
                 f"Cannot initialize local model {self.cfg.model!r}: {type(exc).__name__}: {exc}"
             ) from exc
 
     def _load_local_model(self):
-        require_accelerate(self.cfg.device_map)
+        from baselines.DeepPrep.gpu_config import llm_placement
+        placement = llm_placement(self.cfg.device_map)
+        require_accelerate(placement['device_map'])
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         except ImportError as e:
@@ -200,19 +204,23 @@ class LLMClient:
                 "The DeepPrep checkpoint tokenizer has no chat_template; "
                 "provide the official tokenizer files instead of a base model."
             )
-        quantization = fp8_quantization_config(self.cfg.device_map)
+        target_device = "cpu" if placement["device_map"] == "cpu" else "auto"
+        quantization = fp8_quantization_config(target_device)
         self._weight_quantization = "torchao_fp8_weight_only" if quantization is not None else None
         dtype = self.cfg.torch_dtype
         if dtype in ("auto", "bfloat16"):
-            dtype = local_torch_dtype(self.cfg.device_map)
+            dtype = local_torch_dtype(target_device)
         mdl = AutoModelForCausalLM.from_pretrained(
             self.cfg.model,
             trust_remote_code=True,
             **model_dtype_kwargs(dtype),
-            device_map=self.cfg.device_map,
+            **placement,
             quantization_config=quantization,
         )
         mdl.eval()
+        self._actual_device_map = getattr(mdl, 'hf_device_map', {})
+        self._placement = placement
+        print('[LLM] hf_device_map =', self._actual_device_map)
         self._local_tokenizer = tok
         self._local_model = mdl
 
@@ -285,6 +293,8 @@ class LLMClient:
             "torch_dtype": self.cfg.torch_dtype,
             "weight_quantization": getattr(self, "_weight_quantization", None),
             "device_map": self.cfg.device_map,
+            "actual_device_map": getattr(self, "_actual_device_map", {}),
+            "placement": getattr(self, "_placement", {}),
             "total_tokens_used": self.total_tokens_used,
         }
         tok = self._local_tokenizer

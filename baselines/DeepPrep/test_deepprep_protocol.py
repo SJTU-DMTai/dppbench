@@ -96,6 +96,7 @@ class DeepPrepProtocolTest(unittest.TestCase):
         )
         step = PipelineStep("CreateSequence", "interaction", {})
         sandbox = Sandbox.__new__(Sandbox)
+        sandbox.task_type = 'rec'
         sandbox.data = Mock()
         sandbox.seed = 42
         sandbox.small_n = 0

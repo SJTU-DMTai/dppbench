@@ -8,6 +8,18 @@
 [meta_agent.py](https://github.com/secretflow/ACoLab/blob/main/Autodp-paper-code/agentscope/meta_agent.py)。
 本目录为独立实现，复用本仓库的公共组件，未拷贝上游代码。
 
+## 当前参数生成协议
+
+LLM只选择算子名称及顺序，例如
+`{"stop":false,"candidates":[{"operators":["HandleMV","LabelEncode"]}]}`。
+每条策略通过原有公共 `make_step()` 实例化全部参数、辅助表和DAG连接；公共生成器没有修改。
+右键唯一性决定公共生成器的 key/agg 选择。模型不得输出参数或DAG；旧协议会被明确拒绝，
+不会静默丢弃其参数或分支。每条策略重置到实验seed，相同算子序列复用相同实例化结果。
+这统一了参数生成器，但不等于各方法使用相同随机数序列或搜索相同数量的参数组合。
+反馈记录 `instantiated_pipeline` 和 `parameter_source`，供模型修订和实验审计。
+本变更收回了LLM自主配置参数/拓扑的能力，属于DPPBench适配，旧LLMAutoDP结果需要重跑。
+CtxPipe/HAIPipe/FlowPipe的动作空间、参数生成器及checkpoint没有因此修改。
+
 ## 原生支持与适配范围
 
 原论文优化问答/对话文本的清洗、优化、生成、选择策略，以 LLM 微调后的效果作为反馈。
@@ -43,7 +55,7 @@ README 根目录还提及 tenrec，但它不在上述 14 个任务清单内。
 * 起点：从空 Pipeline 自动补全基准要求的必要操作（如编码、缺失处理、连接或序列构造）。
   不读取任务 prepare.yaml。此起点是“无可选操作”，并非原论文的完全未处理文本。
 * 搜索空间：替换为 DPPBench 的共享任务算子；不再是原论文四类文本团队的 65 种组合。
-  保留顺序搜索，允许共享 DSL 的 DAG 表示；候选必须完整合法，不事后修改胜者。
+  保留算子顺序搜索，由程序通过公共参数生成器实例化并序列化为DAG；候选必须完整合法。
 * 反馈：共享验证集分数；RMSE/MAE/MSE/logloss 由公共 evaluator 转负值。
   不向 LLM 反馈 std-test；最终 std-test 交给 evaluate_baseline.py。
 * 缓存：同一次搜索中，相同完整 Pipeline 的分数复用。**没有**实现原论文的处理结果

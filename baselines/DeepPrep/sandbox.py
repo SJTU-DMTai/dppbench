@@ -11,6 +11,8 @@ any previously visited node.
 """
 from __future__ import annotations
 
+from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+
 import os
 import pickle
 import random as _random
@@ -25,8 +27,6 @@ from typing import Optional
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
-    assign_dag_structure,
-    check_pipeline,
 )
 from baselines.common.search_evaluator import subsample_data_inplace
 from baselines.common.budget import BudgetExceededError
@@ -205,6 +205,11 @@ class Sandbox:
                     error="Pipeline precheck failed: " + "; ".join(report.errors),
                     applied_ops=[],
                 )
+            from .candidate_contracts import frame_errors
+            frame = getattr(self.data, 'train_df' if ctx.task_type in {'tabular', 'graph'} else 'interaction_df', None)
+            proposal_errors = frame_errors(pipe.steps, ctx, frame)
+            if proposal_errors:
+                return ExecutionResult(success=False, error="Pipeline precheck failed: " + "; ".join(proposal_errors), applied_ops=[])
             chain_yaml = pipe.to_yaml()
             chain_path = os.path.join(self._tmpdir, "chain.yaml")
             with open(chain_path, "w", encoding="utf-8") as f:
@@ -220,10 +225,15 @@ class Sandbox:
                 )
             else:
                 self.data.run_pre_process(chain_path)
+            primary = self._primary_df()
+            if primary is not None and not primary.columns.is_unique:
+                raise ValueError('Candidate produced duplicate column names')
         except BudgetExceededError:
             self.data = pickle.loads(pre_snapshot)
             raise
         except Exception as e:
+            from baselines.DeepPrep.resource_errors import raise_if_resource_error
+            raise_if_resource_error(e)
             err = (
                 f"{type(e).__name__}: {e}\n"
                 f"{traceback.format_exc()[-400:]}"
@@ -256,6 +266,8 @@ class Sandbox:
                 null_ratio=0.0, text="(no primary table available)", tables={},
             )
         df = self._visible_frame(df)
+        if not df.columns.is_unique:
+            raise ValueError('Candidate has duplicate column names; fix RenameColumn or JoinTable prefix')
         cols = [str(c) for c in df.columns]
         dtypes = {c: str(df[c].dtype) for c in cols}
         try:
@@ -296,6 +308,8 @@ class Sandbox:
             if table is None or not hasattr(table, "columns"):
                 continue
             table = self._visible_frame(table)
+            if not table.columns.is_unique:
+                raise ValueError(f'Table {name!r} has duplicate column names')
             cols = [str(c) for c in table.columns]
             dtypes = {c: str(table[c].dtype) for c in cols}
             try:

@@ -8,6 +8,8 @@ back into search; full-data final evaluation remains separate.
 """
 from __future__ import annotations
 
+from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+
 import json
 import os
 import math
@@ -20,7 +22,7 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
+from baselines.common.pipeline import Pipeline
 from baselines.common.utils import get_data_ctx
 
 from .evaluator import DeepPrepEvaluator
@@ -249,7 +251,18 @@ class DeepPrep:
                 downstream_evaluator=agent_evaluator,
                 model_config=(agent_evaluator._executor.get_model_config() if agent_evaluator is not None else sandbox._executor.get_model_config()),
             )
-            run = agent.run()
+            try:
+                run = agent.run()
+            except Exception as exc:
+                # Save the original failure even when generation/initialization
+                # failed before any response or candidate was produced.
+                with open(os.path.join(self.output_dir, 'agent_log.json'), 'w', encoding='utf-8') as handle:
+                    json.dump({'data_name': self.data_name, 'success': False,
+                               'stop_reason': 'infrastructure_error',
+                               'error_type': type(exc).__name__, 'error': str(exc),
+                               'search_stats': agent.search_stats,
+                               'transcript': agent.transcript}, handle, ensure_ascii=False, indent=2)
+                raise
             if self.verbose:
                 print("[DeepPrep] search_stats=" + json.dumps(agent.search_stats), flush=True)
             pipeline: Pipeline = run.pipeline

@@ -12,8 +12,40 @@ from baselines.common.budget import Budget, budget_scope
 from baselines.common.data_ctx import DataContext, TableContext
 from baselines.common.pipeline import Pipeline, check_pipeline, repair
 from scripts.run_task_baselines import TASKS
+from baselines.LLMAutoDP.instantiation import instantiate_candidate
+from baselines.common.pipeline import make_step, assign_dag_structure
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_parameter_instantiation_matches_public_factory():
+    ctx = context()
+    strategy = {'operators': ['HandleMV', 'LabelEncode']}
+    actual = instantiate_candidate(strategy, ctx, 42, 10)
+    rng = random.Random(42)
+    expected = Pipeline(steps=[make_step(name, ctx, rng) for name in strategy['operators']])
+    assign_dag_structure(expected, ctx, rng)
+    assert actual.to_yaml() == expected.to_yaml()
+    assert actual.hash() == instantiate_candidate(strategy, ctx, 42, 10).hash()
+
+
+@pytest.mark.parametrize('unique,method', [(True, 'key'), (False, 'agg')])
+def test_join_method_is_generated_from_public_cardinality(unique, method):
+    ctx = context()
+    ctx.secondary_tables = ['history']
+    ctx.tables['history'] = TableContext('history', 'secondary',
+        dtypes={'id': 'int64', 'v': 'float64'},
+        join_keys_to_primary=[{'primary': 'id', 'secondary': 'id'}],
+        join_key_unique={'id': unique})
+    pipeline = instantiate_candidate({'operators': ['JoinTable']}, ctx, 42, 10)
+    assert pipeline.steps[0].params['method'] == method
+
+
+def test_model_cannot_supply_parameters_or_legacy_dag_in_strategy():
+    for candidate in [{'operators': ['HandleMV'], 'params': {'method': 'mean'}},
+                      {'dag': {}}, {'operators': ['NotAnOperator']}]:
+        with pytest.raises(ValueError):
+            instantiate_candidate(candidate, context(), 42, 10)
 
 
 def context(kind="tabular"):
@@ -53,7 +85,7 @@ def test_group_feedback_cache_and_regression_direction(tmp_path):
     # Use legal alternative order; it is distinct without relying on optional params.
     candidate = anchor.copy()
     candidate.steps.reverse()
-    payload = yaml.safe_load(candidate.to_yaml())
+    payload = {'operators': candidate.op_names()}
     evaluator = Mock()
     evaluator.evaluate.side_effect = [
         SimpleNamespace(success=True, fitness=-5., metrics={"rmse": 5.}, error=None),
@@ -62,7 +94,7 @@ def test_group_feedback_cache_and_regression_direction(tmp_path):
     llm.chat.side_effect = [json.dumps({"candidates": [payload, payload]}),
                             '{"stop":true,"candidates":[]}']
     best, fit, _, history, messages, reason = obj._search(evaluator, llm, ctx)
-    assert fit == -3. and best.hash() == candidate.hash()
+    assert fit == -3. and best.op_names() == candidate.op_names()
     assert evaluator.evaluate.call_count == 2  # anchor + one unique candidate
     assert history[1]["group"][0]["relative_improvement"] == 2.
     assert history[1]["group"][1]["cache_hit"]

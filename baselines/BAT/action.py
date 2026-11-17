@@ -16,6 +16,8 @@ action class cannot reappear on the same path).
 """
 from __future__ import annotations
 
+from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+
 import json
 import random
 import re
@@ -28,8 +30,6 @@ from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
-    assign_dag_structure,
-    check_pipeline,
 )
 
 from . import prompts
@@ -142,7 +142,8 @@ def _summary_text(ctx: DataContext) -> str:
         f"#categorical_cols={len(ctx.categorical_cols)} "
         f"#list_cols={len(ctx.list_cols)} #text_cols={len(ctx.text_cols)}\n"
         f"has_user_df={ctx.has_user_df} has_item_df={ctx.has_item_df} "
-        f"aux_dfs={ctx.aux_dfs}"
+        f"aux_dfs={ctx.aux_dfs}\n"
+        f"auxiliary_relationships={ {name: {'keys': table.join_keys_to_primary, 'right_key_unique': table.join_key_unique} for name, table in ctx.tables.items() if name != ctx.primary_table} }"
         "\nFor wide tables, use LabelEncode(cols=None) to encode all object columns, "
         "and HandleMV(cols=None) for applicable missing columns; do not enumerate "
         "hundreds of columns. Keep reasoning to one sentence."
@@ -249,6 +250,9 @@ def _score_steps_structurally(
     report = check_pipeline(pipe, action_ctx.ctx)
     if not report.valid:
         return list(steps), False, 0.0, "; ".join(report.errors)
+    cache_key = _pipeline_key(pipe.steps)
+    if cache_key in action_ctx.structural_cache:
+        return list(pipe.steps), *action_ctx.structural_cache[cache_key]
     initial = getattr(action_ctx.sandbox, "_initial_snapshot", None)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
@@ -256,13 +260,15 @@ def _score_steps_structurally(
     if not exec_res.success:
         if initial is not None:
             action_ctx.sandbox.restore(initial)
+        action_ctx.structural_cache[cache_key] = (False, 0.0, exec_res.error)
         return list(pipe.steps), False, 0.0, exec_res.error
     actual = _sandbox_columns(action_ctx.sandbox)
     expected = expected_target_columns(action_ctx.ctx)
     sim = _column_similarity(actual, expected)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
-    return list(steps), set(actual) == set(expected), sim, None
+    action_ctx.structural_cache[cache_key] = (set(actual) == set(expected), sim, None)
+    return list(pipe.steps), set(actual) == set(expected), sim, None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +286,7 @@ class ActionContext:
     verbose: bool = False
     previous_pipeline_texts: list[str] = field(default_factory=list)
     downstream_evaluator: Any = None
+    structural_cache: dict = field(default_factory=dict)
 
 
 def evaluate_downstream_feedback(node: MCTSNode, action_ctx: ActionContext) -> None:
@@ -427,6 +434,7 @@ class TransformationAction(BaseAction):
             max_chain_len=action_ctx.max_chain_len,
         )
         prompt += _previous_pipeline_prompt(action_ctx.previous_pipeline_texts or [])
+        prompt += prompts.JOIN_CONTRACT
         nodes = []
         seen: set[str] = set()
         for _ in range(max(1, action_ctx.n_action_samples)):
@@ -504,6 +512,7 @@ class TransformationRevisionAction(BaseAction):
             max_chain_len=action_ctx.max_chain_len,
         )
         prompt += _previous_pipeline_prompt(action_ctx.previous_pipeline_texts or [])
+        prompt += prompts.JOIN_CONTRACT
         nodes = []
         seen: set[str] = set()
         for _ in range(max(1, action_ctx.n_action_samples)):

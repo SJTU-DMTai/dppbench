@@ -82,7 +82,8 @@ class BATAlignmentTest(unittest.TestCase):
             child = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=root)
             child.children.append(MCTSNode(
                 MCTSNodeType.END, parent=child, reward_value=0.9,
-                final_pipeline_steps=[PipelineStep('LabelEncode', 'both', {'cols': None})],
+                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {}),
+                                      PipelineStep('LabelEncode', 'both', {'cols': None})],
             ))
             root.children.append(child)
             return [child]
@@ -144,6 +145,8 @@ class BATAlignmentTest(unittest.TestCase):
 
     def test_sandbox_loads_frozen_data_before_sampling(self):
         data = Mock()
+        data._has_std_test = False
+        data._skip_std_test_loading = False
         events = []
         data.load_data.side_effect = lambda: events.append('load')
         data.load_std_test_frozen.side_effect = lambda: events.append('frozen')
@@ -265,13 +268,14 @@ class BATAlignmentTest(unittest.TestCase):
 
     def test_mcts_keeps_completed_candidate_when_next_rollout_would_overrun(self):
         reward = Mock()
+        reward.config = BATRewardConfig(use_downstream=False)
         reward.score.return_value = (1.0, {})
         solver = MCTSSolver(object(), _ctx(), object(), reward,
                             max_rollout_steps=2, verbose=False)
 
         def expand(root):
             child = MCTSNode(MCTSNodeType.END, parent=root,
-                             final_pipeline_steps=[PipelineStep("HandleMV", "both", {})])
+                             final_pipeline_steps=[PipelineStep("HandleMV", "both", {}), PipelineStep("LabelEncode", "both", {})])
             root.children.append(child)
             return [child]
 
@@ -282,17 +286,18 @@ class BATAlignmentTest(unittest.TestCase):
             result = solver.solve()
         self.assertEqual(result.n_rollouts, 1)
         self.assertEqual(expansion.call_count, 1)
-        self.assertEqual([s.op for s in result.best_node.final_pipeline_steps], ["HandleMV"])
+        self.assertEqual([s.op for s in result.best_node.final_pipeline_steps], ["HandleMV", "LabelEncode"])
 
     def test_repeated_terminal_pipeline_is_not_a_second_best_path(self):
         reward = Mock()
+        reward.config = BATRewardConfig(use_downstream=False)
         reward.score.return_value = (1.0, {})
         solver = MCTSSolver(object(), _ctx(), object(), reward,
                             max_rollout_steps=2, early_stop_n_paths=2, verbose=False)
 
         def expand(root):
             return [MCTSNode(MCTSNodeType.END, parent=root,
-                             final_pipeline_steps=[PipelineStep('HandleMV', 'both', {'method': 'mean'})])]
+                             final_pipeline_steps=[PipelineStep('HandleMV', 'both', {'method': 'mean'}), PipelineStep('LabelEncode', 'both', {})])]
 
         with patch.object(solver, 'select', side_effect=lambda root: root), patch.object(
             solver, 'expand', side_effect=expand,
@@ -344,7 +349,7 @@ class BATAlignmentTest(unittest.TestCase):
                                          (float('nan'), None, 0.0)):
                 evaluator.evaluate_for_agent.return_value = (auc, {}, error)
                 node = MCTSNode(MCTSNodeType.END,
-                                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {})])
+                                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {}), PipelineStep('LabelEncode', 'both', {})])
                 value, breakdown = reward.score(node)
                 self.assertAlmostEqual(value, expected)
                 if expected == 0.0:

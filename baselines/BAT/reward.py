@@ -11,6 +11,8 @@ Downstream training uses fixed model parameters through the shared evaluator.
 """
 from __future__ import annotations
 
+from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+
 import re
 import json
 import math
@@ -102,11 +104,16 @@ class BATReward:
         steps = list(end_node.final_pipeline_steps
                      or end_node.latest_pipeline_steps())
         pipeline = Pipeline(steps=steps)
+        from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
+        assign_dag_structure(pipeline, self.ctx)
+        contract = check_pipeline(pipeline, self.ctx)
 
         # ---- 1. Execute the pipeline in the sandbox to compute column sim
         column_similarity = 0.0
         columns_match = False
         exec_error: Optional[str] = end_node.exec_error
+        if not contract.valid:
+            exec_error = '; '.join(contract.errors)
         if not steps:
             exec_error = exec_error or "empty pipeline"
         elif not exec_error:

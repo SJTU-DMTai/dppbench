@@ -57,8 +57,12 @@ class BATEvaluator(SearchPipelineEvaluator):
         except BudgetExceededError:
             raise
         except Exception as e:  # pragma: no cover -- safety net
+            from baselines.DeepPrep.resource_errors import raise_if_resource_error
+            raise_if_resource_error(e)
             return None, {}, f"{type(e).__name__}: {e}"
         if not res.success:
+            from baselines.DeepPrep.resource_errors import raise_if_resource_error
+            raise_if_resource_error(res.error or "")
             return None, dict(res.metrics or {}), res.error
         return float(res.fitness), dict(res.metrics or {}), None
 

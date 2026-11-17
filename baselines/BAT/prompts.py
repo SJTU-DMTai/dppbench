@@ -1,6 +1,13 @@
 """BAT prompts aligned with the official five-action DPAS protocol."""
 from __future__ import annotations
 
+JOIN_CONTRACT = """
+JoinTable requires two independent table branches, with an explicit aux_df='$TABLE_df'.
+Use method='key' only for unique right keys; repeated histories require method='agg'.
+Use agg_funcs=['mean','min','max'], never a nested dictionary, and a distinct prefix per source.
+Preserve target, ID, and required time columns. RenameColumn must not create duplicate names.
+"""
+
 from typing import Optional
 
 

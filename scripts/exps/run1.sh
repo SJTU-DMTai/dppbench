@@ -8,8 +8,8 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="43 44"
-GPU_ID=0
+SEED_LIST="42 43 44"
+GPU_ID=1
 
 TASK_LIST=(
   kuairec

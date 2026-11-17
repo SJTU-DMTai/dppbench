@@ -1,6 +1,7 @@
 """DeepPrep-only recommendation lookup validation; shared contracts stay intact."""
 import yaml
-from baselines.common.pipeline import Pipeline, PipelineCheckReport, check_pipeline
+from .candidate_contracts import check_pipeline
+from baselines.common.pipeline import Pipeline, PipelineCheckReport
 
 
 def lookup_reference_errors(op_name, params, ctx):

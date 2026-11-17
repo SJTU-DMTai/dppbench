@@ -356,23 +356,30 @@ def parse_args():
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--gpu_id", type=int, default=-1,
-        help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.",
+        help="GPU enable/legacy physical index (-1 = CPU). With an explicit/external visibility list, uses its first GPU for downstream training.",
     )
+    parser.add_argument('--cuda_visible_devices', default=None,
+                        help='Physical GPU visibility list, e.g. 0,1. Downstream uses logical cuda:0.')
+    parser.add_argument('--llm_device_map', choices=['auto', 'balanced', 'balanced_low_0', 'sequential', 'cpu'])
+    parser.add_argument('--llm_max_memory', help='JSON per-device limits, e.g. {"0":"12GiB","1":"18GiB"}')
     return parser.parse_args()
 
 
-def _resolve_device(gpu_id):
+def _resolve_device(gpu_id, visible_devices=None, *, llm=False):
+    if llm or visible_devices is not None:
+        from baselines.DeepPrep.gpu_config import resolve_device
+        return resolve_device(gpu_id, visible_devices)
+    # Preserve the original device behavior for non-LLM baselines.
     if gpu_id is None or gpu_id < 0:
-        return "cpu"
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        return 'cpu'
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     try:
-        import torch  # noqa: F401
+        import torch
         if not torch.cuda.is_available():
-            print(f"[warn] gpu_id={gpu_id} requested but CUDA not available; falling back to CPU.")
-            return "cpu"
+            return 'cpu'
     except Exception:
-        return "cpu"
-    return "cuda:0"
+        return 'cpu'
+    return 'cuda:0'
 
 
 def _ensure_std_test(
@@ -862,7 +869,15 @@ def main():
         args.baseline = _canonical_baseline_name(args.baseline)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    args.device = _resolve_device(args.gpu_id)
+    args.device = _resolve_device(args.gpu_id, args.cuda_visible_devices,
+                                  llm=args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'})
+    if args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'}:
+        if args.llm_device_map:
+            os.environ['DPPBENCH_LLM_DEVICE_MAP'] = args.llm_device_map
+        if args.llm_max_memory:
+            os.environ['DPPBENCH_LLM_MAX_MEMORY'] = args.llm_max_memory
+        from baselines.DeepPrep.gpu_config import llm_placement
+        llm_placement()  # Validate before starting an expensive experiment.
 
     if args.data_names:
         tasks = [s.strip() for s in args.data_names.split(",") if s.strip()]
@@ -910,7 +925,11 @@ def main():
             "pipeline_reused": bool(args.resume_pipeline),
             "pipeline_source": _resume_path(args, task_name, model_name),
         }
-        budget = Budget(
+        budget_class = Budget
+        if args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'}:
+            from baselines.DeepPrep.resource_budget import LLMResourceBudget
+            budget_class = LLMResourceBudget
+        budget = budget_class(
             max_pipeline_length=args.max_pipeline_len,
             max_evaluations=args.max_evaluations,
             max_memory_mb=args.max_memory_mb,

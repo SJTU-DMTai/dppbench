@@ -65,6 +65,9 @@ class MCTSNode:
     N: int = 0
     children: list["MCTSNode"] = field(default_factory=list)
 
+    expanded: bool = False
+    exhausted: bool = False
+
     def is_terminal(self) -> bool:
         return self.node_type == MCTSNodeType.END
 
@@ -108,6 +111,8 @@ class MCTSNode:
             "depth": self.depth,
             "Q": self.Q,
             "N": self.N,
+            "expanded": self.expanded,
+            "exhausted": self.exhausted,
             "schema_match": self.schema_match,
             "column_functions": self.column_functions,
             "pipeline_ops": [s.op for s in self.pipeline_steps],

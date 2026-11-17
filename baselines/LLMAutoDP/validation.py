@@ -1,5 +1,6 @@
 """Read-only adapter checks; never repair a model's proposed strategy."""
-from baselines.common.pipeline import PipelineCheckReport, check_pipeline
+from baselines.DeepPrep.candidate_contracts import check_pipeline
+from baselines.common.pipeline import PipelineCheckReport
 
 
 def check_candidate(pipeline, ctx):

@@ -34,6 +34,10 @@ Legal syntax examples (use actual column/table names from context):
 SortRows(by=['timestamp'], ascending=True)
 JoinTable(method='rec', item_df='$item_df', item_col='item_id')
 For key/agg joins use aux_df='$TABLE_df' and key_col='COLUMN'; do not use item_df/user_df.
+Use method='key' only for a unique right key. Repeated history keys require method='agg'.
+For agg, use agg_funcs=['mean','min','max'] (a list, never a dictionary),
+and a distinct prefix for every auxiliary table. Do not deduplicate the primary table to fix a repeated right key.
+Do not rename a column to an existing column name, or drop/rename target, ID, or required time columns.
 Two input nodes for JoinTable means two tables, not two preceding transformations.
 To extend an existing path, repeat that full path before --> JoinTable(...).
 Write the chain on one line; do not number operators or put explanations inside parentheses.

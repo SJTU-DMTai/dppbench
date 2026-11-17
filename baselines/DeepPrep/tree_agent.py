@@ -40,7 +40,7 @@ from .prompts import (
     render_protocol_error,
     render_user_initial,
 )
-from .sandbox import Sandbox
+from .sandbox import Sandbox, categorical_dtype
 from .target_schema import TargetSchema
 from .tree_node import SearchNode, SearchTree, canonical_path
 
@@ -122,25 +122,27 @@ def parse_response(text: str) -> ParsedAction:
                     else parent_match.group(2).strip() if parent_match else None
                 ),
             ))
-    if _BACKTRACK_RE.search(text):
+    if _BACKTRACK_RE.search(action_text):
         found.append(("backtrack", None, None))
-    if not found:
-        # The released checkpoint may emit its concrete chain directly and
-        # terminate it with </execute>, without an opening action tag.
-        native = _NATIVE_EXECUTE_RE.search(text)
-        if native:
-            found.append(("expand", native.group("chain").strip(), None))
-            if not plan:
-                start = text.rfind("<think>", 0, native.start())
-                if start >= 0:
-                    native_think = text[start + len("<think>"):native.start()].strip()
-                    if native_think:
-                        think = native_think
-                        plan = native_think
+    for native in _NATIVE_EXECUTE_RE.finditer(action_text):
+        found.append(("expand", native.group("chain").strip(), None))
     if len(found) != 1:
         return ParsedAction("noop", think=think, plan=plan)
     kind, body, parent = found[0]
     return ParsedAction(kind, chain_str=body, think=think, plan=plan, parent_chain=parent)
+
+
+def protocol_diagnostic(text: str) -> str:
+    text = re.sub(r'<(?:think|plan)>.*?</(?:think|plan)>', '', text, flags=re.DOTALL)
+    if '</think>' in text:
+        text = text.rsplit('</think>', 1)[-1]
+    if re.search(r'^\s*(?:\d+[.)]|[-*])\s+\w+\(', text, re.MULTILINE):
+        return 'numbered_or_bulleted_chain: remove leading numbering/bullets; start with the exact operator name.'
+    if text.count('</execute>') > 1:
+        return 'multiple_actions: submit exactly one complete action.'
+    if '</execute>' not in text and not re.search(r'</(?:answer|expand|solution|operator)>', text):
+        return 'incomplete_action: end one concrete chain with </execute> or a complete action tag.'
+    return 'invalid_action_syntax: use Operator(keyword=value) --> Operator(keyword=value) </execute>; no prose, comma separators or End.'
 
 
 def _parse_arg_value(raw: str) -> Any:
@@ -277,6 +279,8 @@ class AgentRunResult:
     transcript: list[dict] = field(default_factory=list)
     tree: dict = field(default_factory=dict)
     solution_attempts: list[dict] = field(default_factory=list)  # compatibility
+    termination_reason: str = ''
+    no_legal_candidate: bool = False
 
 
 class TreeAgent:
@@ -293,11 +297,16 @@ class TreeAgent:
         seed: int = 42,
         downstream_evaluator=None,
         max_solution_attempts: int = 1,
+        model_config: dict | None = None,
+        shared_repair: bool = False,
     ) -> None:
+        self.shared_repair = shared_repair
+        self.repair_seed = seed
+        self.repaired_candidates = {}
         self.llm = llm
         self.sandbox = sandbox
         self.ctx = ctx
-        self.target_schema = TargetSchema.from_context(ctx)
+        self.target_schema = TargetSchema.from_context(ctx, model_config)
         self.max_explore_turn = int(max_explore_turn)
         self.max_chain_len = int(max_chain_len)
         self.max_depth = int(max_depth)
@@ -320,7 +329,10 @@ class TreeAgent:
                 error = error or 'No finite validation fitness (higher is better) returned'
             self.candidate_scores[key] = dict(path=key, fitness=fitness if not error else None,
                                               metric_name=getattr(self.downstream_evaluator, 'metric_key', None),
-                                              metrics=metrics, error=error)
+                                              metrics=metrics, error=error, effective_hash=pipeline.hash())
+            if node.node_id in self.repaired_candidates:
+                item = self.repaired_candidates[node.node_id]
+                self.candidate_scores[key].update(repair=item['diff'], raw_yaml=item['raw_yaml'], effective_yaml=pipeline.to_yaml())
         record = self.candidate_scores[key]
         valid = [r for r in self.candidate_scores.values() if r['fitness'] is not None]
         best = max(valid, key=lambda r: r['fitness']) if valid else None
@@ -347,19 +359,34 @@ class TreeAgent:
                 break
 
     def _revision_hint(self) -> str:
-        cursor = self.tree.cursor
-        path = canonical_path(cursor.accumulated_steps)
-        remaining = sorted(set(mandatory_ops_for_context(self.ctx)) - set(s.op for s in cursor.accumulated_steps))
+        steps = self.tree.cursor.accumulated_steps if self.tree.cursor_id is not None else []
+        path = canonical_path(steps)
+        remaining = sorted(set(mandatory_ops_for_context(self.ctx)) - set(s.op for s in steps))
         lines = [f"Current materialized path (copy exactly): {path}",
                  f"Mandatory operators still required: {remaining}. These are not optional.",
-                 "Keep exact names such as CreateSequence and JoinTable; do not lowercase them. "
-                 "Use keyword arguments inside parentheses, never explanatory prose or numbered lists."]
-        if 'CreateSequence' in remaining:
-            params = dict(user_col=self.ctx.user_col or 'user_id', item_col=self.ctx.item_col or 'item_id',
-                          time_col=self.ctx.time_col or 'timestamp', seq_col='item_id_seq', max_len=50)
-            example = canonical_path([PipelineStep('CreateSequence', 'interaction', params)])
-            lines.append("CreateSequence syntax for this task: " + example)
-            lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + example + " </execute>")
+                 "Keep the exact operator names listed above; do not lowercase or add underscores. "
+                 "Use keyword arguments, --> separators, and one complete action; no numbered lists or End operator.",
+                 "Existing paths are preserved. Extend a path by copying it and appending an operator; "
+                 "a standalone operator starts a separate root branch and does not merge previous branches."]
+        for name, params in [('HandleMV', {'cols': None}), ('LabelEncode', {'cols': None})]:
+            if name in remaining:
+                example = canonical_path([PipelineStep(name, self.ctx.primary_table, params)])
+                lines.append('Continuation syntax: ' + (path + ' --> ' if path != 'root' else '') + example + ' </execute>')
+        lines.append(f'HandleMV must process feature columns only; never include supervised target {self.ctx.target_col!r}. '
+                     'LabelEncode(cols=None) selects categorical features; encode join keys only after joining.')
+        sequences = self.target_schema.attention_sequences
+        if 'CreateSequence' in remaining or sequences:
+            for sequence, query in list((sequences or {'item_id_seq': self.ctx.item_col or 'item_id'}).items())[:1]:
+                params = dict(user_col=self.ctx.user_col or 'user_id', item_col=query,
+                              time_col=self.ctx.time_col or 'timestamp', seq_col=sequence,
+                              max_len=self.target_schema.seq_max_len)
+                example = canonical_path([PipelineStep('CreateSequence', self.ctx.primary_table, params)])
+                lines.append("CreateSequence syntax for this task: " + example)
+                if 'CreateSequence' in remaining:
+                    lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '') + example + " </execute>")
+            if sequences:
+                lines.append("Use at least one configured attention sequence with its categorical query column. "
+                             "If the current path used a wrong seq_col, start a revised branch; do not repeat that path.")
         if 'JoinTable' in remaining:
             lines.append("JoinTable remains mandatory; extra joined feature columns are expected, not a schema violation.")
             if self.ctx.task_type == 'rec':
@@ -372,6 +399,21 @@ class TreeAgent:
                 lines.append("JoinTable syntax for this task: " + example)
                 lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '')
                              + example + " </execute>")
+            else:
+                for name in self.ctx.secondary_tables:
+                    table = self.ctx.tables[name]
+                    key = next((key['primary'] for key in table.join_keys_to_primary
+                                if key['primary'] == key['secondary']), None)
+                    if key is None:
+                        continue
+                    method = 'key' if table.join_key_unique.get(key) else 'agg'
+                    params = dict(method=method, aux_df=f'${name}_df', key_col=key, how='left')
+                    example = canonical_path([PipelineStep('JoinTable', self.ctx.primary_table, params)])
+                    lines.append("JoinTable syntax for this task: " + example)
+                    lines.append("Continuation syntax: " + (path + " --> " if path != 'root' else '')
+                                 + example + " </execute>")
+                lines.append("Use method='agg' for repeated auxiliary keys; method='key' requires unique right keys. "
+                             "Encode categorical features after joining if the join introduces new categorical columns.")
             lines.append("JoinTable needs two input table branches, not two preceding operators. "
                          "method='key'/'agg' uses aux_df and key_col; method='rec' uses item_df/user_df. "
                          "A chain without the current path starts a new branch from root.")
@@ -391,7 +433,7 @@ class TreeAgent:
             summary_lines.append(
                 f"- {table_name}: role={table.role} shape={table.shape} "
                 f"dtypes={dict(list(table.dtypes.items())[:40])} "
-                f"categorical_columns={[c for c, dtype in table.dtypes.items() if str(dtype) in ('object', 'string', 'category')]} "
+                f"categorical_columns={[c for c, dtype in table.dtypes.items() if categorical_dtype(dtype)]} "
                 f"join_keys_to_primary={table.join_keys_to_primary}"
             )
         summary = "\n".join(summary_lines)
@@ -405,11 +447,11 @@ class TreeAgent:
             summary_text=summary,
             required_ops_text=required_ops_text,
             target_schema_text=self.target_schema.render(),
-            op_descriptions=format_op_descriptions(self.ctx.task_type),
+            op_descriptions=format_op_descriptions(self.ctx.task_type, mandatory_ops=mandatory_ops),
             obs_text=observation,
             max_chain_len=self.max_chain_len,
             max_explore_turn=self.max_explore_turn,
-        )
+        ) + '\n' + self._revision_hint()
         return [{"role": "system", "content": SYSTEM_TREE_SEARCH}, {"role": "user", "content": user}]
 
     def _parent(self, path: Optional[str]) -> tuple[Optional[SearchNode], Optional[str]]:
@@ -439,24 +481,55 @@ class TreeAgent:
                 continue
             new_steps = full_steps[prefix_len:]
             if not new_steps:
+                self.tree.set_cursor(parent.node_id)
                 raise ChainParseError(
-                    "Expansion repeats an existing path but appends no new operator."
+                    'Expansion repeats an existing path but appends no new operator. '
+                    + 'This path is still materialized; append the missing operators: '
+                    + str(sorted(set(mandatory_ops_for_context(self.ctx)) - {s.op for s in full_steps}))
                 )
             return parent, new_steps
         raise ChainParseError("Expansion has no materialized root-to-node prefix.")
 
     def _pipeline_for_node(self, node: SearchNode) -> Pipeline:
+        if node.node_id in self.repaired_candidates:
+            return self.repaired_candidates[node.node_id]['pipeline'].copy()
         pipe = Pipeline(steps=copy.deepcopy(node.accumulated_steps))
+        if self.shared_repair:
+            return Pipeline.from_yaml(pipe.to_yaml())
         assign_dag_structure(pipe, self.ctx, self._rng)
         return pipe
 
     def _answer_errors(self, node: SearchNode) -> list[str]:
-        obs = self.sandbox.restore(node.snapshot)  # type: ignore[arg-type]
+        if self.shared_repair and node.accumulated_steps:
+            if node.node_id not in self.repaired_candidates:
+                from baselines.common.shared_repair import complete_pipeline
+                raw = self._pipeline_for_node(node)
+                try:
+                    pipe, diff = complete_pipeline(raw, self.ctx, self.repair_seed, self.max_chain_len)
+                    report = check_pipeline(pipe, self.ctx)
+                    if report.errors:
+                        return report.errors
+                    saved = self.sandbox.snapshot()
+                    try:
+                        root = self.tree.find_by_path('root')
+                        self.sandbox.restore(root.snapshot)
+                        executed = self.sandbox.execute_chain(pipe.steps, pipeline=pipe)
+                    finally:
+                        self.sandbox.restore(saved)
+                    if not executed.success:
+                        return ['Shared repair execution failed: ' + str(executed.error)]
+                    self.repaired_candidates[node.node_id] = dict(pipeline=pipe, snapshot=executed.snapshot,
+                                                                  diff=diff, raw_yaml=raw.to_yaml())
+                except ValueError as exc:
+                    return ['Shared repair failed: ' + str(exc)]
+            obs = self.sandbox.restore(self.repaired_candidates[node.node_id]['snapshot'])
+        else:
+            obs = self.sandbox.restore(node.snapshot)  # type: ignore[arg-type]
         errors = self.target_schema.validate_observation(obs)
         if self.ctx.task_type == "tabular":
             remaining = [
                 c for c, dtype in obs.dtypes.items()
-                if str(dtype) in ("object", "string", "category")
+                if categorical_dtype(dtype)
                 and c not in (self.ctx.target_col, "__split__")
             ]
             if remaining:
@@ -519,6 +592,9 @@ class TreeAgent:
         turn = 0
 
         for turn in range(1, self.max_explore_turn + 1):
+            if self.n_errors >= self.max_err_cnt:
+                turn -= 1
+                break
             try:
                 response = self.llm.chat(messages)
             except BudgetExceededError as exc:
@@ -540,7 +616,7 @@ class TreeAgent:
             if action.kind not in ("expand", "answer"):
                 self.n_errors += 1
                 feedback = render_protocol_error(
-                    "Missing concrete operator chain or a complete action tag.",
+                    protocol_diagnostic(response),
                     turns_left,
                 )
                 feedback += "\n" + self._revision_hint()
@@ -580,7 +656,7 @@ class TreeAgent:
                     obs_text="",
                     error="Target schema or pipeline contract not satisfied: " + "; ".join(errors),
                     turn_left=turns_left,
-                )
+                ) + '\n' + self._revision_hint()
                 messages.append({"role": "user", "content": feedback})
                 self._record_feedback(feedback, turn)
                 continue
@@ -690,6 +766,7 @@ class TreeAgent:
             final_pipeline = self._fallback_pipeline()
         if self.downstream_evaluator is not None:
             success = any(r['fitness'] is not None for r in self.candidate_scores.values())
+        reason = 'error_limit' if self.n_errors >= self.max_err_cnt else 'turn_limit' if turn >= self.max_explore_turn else 'completed_or_budget_stop'
         return AgentRunResult(
             pipeline=final_pipeline,
             success=success,
@@ -698,6 +775,8 @@ class TreeAgent:
             transcript=self.transcript,
             tree=self.tree.to_dict(),
             solution_attempts=list(self.candidate_scores.values()),
+            termination_reason=reason,
+            no_legal_candidate=not bool(final_pipeline.steps),
         )
 
 

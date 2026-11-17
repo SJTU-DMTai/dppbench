@@ -19,6 +19,7 @@ class TargetEncode(TabularOp):
         self.encoding_map_ = {}
         self.global_mean_ = None
         self.fitted_ = False
+        self.output_col_types = {}
 
     def get_op_description(self):
         description = """Operator name: TargetEncode
@@ -91,4 +92,5 @@ dag:
             if col not in df.columns:
                 continue
             df[f"{col}_{self.target_col}"] = df[col].map(enc).fillna(self.global_mean_)
+            self.output_col_types[f"{col}_{self.target_col}"] = "numeric"
         return df.reset_index(drop=True)

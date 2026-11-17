@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from baselines.common.op_spec import CATALOG, OpCategory, is_mandatory
+from baselines.common.op_spec import CATALOG, OpCategory, is_mandatory, operators_for_task
 from baselines.common.budget import BudgetExceededError
 from baselines.common.search_reward import fitness_to_reward
 from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline, make_step, repair
@@ -64,9 +64,10 @@ class FlowPipeEnv:
 
     def _refresh_context(self, frame):
         self.current_ctx = context_for_frame(self.ctx, frame)
+        allowed = set(operators_for_task(self.ctx.task_type, include_custom=True))
         self.applicable_gids = {
             action.gid for action in self.actions
-            if CATALOG[action.name].task_type in ("both", self.ctx.task_type)
+            if action.name in allowed
             and not (action.name == "AugmentMixup" and getattr(self.ctx, "prediction_task", None) != "regression")
             and self._can_instantiate(action.name)
         }
@@ -111,7 +112,7 @@ class FlowPipeEnv:
         if not self.logic_selected:
             required_categories = {CATALOG[name].category for name in self.slot_required_ops}
             for i, order in enumerate(self.logical_pipelines):
-                if required_categories.issubset(order[:self.max_steps]):
+                if len(self.required_ops) <= self.max_steps and required_categories.issubset(order[:self.max_steps]):
                     mask[i] = 1.0
             return mask
         category = self.current_order[self.stage_index]

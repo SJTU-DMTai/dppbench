@@ -46,6 +46,7 @@ from .search_space import ContinuousPipeline
 from .slot_planner import make_slots
 from .surrogate import RecSurrogate, TabularSurrogate
 from .trainer import DiffPrepTrainer
+from baselines.common.search_cost import record_work
 
 
 CONFIG_KEYS = (
@@ -341,6 +342,19 @@ class DiffPrep:
         train_evaluator.set_evaluate_std_test(False)
         ctx, data = self._build_context(train_evaluator)
         task_type = ctx.task_type
+        partition_audit = None
+        if task_type == "tabular":
+            from .partition_protocol import tabular_search_splits
+            splits = tabular_search_splits(
+                data, train_evaluator._executor.get_model_config(), self.seed, self.small_n)
+            partition_audit = dict(data._tabular_split_contract)
+        elif task_type == "rec":
+            from .partition_protocol import recommendation_search_partition
+            partition_audit = recommendation_search_partition(
+                data, train_evaluator._executor.get_model_config(), self.seed, self.small_n)
+            from dppbench.rec_partition import persist_partition
+            partition_audit['partition'] = persist_partition(
+                data, os.path.join(self.output_dir, 'partition_audits'))
 
         if self.verbose:
             print("=" * 60)
@@ -380,9 +394,13 @@ class DiffPrep:
                 hidden=self.surrogate_hidden_dim,
             ).to(self.device)
 
-            tr_idx, va_idx = _train_val_split(
-                len(y), val_ratio=self.val_ratio, seed=self.seed
-            )
+            frame = data.interaction_df
+            if not frame['__split__'].isin(['train', 'val']).all():
+                raise ValueError('Recommendation search cannot include standard-test rows')
+            tr_idx = np.flatnonzero(frame['__split__'].eq('train').to_numpy())
+            va_idx = np.flatnonzero(frame['__split__'].eq('val').to_numpy())
+            if not len(tr_idx) or not len(va_idx):
+                raise ValueError('Prepared recommendation partitions must be nonempty')
             tr_idx_t = torch.tensor(tr_idx, dtype=torch.long, device=self.device)
             va_idx_t = torch.tensor(va_idx, dtype=torch.long, device=self.device)
 
@@ -406,6 +424,7 @@ class DiffPrep:
                     )
                     logits = model(ux, ix, out)
                     loss = F.binary_cross_entropy_with_logits(logits, yy)
+                    record_work('proxy_work.train', supervised_rows=len(sel), forwarded_rows=len(sel))
                     return loss
                 return step
 
@@ -433,13 +452,11 @@ class DiffPrep:
                 with torch.no_grad():
                     pred = (torch.sigmoid(logits) > 0.5).float()
                     acc = (pred == yy).float().mean().item()
+                record_work('proxy_work.val', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss, acc
         else:
             # Use the task's frozen training pool and its own split protocol.
             # In particular, time-series validation must remain chronological.
-            from .data_protocol import tabular_search_splits
-            splits = tabular_search_splits(data, train_evaluator._executor.get_model_config(),
-                                          self.seed, self.small_n)
             train_frame, val_frame = splits["train"], splits["val"]
             if train_frame.empty or val_frame.empty:
                 raise ValueError("DiffPrep requires nonempty training and validation partitions")
@@ -472,6 +489,7 @@ class DiffPrep:
                 )
                 logits = model(out)
                 loss = F.mse_loss(logits.squeeze(-1), yy) if regression else F.cross_entropy(logits, yy)
+                record_work('proxy_work.train', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss
 
             def val_step(continuous: ContinuousPipeline, model: nn.Module):
@@ -497,6 +515,7 @@ class DiffPrep:
                     else:
                         pred = logits.argmax(dim=1)
                         acc = (pred == yy).float().mean().item()
+                record_work('proxy_work.val', supervised_rows=len(sel), forwarded_rows=len(sel))
                 return loss, acc
 
         cont = ContinuousPipeline(
@@ -527,12 +546,6 @@ class DiffPrep:
         # 5) Discretise
         rng = _random.Random(self.seed)
         pipe = discretize(cont, slots, ctx, rng=rng)
-        pipe.metadata['diffprep_search_contract'] = {
-            'version': 2,
-            'structural_operations': 'fixed_seeded_adapters_not_differentiably_optimized',
-            'search_feature_columns': list(cont.feature_names),
-            'exported_joins': [s.params for s in pipe.steps if s.op == 'JoinTable'],
-        }
         discrete_slot_order = slot_order(cont)
         check_report = check_pipeline(pipe, ctx)
         if not check_report.valid:
@@ -541,17 +554,18 @@ class DiffPrep:
                 + "; ".join(check_report.errors)
             )
 
+        search_contract = {
+            'version': 'legacy_logic_current_partitions_v1',
+            'partition': partition_audit,
+            'search_logic': 'uploaded_legacy_slots_hard_gate_proxy_trainer_and_export',
+        }
+        with open(os.path.join(self.output_dir, 'search_contract.json'), 'w', encoding='utf-8') as f:
+            json.dump(search_contract, f, ensure_ascii=False, indent=2)
+
         # 6) Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
         with open(out_yaml_path, "w", encoding="utf-8") as f:
             f.write(pipe.to_yaml())
-        # The common Pipeline YAML does not serialize arbitrary metadata.
-        # Persist the audit explicitly rather than silently losing it at export.
-        search_contract = pipe.metadata['diffprep_search_contract']
-        with open(os.path.join(self.output_dir, 'search_contract.json'), 'w', encoding='utf-8') as f:
-            json.dump(search_contract, f, ensure_ascii=False, indent=2)
-        if self.verbose:
-            print('[DiffPrep search contract] ' + json.dumps(search_contract, ensure_ascii=False))
 
         weights_path = os.path.join(self.output_dir, "pipeline_weights.pt")
         try:

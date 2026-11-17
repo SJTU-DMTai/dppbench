@@ -9,6 +9,7 @@ def tabular_adapter(task):
     table, key, method = {
         'berka': ('account', 'account_id', 'key'),
         'default_credit': ('monthly_history', 'ID', 'agg'),
+        'bike_sharing': ('day', 'dteday', 'public_key'),
     }.get(task, (None, None, None))
     adapter = {'task_type': 'tabular', 'table': table, 'key': key,
                'method': method, 'ops': ['JoinTable'] if table else []}
@@ -77,6 +78,23 @@ def augment_splits(data, splits, adapter):
     if aux is None or aux.empty or key not in aux:
         raise ValueError(f'DAGPipe requires nonempty auxiliary table {table} with key {key}')
     aux = aux.drop(columns=[data.target_col, '__split__', 'sample_weight'], errors='ignore').copy()
+    if adapter['method'] == 'public_key':
+        # Use exactly the benchmark's lookup semantics: retain observed main
+        # values and fill missing overlaps, rather than inventing day__ copies.
+        # Also protect replay with older loaders that retain outcome columns.
+        if table == 'day':
+            aux = aux.drop(columns=['cnt', 'casual', 'registered', 'instant'], errors='ignore')
+        from dppbench.operators.integration.join_table import JoinTable
+        join = JoinTable(method='key', aux_df=aux, key_col=key, how='left')
+        result = {}
+        for name, frame in splits.items():
+            if frame is None:
+                result[name] = None
+                continue
+            if key not in frame or frame[key].isna().any():
+                raise ValueError(f'DAGPipe requires nonmissing main-table join key {key}')
+            result[name] = join.transform(frame)
+        return result
     if adapter['method'] == 'agg':
         numeric = [c for c in aux if c != key and pd.api.types.is_numeric_dtype(aux[c])]
         if not numeric:

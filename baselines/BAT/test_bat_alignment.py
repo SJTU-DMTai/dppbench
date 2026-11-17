@@ -391,6 +391,67 @@ class BATAlignmentTest(unittest.TestCase):
             math.sqrt(math.log(4)),
         )
 
+    def test_selection_descends_through_unvisited_expanded_nodes(self):
+        solver = MCTSSolver(object(), _ctx(), object(), object(), verbose=False)
+        root = MCTSNode(MCTSNodeType.ROOT)
+        expanded = MCTSNode(MCTSNodeType.SCHEMA_MATCH, parent=root)
+        leaf = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=expanded)
+        root.children = [expanded]
+        expanded.children = [leaf]
+        self.assertIs(solver.select(root), leaf)
+        end = MCTSNode(MCTSNodeType.END, parent=leaf)
+        leaf.children = [end]
+        self.assertIs(solver.select(root), end)
+        self.assertEqual([root.N, expanded.N, leaf.N, end.N], [0, 0, 0, 0])
+
+    def test_simulation_reuses_expanded_nodes_without_reward_or_new_calls(self):
+        reward = Mock()
+        solver = MCTSSolver(object(), _ctx(), object(), reward, verbose=False)
+        parent = MCTSNode(MCTSNodeType.SCHEMA_MATCH)
+        middle = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=parent)
+        end = MCTSNode(MCTSNodeType.END, parent=middle, reward_value=0.8)
+        parent.children = [middle]
+        middle.children = [end]
+        with patch.object(solver, 'expand') as expand:
+            self.assertIs(solver.simulate(parent), end)
+            expand.assert_not_called()
+        reward.score.assert_not_called()
+        self.assertEqual([parent.N, middle.N, end.N], [0, 0, 0])
+        with self.assertRaisesRegex(AssertionError, 'childless'):
+            solver.expand(parent)
+
+    def test_solve_resumes_tree_after_rollout_fails_before_end(self):
+        reward = Mock()
+        reward.score.return_value = (0.8, {})
+        solver = MCTSSolver(object(), _ctx(), object(), reward,
+                            max_rollout_steps=2, verbose=False)
+        attempts = {}
+
+        class ResumeAction:
+            def create_children_nodes(self, parent, action_ctx):
+                kind = parent.node_type
+                attempts[kind] = attempts.get(kind, 0) + 1
+                if kind == MCTSNodeType.TRANSFORMATION and attempts[kind] == 1:
+                    raise ValueError('transient action failure')
+                next_kind = {MCTSNodeType.ROOT: MCTSNodeType.SCHEMA_MATCH,
+                             MCTSNodeType.SCHEMA_MATCH: MCTSNodeType.TRANSFORMATION,
+                             MCTSNodeType.TRANSFORMATION: MCTSNodeType.END}[kind]
+                return [MCTSNode(next_kind, parent=parent, depth=parent.depth + 1,
+                                 final_pipeline_steps=[PipelineStep('HandleMV')] if next_kind == MCTSNodeType.END else [])]
+
+        with patch.object(solver, '_restore_node_state', return_value=True), \
+             patch('baselines.BAT.mcts.get_active_budget', return_value=None), \
+             patch('baselines.BAT.mcts.get_valid_action_space_for_node', return_value=[ResumeAction]), \
+             patch('baselines.BAT.mcts.evaluate_downstream_feedback'):
+            result = solver.solve()
+        self.assertEqual(result.n_rollouts, 1)
+        self.assertIsNotNone(result.best_node)
+        self.assertEqual(attempts, {MCTSNodeType.ROOT: 1, MCTSNodeType.SCHEMA_MATCH: 1,
+                                    MCTSNodeType.TRANSFORMATION: 2})
+        self.assertEqual([node.N for node in result.best_node.path_to_root()], [1, 1, 1, 1])
+        self.assertEqual([node.Q for node in result.best_node.path_to_root()], [0.8] * 4)
+        reward.score.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

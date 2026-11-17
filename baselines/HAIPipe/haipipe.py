@@ -99,6 +99,9 @@ class HAIPipe:
             max_len=self.max_pipeline_len, hi_source=self.hi_source,
         )
         policy_model = "LightGBM" if ctx.task_type == "rec" and self.training_mode != "scratch" else self.model_name
+        from baselines.common.training_utils import resolve_policy_source
+        policy_model, source_path, fallback_reason = resolve_policy_source(
+            'HAIPipe', policy_model, self.pretrained_checkpoint, self.pretrained_dir, self.training_mode)
         env = HAIPipeEnv(evaluator, ctx, model_name=policy_model, seed=self.seed)
         aipipe_path = os.path.join(self.output_dir, "aipipe.pt")
         trainer = CrossTaskPretrainer(
@@ -113,8 +116,8 @@ class HAIPipe:
         model_name = resolved_model(evaluator)
         agent = trainer.agent
         agent.checkpoint_metadata = contract("HAIPipe", env, policy_model)
-        source_path = pretrained_path("HAIPipe", policy_model, self.pretrained_checkpoint, self.pretrained_dir,
-                                  filename="aipipe.pt")
+        if fallback_reason:
+            print(f'[HAIPipe] {fallback_reason}: {source_path}', flush=True)
         if self.training_mode != "scratch" and os.path.realpath(os.path.dirname(source_path)) == os.path.realpath(self.output_dir):
             raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
         source_provenance = {}
@@ -124,6 +127,7 @@ class HAIPipe:
                       "source_model": policy_model, "target_model": model_name,
                       "policy_model_vocabulary": list(env.model_vocabulary),
                       "cross_model_transfer": policy_model != model_name,
+                      "fallback_reason": fallback_reason,
                       "source_checkpoint": source_path if self.training_mode != "scratch" else None,
                       "source_provenance": source_provenance,
                       "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}
@@ -134,10 +138,17 @@ class HAIPipe:
         training_seconds = time.monotonic() - training_started if self.training_mode != "pretrained" else 0.0
         freeze_agent(agent)
         agent.save(aipipe_path, provenance=provenance)
-        ai, trace = env.rollout(trainer.agent, epsilon=0.0)
-        candidates = combine_pipelines(
-            hi, ai, ctx, random.Random(self.seed), max_len=self.max_pipeline_len,
-        )
+        ai = None
+        if evaluator.evaluation_budget_exhausted:
+            if evaluator.best_pipeline is None:
+                raise RuntimeError('HAIPipe search budget exhausted without a successful candidate')
+            trace = []
+            candidates = [evaluator.best_pipeline.copy()]
+        else:
+            ai, trace = env.rollout(trainer.agent, epsilon=0.0)
+            candidates = combine_pipelines(
+                hi, ai, ctx, random.Random(self.seed), max_len=self.max_pipeline_len,
+            )
         al_model = ScoreNN(env.data_dim, len(env.primitive_vocabulary)).to(self.device)
         if self.training_mode != "scratch":
             from .pretrain import load_alternative_evaluator
@@ -148,10 +159,18 @@ class HAIPipe:
             al_model, k_total=self.al_k, iterations=self.al_iterations, seed=self.seed,
         )
         adaptation_started = time.monotonic()
-        selected = select_best_candidate(
-            evaluator, candidates, selector=selector,
-            dataset_feature=env.data_feature, vocabulary=env.primitive_vocabulary,
-        )
+        try:
+            selected = select_best_candidate(
+                evaluator, candidates, selector=selector,
+                dataset_feature=env.data_feature, vocabulary=env.primitive_vocabulary,
+            )
+        except FloatingPointError as exc:
+            if evaluator.best_result is None:
+                raise RuntimeError('HAIPipe scorer failed without a successful evaluated candidate') from exc
+            from .combiner import HAISelection
+            print(f'[HAIPipe] scorer selection stopped; using best evaluated candidate: {exc}', flush=True)
+            selected = HAISelection(evaluator.best_pipeline.copy(), evaluator.best_result.fitness,
+                                    dict(evaluator.best_result.metrics))
         scorer_adaptation_seconds = time.monotonic() - adaptation_started
         al_path = os.path.join(self.output_dir, "alternative_evaluator.pt")
         save_alternative_evaluator(
@@ -166,6 +185,11 @@ class HAIPipe:
                 "active_learning_evaluations": len(selected.candidates),
             },
         )
+        if evaluator.best_result is not None and evaluator.best_result.fitness > selected.fitness:
+            selected.pipeline = evaluator.best_pipeline.copy()
+            selected.fitness = evaluator.best_result.fitness
+            selected.metrics = dict(evaluator.best_result.metrics)
+            selected.error = evaluator.best_result.error
         output = selected.pipeline
         full_fitness, full_metrics = None, {}
         if self.eval_full:
@@ -182,7 +206,8 @@ class HAIPipe:
             handle.write(output.to_yaml())
         log = {
             "data_name": self.data_name, "hi_source": self.hi_source,
-            "hi_ops": hi.op_names(), "ai_ops": ai.op_names(),
+            "hi_ops": hi.op_names(), "ai_ops": ai.op_names() if ai is not None else None,
+            "ai_source": "rollout" if ai is not None else "budget_exhausted_best_candidate",
             "best_pipeline_yaml": output.to_yaml(), "best_pipeline_path": yaml_path,
             "best_fitness": selected.fitness, "best_metrics": selected.metrics,
             "best_full_fitness": full_fitness, "best_full_metrics": full_metrics,

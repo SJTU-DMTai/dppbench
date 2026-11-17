@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+from baselines.common.column_compaction import compact_column_steps
 
-from baselines.common.data_ctx import DataContext, RESERVED_COLUMNS
+from baselines.common.data_ctx import DataContext, is_internal_column
 from baselines.common.budget import Budget, get_active_budget
 from baselines.common.op_spec import (
     CATALOG, OpCategory, is_mandatory, operators_for_task, valid_targets_for,
@@ -237,6 +238,7 @@ class Pipeline:
     # Serialization
     # ------------------------------------------------------------------
     def to_yaml(self) -> str:
+        compact_column_steps(self)
         body = _steps_to_dag(self.steps, self.sources, self.train_prev)
         return yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
 
@@ -263,9 +265,11 @@ class Pipeline:
         return hashlib.sha1(self.to_yaml().encode("utf-8")).hexdigest()
 
     def op_names(self) -> list[str]:
+        compact_column_steps(self)
         return [s.op for s in self.steps]
 
     def __len__(self) -> int:
+        compact_column_steps(self)
         return len(self.steps)
 
 
@@ -283,7 +287,7 @@ class PipelineCheckReport:
 # Default-params builder for individual operators (context aware)
 # -----------------------------------------------------------------------------
 def _exclude_special(cols: list[str], ctx: DataContext) -> list[str]:
-    bad = RESERVED_COLUMNS | {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
+    bad = {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
     return [c for c in cols if c not in bad]
 
 
@@ -400,6 +404,34 @@ def _param_space_value_errors(op_name: str, params: dict) -> list[str]:
     return errors
 
 
+def _internal_column_errors(op_name: str, params: dict) -> list[str]:
+    """Reject explicit metadata inputs/outputs, including YAML/LLM proposals.
+
+Inspect column selectors/maps, not arbitrary literal strings such as fill_value
+or replacement. This validates declarative parameters, not custom Python code.
+"""
+    def names(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield from names(key)
+                yield from names(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from names(item)
+
+    selectors = {"col", "cols", "columns", "by", "subset", "on", "left_on",
+                 "right_on", "col_dtypes", "boundaries", "rename_map"}
+    errors = []
+    for key, value in params.items():
+        if key in selectors or key.endswith(("_col", "_cols")):
+            reserved = sorted({name for name in names(value) if is_internal_column(name)})
+            if reserved:
+                errors.append(f"{op_name} parameter {key!r} references reserved internal columns: {reserved}")
+    return errors
+
+
 def validate_step_params(
     op_name: str,
     params: dict | None,
@@ -417,7 +449,7 @@ def validate_step_params(
     params = params or {}
     if op_name not in CATALOG:
         return [f"unknown operator {op_name}"]
-    errors: list[str] = []
+    errors: list[str] = _internal_column_errors(op_name, params)
     missing = _missing_required_params(op_name, params)
     if missing:
         errors.append(f"{op_name} missing required params: {missing}")
@@ -440,36 +472,30 @@ def validate_step_params(
             errors.append(f"{op_name} is classification-only; regression targets are not classes")
         errors.extend(_target_leakage_errors(op_name, params, ctx))
         errors.extend(_rec_id_protection_errors(op_name, params, ctx))
+        from dppbench.time_applicability import resolve_time_params
+        _, time_errors = resolve_time_params(op_name, params, ctx.data_name,
+            ctx.time_rules, ctx.history_protocol, ctx.target_col)
+        errors.extend(time_errors)
     return errors
 
 
-_FEATURE_INPUT_PARAMS = {
-    "CreateLagFeature": ("target_col",),
-    "CreateRollingFeature": ("target_col",),
-    "CreateFeature": ("source_cols",),
-    "CreatePolynomialFeature": ("cols",),
-    "CrossFeature": ("cols",),
-    "AggregateGroupFeature": ("group_cols", "agg_cols"),
-    "ReduceDimension": ("cols",),
-}
+def _context_time_rule(ctx, col):
+    from dppbench.time_applicability import declared_clock
+    return declared_clock(ctx.data_name, col, ctx.time_rules)
+
+
+def _numeric_time_needs_rule(ctx, col, rule):
+    from pandas.api.types import is_numeric_dtype
+    numeric = any(is_numeric_dtype(table.dtypes.get(col)) for table in ctx.tables.values()
+                  if col in table.dtypes)
+    declared = isinstance(rule, dict) and (
+        bool(rule.get('format')) or ('unit' in rule and 'origin' in rule))
+    return numeric and not declared
 
 
 def _target_leakage_errors(op_name: str, params: dict, ctx: DataContext) -> list[str]:
-    # Derived features must never directly consume the supervised target.
-    target = ctx.target_col
-    if not target:
-        return []
-    leaked_params = [
-        key
-        for key in _FEATURE_INPUT_PARAMS.get(op_name, ())
-        if target in set(_as_list((params or {}).get(key)))
-    ]
-    if not leaked_params:
-        return []
-    return [
-        f"{op_name} cannot use target column {target!r} as a feature input "
-        f"in params {leaked_params}"
-    ]
+    from dppbench.feature_contracts import target_feature_errors
+    return target_feature_errors(op_name, params or {}, ctx.target_col)
 
 
 def _selection_protected_cols(ctx: DataContext) -> list[str]:
@@ -499,14 +525,23 @@ def _rec_id_protection_errors(op_name: str, params: dict, ctx: DataContext) -> l
 
 
 def _pick_some(cols: list[str], rng: _random.Random, lo: int = 1, hi: int = 3) -> list[str]:
-    cols = list(dict.fromkeys(cols))
     if not cols:
         return []
     n = min(len(cols), rng.randint(lo, hi))
-    return rng.sample(cols, n)
+    return cols[:n]
 
 
 def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) -> dict | None:
+    params = _build_default_params(op_name, ctx, rng)
+    if params is None:
+        return None
+    from dppbench.time_applicability import resolve_time_params
+    params, errors = resolve_time_params(op_name, params, ctx.data_name,
+        ctx.time_rules, ctx.history_protocol, ctx.target_col)
+    return None if errors else params
+
+
+def _build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) -> dict | None:
     """Return a dict of default params for ``op_name``, or ``None`` if the
     operator cannot be applied given the current context (e.g. no time column
     for ``ExtractDateTimeFeature``).
@@ -525,7 +560,7 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
 
     numeric_cols = _exclude_special(ctx.numeric_cols, ctx)
     categorical_cols = _exclude_special(ctx.categorical_cols, ctx)
-    text_cols = _exclude_special(ctx.text_cols, ctx)
+    text_cols = list(ctx.text_cols)
 
     # ---- JOIN ----
     if op_name == "JoinTable":
@@ -576,8 +611,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         cols = _exclude_special(ctx.categorical_cols, ctx)
         if len(cols) < 2:
             return None
-        p["cols"] = _pick_some(cols, rng, 2, 2)
-        p["output_col"] = "_".join(p["cols"]) + "_combo"
+        p["cols"] = cols[:2]
+        p["output_col"] = "_".join(cols[:2]) + "_combo"
         return p
 
     # ---- FILTER_ROW ----
@@ -710,6 +745,11 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if not ctx.time_col:
             return None
         p["cols"] = [ctx.time_col]
+        rule = _context_time_rule(ctx, ctx.time_col)
+        if not rule or rule.get('kind') == 'ordered_step':
+            return None
+        if rule:
+            p['time_rules'] = {ctx.time_col: rule}
         return p
 
     # ---- OUTLIER ----
@@ -806,6 +846,8 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
         if ctx.task_type != "tabular" or not ctx.target_col or not numeric_cols:
             return None
         p["label_col"] = ctx.target_col
+        p["task"] = "regression" if ctx.prediction_task == "regression" else "classification"
+        p["exclude_cols"] = [ctx.id_col] if ctx.id_col else []
         p["cols"] = _pick_some(numeric_cols, rng, 1, 5)
         return p
 
@@ -813,19 +855,24 @@ def build_default_params(op_name: str, ctx: DataContext, rng: _random.Random) ->
     if op_name == "CreateFeature":
         if len(numeric_cols) < 2:
             return None
-        p["source_cols"] = _pick_some(numeric_cols, rng, 2, 2)
-        p["output_col"] = "_".join(p["source_cols"]) + "_mean"
+        p["source_cols"] = numeric_cols[:2]
+        p["output_col"] = f"{numeric_cols[0]}_mean"
         p["method"] = "mean"
         return p
     if op_name == "CreatePolynomialFeature":
         if len(numeric_cols) < 2:
             return None
-        p["cols"] = _pick_some(numeric_cols, rng, 2, 5)
+        p["cols"] = numeric_cols[:5]
         return p
     if op_name == "ExtractDateTimeFeature":
         if not ctx.time_col:
             return None
         p["cols"] = [ctx.time_col]
+        rule = _context_time_rule(ctx, ctx.time_col)
+        if not rule or rule.get('kind') == 'ordered_step':
+            return None
+        if rule:
+            p['time_rules'] = {ctx.time_col: rule}
         return p
 
     # ---- FE-TimeSeries ----
@@ -947,7 +994,10 @@ def make_step(op_name: str, ctx: DataContext, rng: _random.Random) -> PipelineSt
     params = build_default_params(op_name, ctx, rng)
     if params is None:
         return None
-    if validate_step_params(op_name, params, ctx, strict=True):
+    from dppbench.time_applicability import resolve_time_params
+    params, errors = resolve_time_params(op_name, params, ctx.data_name,
+        ctx.time_rules, ctx.history_protocol, ctx.target_col)
+    if errors or validate_step_params(op_name, params, ctx, strict=True):
         return None
     return PipelineStep(
         op=op_name,
@@ -986,6 +1036,7 @@ def assign_dag_structure(pipeline: Pipeline, ctx: DataContext, rng: _random.Rand
     integration operators as multi-input DAG nodes.
     """
     rng = rng or _random.Random()
+    compact_column_steps(pipeline)
     aux_tables = _selected_aux_tables(ctx, pipeline.steps, rng)
     sources = _source_entries_for_context(ctx, aux_tables)
     source_by_table = _table_to_source_id(sources)
@@ -1077,6 +1128,7 @@ def repair(
     ``sort_steps`` is retained for API compatibility but categories no longer
     impose an operator order.
     """
+    compact_column_steps(pipeline)
     seen = set()
     deduped: list[PipelineStep] = []
     for step in pipeline.steps:
@@ -1198,9 +1250,9 @@ def finalize_pipeline(
     this before evaluating or persisting a searched pipeline.
     """
     rng = rng or _random.Random()
-    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps, rng=rng)
     truncate_optional_steps(pipeline, ctx.task_type, max_len)
-    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps)
+    repair(pipeline, ctx.task_type, ctx, sort_steps=sort_steps, rng=rng)
     assign_dag_structure(pipeline, ctx, rng)
     return pipeline, check_pipeline(pipeline, ctx)
 
@@ -1293,7 +1345,7 @@ def get_param_space(op, ctx: DataContext, current_params: dict | None = None) ->
     elif name in {"ParseDate", "ExtractDateTimeFeature"} and ctx.time_col:
         space.setdefault("cols", [ctx.time_col])
     elif name in {"ParseNumber", "CorrectTypo", "ExtractTextFeature", "ExtractTextEmbedding"}:
-        space.setdefault("cols", _exclude_special(ctx.text_cols, ctx) or categorical_cols)
+        space.setdefault("cols", ctx.text_cols or categorical_cols)
     elif name in {"DropColumns"}:
         space.setdefault("cols", all_cols)
 

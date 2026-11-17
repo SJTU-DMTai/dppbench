@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import time
 from typing import Optional
 
@@ -37,7 +38,7 @@ from baselines.common.utils import get_data_ctx
 
 from .evaluator import AutoPrepEvaluator
 from .operator_catalog import CATALOG
-from .solver import Candidate, repair_pipeline, solve
+from .solver import Candidate, pipeline_signature, repair_pipeline, solve
 from .transformation_model import JoinModel, TransformationModel
 
 
@@ -101,6 +102,8 @@ class AutoPrep:
         self.n_iters = int(n_iters)
         self.beam = int(beam)
         self.n_candidates = int(n_candidates)
+        if min(self.n_iters, self.beam, self.n_candidates) < 1:
+            raise ValueError("AutoPrep iterations, beam and candidate counts must be positive")
         self.max_depth = int(max_depth)
         self.small_n = small_n
         self.eval_full = bool(eval_full)
@@ -157,7 +160,14 @@ class AutoPrep:
         no_improve_streak = 0
         history: list[dict] = []
 
-        for it in range(self.n_iters):
+        evaluated_joins: set[str] = set()
+        feedback_buffer = []
+        required_joins = {edge.name for edge in j_model.all_edges()}
+        # Permit enough rounds for initial coverage when a round is too small.
+        # The external evaluation/time budgets still bound the actual work.
+        coverage_rounds = math.ceil(len(required_joins) / self.n_candidates)
+        search_rounds = max(self.n_iters, coverage_rounds + 1 if required_joins else 1)
+        for it in range(search_rounds):
             iter_seed = self.seed + 31 * it
             candidates = solve(
                 ctx=ctx,
@@ -167,6 +177,8 @@ class AutoPrep:
                 n_candidates=self.n_candidates,
                 max_depth=self.max_depth,
                 seed=iter_seed,
+                evaluated_joins=evaluated_joins,
+                coverage_seed=self.seed,
             )
             if not candidates:
                 if self.verbose:
@@ -178,6 +190,10 @@ class AutoPrep:
             for ci, cand in enumerate(candidates):
                 fit, metrics, err = evaluator.evaluate_for_agent(cand.pipeline)
                 results.append((cand, fit, metrics, err))
+                # A failed execution is an attempted probe, but a budget
+                # rejection has not evaluated the selected join.
+                if not err or "BudgetExceeded" not in err:
+                    evaluated_joins.update(cand.join_set)
                 if self.verbose:
                     print(f"  [iter {it+1}] cand {ci+1}/{len(candidates)} "
                           f"ops={list(cand.op_set)} fit={fit:.4f} "
@@ -195,7 +211,9 @@ class AutoPrep:
                 no_improve_streak += 1
 
             # Multiplicative-weights update (mean-centred reward)
-            valid = [r for r in results if math.isfinite(r[1])]
+            feedback_buffer.extend(results)
+            valid = ([r for r in feedback_buffer if math.isfinite(r[1])]
+                     if required_joins <= evaluated_joins else [])
             if valid:
                 mean_fit = sum(r[1] for r in valid) / len(valid)
                 for cand, fit, _metrics, _err in valid:
@@ -204,16 +222,22 @@ class AutoPrep:
                         t_model.update(op_name, reward)
                     for jname in cand.join_set:
                         j_model.update(jname, reward)
+                feedback_buffer.clear()
 
             # Logging
             history.append({
                 "iter": it + 1,
+                "evaluated_joins": sorted(evaluated_joins),
+                "pending_joins": sorted(required_joins - evaluated_joins),
                 "iter_best_fit": float(iter_best_fit) if math.isfinite(iter_best_fit) else None,
                 "best_fit_so_far": float(best_fitness) if math.isfinite(best_fitness) else None,
                 "candidates": [
                     {
                         "ops": list(c.op_set),
                         "joins": list(c.join_set),
+                        "coverage_probe": c.coverage,
+                        "pipeline_signature": pipeline_signature(c.pipeline),
+                        "pipeline_yaml": c.pipeline.to_yaml(),
                         "fitness": float(f) if math.isfinite(f) else None,
                         "metrics": m,
                         "error": e,
@@ -224,7 +248,10 @@ class AutoPrep:
                 "join_probs": j_model.snapshot(),
             })
 
-            if no_improve_streak >= self.early_stop_patience and it + 1 < self.n_iters:
+            if (required_joins <= evaluated_joins
+                    and not any(c.coverage for c in candidates)
+                    and no_improve_streak >= self.early_stop_patience
+                    and it + 1 < search_rounds):
                 if self.verbose:
                     print(f"[AutoPrep] early stop at iter {it+1}: no improvement.")
                 break
@@ -237,7 +264,7 @@ class AutoPrep:
             evaluator.set_small_n(0)
             if self.fast_train:
                 evaluator.set_fast_mode(False)
-            full_pipe = repair_pipeline(best_candidate.pipeline.copy(), ctx)
+            full_pipe = repair_pipeline(best_candidate.pipeline.copy(), ctx, rng=random.Random(self.seed))
             full_fit, full_metrics, err = evaluator.evaluate_for_agent(full_pipe)
             eval_error = err
             full_fitness = float(full_fit) if math.isfinite(full_fit) else None
@@ -249,14 +276,18 @@ class AutoPrep:
         out_yaml = os.path.join(self.output_dir, "best_pipeline.yaml")
         out_log = os.path.join(self.output_dir, "auto_prep_log.json")
         output_pipe = (
-            repair_pipeline(best_candidate.pipeline.copy(), ctx)
-            if best_candidate is not None else repair_pipeline(Pipeline(), ctx)
+            repair_pipeline(best_candidate.pipeline.copy(), ctx, rng=random.Random(self.seed))
+            if best_candidate is not None else repair_pipeline(Pipeline(), ctx, rng=random.Random(self.seed))
         )
         with open(out_yaml, "w", encoding="utf-8") as f:
             f.write(output_pipe.to_yaml())
         check_report = check_pipeline(output_pipe, ctx)
 
         log = {
+            "search_protocol": "coverage_first_joins_v1",
+            "join_coverage": {"attempted": sorted(evaluated_joins),
+                              "pending": sorted(required_joins - evaluated_joins),
+                              "complete": required_joins <= evaluated_joins},
             "data_name": self.data_name,
             "task_type": ctx.task_type,
             "n_catalog_ops": len(CATALOG),
@@ -279,6 +310,7 @@ class AutoPrep:
             "duration_seconds": time.time() - t0,
             "config": {
                 "n_iters": self.n_iters, "beam": self.beam,
+                "max_search_rounds": search_rounds,
                 "n_candidates": self.n_candidates, "max_depth": self.max_depth,
                 "small_n": self.small_n, "eval_full": self.eval_full,
                 "eta": self.eta, "seed": self.seed,

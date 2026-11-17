@@ -150,6 +150,8 @@ class AlphaClean:
         if self.fast_train:
             train_evaluator.set_fast_mode(True)
         ctx, _data = self._build_context(train_evaluator)
+        train_evaluator._executor.clear_data_cache()
+        del _data
 
         if self.verbose:
             print("=" * 60)
@@ -193,6 +195,9 @@ class AlphaClean:
             raise RuntimeError("AlphaClean search produced no scored pipelines.")
 
         best = frontier[0]
+        train_evaluator.release_search_data()
+        import gc
+        gc.collect()
 
         # 4) Persist artefacts
         out_yaml_path = os.path.join(self.output_dir, "best_pipeline.yaml")
@@ -258,7 +263,7 @@ class AlphaClean:
             print(f"[AlphaClean] DONE in {duration:.1f}s")
             fit_str = f"{best_fitness:.4f}" if isinstance(best_fitness, float) else "n/a"
             print(f"[AlphaClean] best fitness = {fit_str}")
-            print(f"[AlphaClean] best metrics = {best_metrics}")
+            print(f"[AlphaClean] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
             print(f"[AlphaClean] best ops     = {best.pipeline.op_names()}")
             print(f"[AlphaClean] best yaml    -> {out_yaml_path}")
             print(f"[AlphaClean] history      -> {history_path}")

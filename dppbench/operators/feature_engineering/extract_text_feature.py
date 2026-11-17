@@ -13,6 +13,7 @@ class ExtractTextFeature(TextOp):
             raise ValueError("method must be tfidf or bow")
         self.cols = cols if isinstance(cols, list) else [cols]
         self.method = method
+        self.output_col_types = {}
         self.max_features = int(max_features)
         self.ngram_range = tuple(ngram_range)
         self.vectorizers_ = {}
@@ -96,6 +97,7 @@ dag:
         if feature_blocks:
             features = pd.concat(feature_blocks, axis=1)
             features = features.loc[:, ~features.columns.duplicated(keep="last")]
+            self.output_col_types.update({c: "numeric" for c in features})
             df = pd.concat([df.drop(columns=features.columns, errors="ignore"), features], axis=1)
         self.fitted_ = True
         return df

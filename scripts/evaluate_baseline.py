@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import inspect
+import hashlib
 import json
 import math
 import os
@@ -43,6 +44,7 @@ import re
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -61,6 +63,7 @@ from scripts.build_std_test import (  # noqa: E402
     run_for_task as build_std_test_for_task,
 )
 from baselines.common.budget import Budget, budget_scope  # noqa: E402
+from baselines.common.search_cost import SearchCost, search_cost_scope  # noqa: E402
 
 
 def _load_class(cls_path: str):
@@ -82,6 +85,13 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
+    "LLM-AutoDP-Adapted": {
+        "cls_path": "baselines.LLMAutoDP.llm_autodp.LLMAutoDP",
+        "supports_eval_full": True,
+        "time_cost_kind": "search_inference",
+        "max_len_arg": "max_pipeline_len",
+        "kwargs": {},
+    },
     "DAGPipe": {
         "cls_path": "baselines.DAGPipe.dagpipe.DAGPipe",
         "pipeline_cls": "baselines.DAGPipe.pipeline.DAGPipePipeline",
@@ -98,6 +108,7 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
+
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
         "supports_eval_full": True,
@@ -187,8 +198,16 @@ def _std_test_present(task_name: str, data_dir: str | None = None) -> bool:
     d = _std_test_dir(task_name, data_dir=data_dir)
     if not os.path.isdir(d):
         return False
-    # std_test.parquet is required for every task type.
-    return os.path.isfile(os.path.join(d, "std_test.parquet"))
+    kind = STD_TEST_TASKS.get(task_name, (None, None))[1]
+    training = 'interaction_frozen.parquet' if kind == 'rec' else 'train_frozen.parquet'
+    paths = [os.path.join(d, name) for name in ('meta.json', training, 'std_test.parquet')]
+    if not all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in paths):
+        return False
+    import pyarrow.parquet as pq
+    try:
+        return all(pq.read_metadata(path).num_rows > 0 for path in paths[1:])
+    except (OSError, ValueError):
+        return False
 
 
 def _load_std_test_meta(task_name: str, data_dir: str | None = None) -> dict:
@@ -265,7 +284,9 @@ def parse_args():
         ),
     )
     parser.add_argument("--resume_pipeline", default=None,
-                        help="DAGPipe checkpoint path; supports {task} and {model}. Skips search; requires existing frozen data.")
+                        help="Saved pipeline path for any baseline; supports {task} and {model}. Never searches or rebuilds frozen data.")
+    parser.add_argument('--shared_repair', action=argparse.BooleanOptionalAction, default=True,
+                        help='Complete parsed BAT/DeepPrep/LLMAutoDP candidates before search scoring; policy methods retain native completion')
     parser.add_argument("--training_mode", choices=("scratch", "pretrained", "finetune"), default=None,
                         help="CtxPipe/HAIPipe/FlowPipe training mode; default finetune from config")
     parser.add_argument("--pretrained_dir", default=None, help="Pretrained checkpoint directory, grouped by baseline/model")
@@ -274,9 +295,11 @@ def parse_args():
     parser.add_argument("--finetune_epochs", type=int, default=None, help="FlowPipe target fine-tuning epochs")
     parser.add_argument("--small_n", type=int, default=None, help="Search sample size for CtxPipe/HAIPipe/FlowPipe; 0 uses the full training pool")
     parser.add_argument("--fast_train", action=argparse.BooleanOptionalAction, default=None,
-                        help="Use reduced downstream training budgets during search; does not affect final evaluation")
+                        help="Reduced downstream training during search; does not affect final evaluation")
     parser.add_argument("--context_cache_dir", default=None, help="CtxPipe or FlowPipe embedding cache")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
+    parser.add_argument("--baseline_config_path", default=None,
+                        help="Explicit baseline YAML (e.g. short DAGPipe profiler run).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output_dir", type=str,
@@ -323,6 +346,10 @@ def parse_args():
             "Useful for CI to ensure std-tests are pre-built."
         ),
     )
+    parser.add_argument("--llmautodp_model_path", default=None,
+                        help="Use local LLMAutoDP with this checkpoint instead of its configured API backend")
+    parser.add_argument("--preflight_only", action="store_true",
+                        help="Validate frozen test artifacts without running baselines; combine with --skip_build for read-only checks")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--gpu_id", type=int, default=-1,
@@ -413,6 +440,8 @@ def _apply_baseline_model_paths(
             "llm_backend": "local",
             "llm_model": args.deepprep_model_path,
         })
+    elif baseline_name == "LLM-AutoDP-Adapted" and getattr(args, "llmautodp_model_path", None):
+        kwargs.update(llm_backend="local", llm_model=args.llmautodp_model_path)
     elif baseline_name == "BAT":
         kwargs.update({
             "llm_backend": "local",
@@ -448,34 +477,19 @@ def _run_baseline_and_eval(
     args,
     out_root: str,
     budget: Budget | None = None,
+    search_cost: SearchCost | None = None,
 ) -> dict[str, Any]:
     """Run the baseline construction loop, then re-evaluate the produced
     pipeline end-to-end so the downstream model is trained and scored on
     the frozen std-test rows.
     """
     baseline_name = _canonical_baseline_name(baseline_name)
+    search_cost = search_cost if search_cost is not None else SearchCost(baseline_name)
     conf = BASELINE_CONFIGS[baseline_name]
-    cls = _load_class(conf["cls_path"])
-    kwargs = dict(conf["kwargs"])
-    _apply_baseline_model_paths(baseline_name, kwargs, args)
-    if baseline_name in {"CtxPipe", "HAIPipe", "FlowPipe"}:
-        if args.small_n is not None and args.small_n < 0:
-            raise ValueError("--small_n must be nonnegative")
-        for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs", "small_n", "fast_train"):
-            if getattr(args, key, None) is not None:
-                kwargs[key] = getattr(args, key)
-        if not kwargs.get("pretrained_dir"):
-            batch = "seed42_v3_20261026_213243" if baseline_name == "FlowPipe" else "seed42_v3_retry_20261029_211708"
-            kwargs["pretrained_dir"] = os.environ.get("DPPBENCH_PRETRAINED_DIR") or os.path.join(_ROOT, "ckpts", "pretrained", batch)
-        if baseline_name != "HAIPipe" and getattr(args, "context_cache_dir", None):
-            kwargs["context_cache_dir"] = args.context_cache_dir
-    if conf["supports_eval_full"]:
-        kwargs["eval_full"] = False
     max_pipeline_len = (
         budget.max_pipeline_length if budget is not None
         else args.max_pipeline_len
     )
-    _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
 
     task_dir = os.path.join(_ROOT, "dppbench", "tasks", task_name)
     task_data_dir = _task_data_dir(task_name, args.data_dir)
@@ -485,37 +499,63 @@ def _run_baseline_and_eval(
     )
     os.makedirs(runner_output_dir, exist_ok=True)
 
-    if "model_name" in inspect.signature(cls).parameters:
-        kwargs["model_name"] = model_name
-
     # ---- Phase 1: construct preprocessing pipeline ---------------------
     resume_path = _resume_path(args, task_name, model_name)
     if baseline_name == "DAGPipe":
         from baselines.DAGPipe.preflight import check_runtime
-        report = check_runtime(task_dir=task_dir, data_name=task_name, model_name=model_name,
-                               evaluator_class=_load_class(conf["evaluator_cls"]))
-        if not args.quiet:
-            _print_json({"dagpipe_preflight": report})
+        check_runtime(task_dir=task_dir, data_name=task_name, model_name=model_name,
+                      evaluator_class=_load_class(conf["evaluator_cls"]))
     if resume_path:
-        if baseline_name != "DAGPipe":
-            raise ValueError("--resume_pipeline currently supports DAGPipe only")
         from pathlib import Path
-        from baselines.DAGPipe.pipeline import DAGPipePipeline
         source = Path(resume_path)
         if source.parent.resolve() == Path(runner_output_dir).resolve():
             raise ValueError("Resume requires a separate --output_dir to preserve the original run")
         pipeline_text = source.read_text(encoding="utf-8")
-        saved = DAGPipePipeline.from_yaml(pipeline_text)
-        if saved.payload["task"] != task_name or saved.payload["seed"] != args.seed:
-            raise ValueError("Resume checkpoint task/seed does not match requested task/seed")
+        payload = yaml.safe_load(pipeline_text)
+        if not isinstance(payload, dict):
+            raise ValueError("Saved pipeline must be a YAML mapping")
+        if baseline_name == "DAGPipe":
+            from baselines.DAGPipe.pipeline import DAGPipePipeline
+            saved = DAGPipePipeline.from_yaml(pipeline_text)
+            if saved.payload["task"] != task_name or saved.payload["seed"] != args.seed:
+                raise ValueError("Resume checkpoint task/seed does not match requested task/seed")
+        elif not ("dag" in payload or "pipeline" in payload) or "format" in payload:
+            raise ValueError("Expected a common pipeline YAML (dag or pipeline), not a model checkpoint")
         result = {"best_pipeline_yaml": pipeline_text, "is_legal": True}
         search_budget_snapshot = None
         construct_time = None
     else:
+        # Search implementations (including LLM/checkpoint dependencies) are
+        # never imported or instantiated in replay mode.
+        cls = _load_class(conf["cls_path"])
+        kwargs = dict(conf["kwargs"])
+        if getattr(args, "baseline_config_path", None):
+            if "config_path" not in inspect.signature(cls).parameters:
+                raise ValueError(f"{baseline_name} does not support config_path")
+            kwargs["config_path"] = args.baseline_config_path
+        _apply_baseline_model_paths(baseline_name, kwargs, args)
+        if baseline_name in {'BAT', 'DeepPrep', 'LLM-AutoDP-Adapted'}:
+            kwargs['shared_repair'] = getattr(args, 'shared_repair', False)
+        if baseline_name in {"CtxPipe", "HAIPipe", "FlowPipe"}:
+            if getattr(args, "small_n", None) is not None and args.small_n < 0:
+                raise ValueError("--small_n must be nonnegative")
+            for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs", "small_n", "fast_train"):
+                if getattr(args, key, None) is not None:
+                    kwargs[key] = getattr(args, key)
+            if not kwargs.get("pretrained_dir"):
+                batch = "seed42_v3_20261026_213243" if baseline_name == "FlowPipe" else "seed42_v3_retry_20261029_211708"
+                kwargs["pretrained_dir"] = os.environ.get("DPPBENCH_PRETRAINED_DIR") or os.path.join(_ROOT, "ckpts", "pretrained", batch)
+            if baseline_name != "HAIPipe" and getattr(args, "context_cache_dir", None):
+                kwargs["context_cache_dir"] = args.context_cache_dir
+        if conf["supports_eval_full"]:
+            kwargs["eval_full"] = False
+        _apply_max_pipeline_len(conf, cls, kwargs, max_pipeline_len)
+        if "model_name" in inspect.signature(cls).parameters:
+            kwargs["model_name"] = model_name
         t0 = time.time()
         if budget is not None:
             budget.start()
-        with budget_scope(budget):
+        with search_cost_scope(search_cost, runner_output_dir), budget_scope(budget):
             if budget is not None:
                 budget.check_resources()
             runner = cls(
@@ -540,6 +580,9 @@ def _run_baseline_and_eval(
         raise RuntimeError(error)
 
     pipeline_yaml = result.get("best_pipeline_yaml")
+    if result.get('diagnostic_only'):
+        raise ValueError('Diagnostic-only DAGPipe run ended safely; no final HPO/test was run. '
+                         f"Results: {result.get('output_dir')}. Use scripts/profile_dagpipe_performance.py.")
     if not pipeline_yaml:
         raise RuntimeError(
             f"{baseline_name} did not produce best_pipeline_yaml for {task_name}"
@@ -563,12 +606,13 @@ def _run_baseline_and_eval(
             f"{baseline_name} produced pipeline length {len(pipeline)} "
             f"> max_pipeline_len={max_pipeline_len}"
         )
+    pipeline_sha256 = hashlib.sha256(pipeline.to_yaml().encode("utf-8")).hexdigest()
     if resume_path:
         # Keep recovery provenance even if a later HPO trial fails.
-        pipeline.save(os.path.join(runner_output_dir, "best_pipeline.yaml"))
+        Path(runner_output_dir, "best_pipeline.yaml").write_text(pipeline_yaml, encoding="utf-8")
         with open(os.path.join(runner_output_dir, "resume.json"), "w", encoding="utf-8") as f:
             json.dump({"pipeline_reused": True, "pipeline_source": resume_path,
-                       "pipeline_sha256": pipeline.hash(), "seed": args.seed,
+                       "pipeline_sha256": pipeline_sha256, "seed": args.seed,
                        "task": task_name, "model": model_name,
                        "original_search_seconds": None}, f, indent=2)
     evaluator = evaluator_class(
@@ -592,9 +636,11 @@ def _run_baseline_and_eval(
             output_dir=runner_output_dir,
         )
     eval_t0 = time.time()
-    ev = evaluator.evaluate(pipeline, scoring_method="full_train")
-    eval_time = time.time() - eval_t0
-    evaluator._executor.cleanup()
+    try:
+        ev = evaluator.evaluate(pipeline, scoring_method="full_train")
+        eval_time = time.time() - eval_t0
+    finally:
+        evaluator._executor.cleanup()
 
     metrics = ev.metrics or {}
     std_test_metrics = {
@@ -646,6 +692,18 @@ def _run_baseline_and_eval(
         if final_inference_seconds is not None else None
     )
 
+    if evaluator.task_type == 'rec':
+        from dppbench.rec_protocol import implementation_manifest, frozen_file_manifest
+        from dppbench.dataset import RecData
+        manifest = dict(implementation_manifest())
+        manifest.update(effective_model_config=evaluator._executor.get_model_config(),
+                        evaluation_protocol=metrics.get('rec_protocol'), seed=args.seed)
+        directory = RecData._std_test_dir(evaluator._executor._resolved_data_dir())
+        manifest['frozen_files'] = frozen_file_manifest(directory) if directory else {}
+        os.makedirs(runner_output_dir, exist_ok=True)
+        with open(os.path.join(runner_output_dir, 'rec_protocol_manifest.json'), 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, default=str)
+
     return {
         "task": task_name,
         "baseline": baseline_name,
@@ -653,9 +711,10 @@ def _run_baseline_and_eval(
         "output_dir": runner_output_dir,
         "max_pipeline_len": max_pipeline_len,
         "budget": search_budget_snapshot,
+        **search_cost.fields(),
         "pipeline_reused": bool(resume_path),
         "pipeline_source": resume_path,
-        "pipeline_sha256": pipeline.hash(),
+        "pipeline_sha256": pipeline_sha256,
         "training_mode": result.get("training_mode"),
         "training_seconds": result.get("training_seconds"),
         "scorer_adaptation_seconds": result.get("scorer_adaptation_seconds"),
@@ -664,6 +723,7 @@ def _run_baseline_and_eval(
             float(result["best_fitness"])
             if isinstance(result.get("best_fitness"), (int, float)) else None
         ),
+        "rec_protocol": metrics.get('rec_protocol'),
         "final_hpo_seconds": hpo_summary.get("seconds"),
         "final_hpo_best_params": json.dumps(hpo_summary.get("best_params")) if hpo_summary else None,
         "final_hpo_trials": len(hpo_summary.get("trials", [])),
@@ -739,19 +799,21 @@ def _row_console_summary(row: dict[str, Any]) -> dict[str, Any]:
             "n_unique_evals": row.get("n_unique_evals"),
         },
         "budget": row.get("budget"),
+        "search_cost": row.get("search_cost"),
         "error": row.get("error"),
     }
 
 
 def _print_json(obj: Any) -> None:
-    print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
+    print(json.dumps(obj, ensure_ascii=False, indent=2, default=str), flush=True)
 
 
 def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fields = [
-        "task", "baseline", "model", "output_dir", "max_pipeline_len", "training_mode", "training_provenance", "training_seconds", "scorer_adaptation_seconds",
-        "pipeline_reused", "pipeline_source", "pipeline_sha256",
+        "training_mode", "training_provenance", "training_seconds", "scorer_adaptation_seconds",
+        "task", "baseline", "model", "output_dir", "max_pipeline_len",
+        "pipeline_reused", "pipeline_source", "pipeline_sha256", "rec_protocol",
         "search_fitness", "final_hpo_seconds", "final_hpo_best_params", "final_hpo_trials",
         "final_val_fitness", "val_fitness", "std_test_metric_name",
         "val_metric_name", "val_metric",
@@ -762,6 +824,11 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "final_eval_seconds", "construct_time_s", "eval_time_s",
         "n_steps", "ops", "n_unique_evals", "baseline_is_legal",
         "baseline_eval_error", "std_test_error", "budget", "error",
+        "search_cost", "search_pipeline_score_calls", "search_downstream_fit_calls",
+        "search_proxy_train_loss_calls", "search_proxy_val_loss_calls",
+        "search_gradient_calls", "search_optimizer_steps",
+        "search_llm_prompt_tokens", "search_llm_completion_tokens", "search_llm_total_tokens",
+        "search_llm_usage_missing_calls", "search_embedding_input_tokens", "search_embedding_cache_hits",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -772,6 +839,10 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
                 out["ops"] = "|".join(out["ops"])
             if isinstance(out.get("budget"), dict):
                 out["budget"] = json.dumps(out["budget"], ensure_ascii=False)
+            if isinstance(out.get('rec_protocol'), dict):
+                out['rec_protocol'] = json.dumps(out['rec_protocol'], ensure_ascii=False)
+            if isinstance(out.get('search_cost'), dict):
+                out['search_cost'] = json.dumps(out['search_cost'], ensure_ascii=False)
             writer.writerow({k: out.get(k) for k in fields})
 
 
@@ -786,7 +857,7 @@ def _canonical_baseline_name(name: str) -> str:
 
 def _resume_path(args, task, model):
     template = getattr(args, "resume_pipeline", None)
-    return os.path.abspath(template.format(task=task, model=model)) if template else None
+    return os.path.abspath(template.replace('{task}', task).replace('{model}', model)) if template else None
 
 
 def main():
@@ -796,8 +867,6 @@ def main():
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     args.device = _resolve_device(args.gpu_id)
-    if args.resume_pipeline and args.baseline != "DAGPipe":
-        raise SystemExit("--resume_pipeline currently supports DAGPipe only")
 
     if args.data_names:
         tasks = [s.strip() for s in args.data_names.split(",") if s.strip()]
@@ -810,6 +879,21 @@ def main():
             f"Unknown tasks: {unknown}. "
             f"Available: {sorted(STD_TEST_TASKS)}"
         )
+
+    if args.preflight_only:
+        errors = {}
+        for task_name in tasks:
+            try:
+                result = _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
+                if not result.get('ok'):
+                    raise ValueError('Fixed-test artifact validation failed after building')
+                print(f"[preflight] PASS {task_name}", flush=True)
+            except Exception as exc:
+                errors[task_name] = f"{type(exc).__name__}: {exc}"
+                print(f"[preflight] FAIL {task_name}: {exc}", flush=True)
+        if errors:
+            raise SystemExit(json.dumps(errors, ensure_ascii=False, indent=2))
+        return
 
     out_root = os.path.abspath(args.output_dir)
     os.makedirs(out_root, exist_ok=True)
@@ -855,11 +939,14 @@ def main():
             max_output_rows=args.max_output_rows,
             max_output_columns=args.max_output_columns,
         )
+        search_cost = SearchCost(args.baseline)
         try:
             _ensure_std_test(task_name, args.data_dir, args.skip_build or bool(args.resume_pipeline), args.quiet)
-            row.update(_run_baseline_and_eval(
-                task_name, args.baseline, args, out_root, budget=budget
-            ))
+            from dppbench.rec_partition import partition_audit_scope
+            with partition_audit_scope(Path(run_output_dir) / 'partition_audits'):
+                row.update(_run_baseline_and_eval(
+                    task_name, args.baseline, args, out_root, budget=budget, search_cost=search_cost
+                ))
         except Exception as e:
             tb = traceback.format_exc()
             if not args.quiet:
@@ -887,6 +974,7 @@ def main():
                 "n_unique_evals": None,
                 "budget": budget.snapshot(),
                 "error": f"{type(e).__name__}: {e}",
+                **search_cost.fields(),
             })
         rows.append(row)
         _print_json({"run_result": _row_console_summary(row)})

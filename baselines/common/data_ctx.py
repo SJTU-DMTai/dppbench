@@ -5,6 +5,14 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 
 
+def is_internal_column(name: object) -> bool:
+    """Execution metadata is not part of the baseline's feature schema."""
+    return isinstance(name, str) and (
+        name in {"__split__", "__source_row__", "__row_idx__"}
+        or name.startswith("__dppbench_")
+    )
+
+
 @dataclass
 class TableContext:
     """Schema metadata for one source table exposed to baselines."""
@@ -21,13 +29,24 @@ class TableContext:
     configured_id_col: str | None = None
     configured_time_col: str | None = None
 
+    def __post_init__(self) -> None:
+        # Also cover contexts constructed directly by adapters/tests, not just
+        # infer_data_context(). Copy mappings; never mutate the source frame.
+        self.dtypes = {c: dtype for c, dtype in self.dtypes.items() if not is_internal_column(c)}
+        self.semantic_types = {c: kind for c, kind in self.semantic_types.items() if not is_internal_column(c)}
+        if self.configured_target_col:
+            from dppbench.tabular_contracts import diagnostic_columns
+            excluded = diagnostic_columns(self.dtypes, self.configured_target_col)
+            self.dtypes = {c: t for c, t in self.dtypes.items() if c not in excluded}
+            self.semantic_types = {c: t for c, t in self.semantic_types.items() if c not in excluded}
+
     @property
     def columns(self) -> list[str]:
-        return list(self.dtypes.keys())
+        return [c for c in self.dtypes if not is_internal_column(c)]
 
     @property
     def dtypes_summary(self) -> dict[str, int]:
-        return dict(Counter(self.dtypes.values()))
+        return dict(Counter(self.dtypes[c] for c in self.columns))
 
     @property
     def null_ratio(self) -> float:
@@ -35,9 +54,9 @@ class TableContext:
 
     @property
     def numeric_cols(self) -> list[str]:
-        return [c for c, dtype in self.dtypes.items()
+        return [c for c in self.columns
                 if self.semantic_types.get(c) == "numeric"
-                or (c not in self.semantic_types and _is_numeric_dtype(dtype))]
+                or (c not in self.semantic_types and _is_numeric_dtype(self.dtypes[c]))]
 
     @property
     def categorical_cols(self) -> list[str]:
@@ -90,6 +109,8 @@ class DataContext:
     secondary_tables: list[str] = field(default_factory=list)        # YAML 中 s1, s2, ... 对应的次表
     tables: dict[str, TableContext] = field(default_factory=dict)    # 每张 source table 的 schema/profile
     prediction_task: str | None = None
+    time_rules: dict[str, dict] = field(default_factory=dict)
+    history_protocol: dict = field(default_factory=dict)
     select_primary_only: bool = False
 
     def selection_tables(self):
@@ -205,10 +226,19 @@ class DataContext:
 def infer_data_context(data_name: str, data, task_type: str | None = None) -> DataContext:
     task_type = task_type or getattr(data, "task_type", None)
     if task_type == "rec":
-        return _infer_rec_context(data_name, data)
-    if task_type == "graph":
-        return _infer_graph_context(data_name, data)
-    return _infer_tabular_context(data_name, data)
+        ctx = _infer_rec_context(data_name, data)
+    elif task_type == "graph":
+        ctx = _infer_graph_context(data_name, data)
+    else:
+        ctx = _infer_tabular_context(data_name, data)
+    from copy import deepcopy
+    config = getattr(data, 'model_cfg', {}) or {}
+    ctx.time_rules = deepcopy(config.get('feature', {}).get('time_rules', {}))
+    ctx.history_protocol = deepcopy(config.get('history_protocol', config.get('tabular_history', {})))
+    if ctx.primary_context and config.get('feature', {}).get('time_col'):
+        ctx.primary_context.configured_time_col = config['feature']['time_col']
+    return ctx
+
 
 
 def _profile_table(
@@ -222,11 +252,11 @@ def _profile_table(
 ) -> TableContext:
     if df is None:
         return TableContext(name=name, role=role)
-    columns = list(df.columns)
+    columns = [c for c in df.columns if not is_internal_column(c)]
     return TableContext(
         name=name,
         role=role,
-        shape=tuple(df.shape),
+        shape=(len(df), len(columns)),
         dtypes={c: str(df[c].dtype) for c in columns},
         join_keys_to_primary=join_keys_to_primary or [],
         configured_target_col=target_col,
@@ -298,6 +328,7 @@ def _infer_rec_context(data_name: str, data) -> DataContext:
     return DataContext(
         task_type="rec",
         data_name=data_name,
+        time_rules={c: dict(rule) for c, rule in feature_config.get('time_rules', {}).items()},
         primary_table="interaction",
         secondary_tables=secondary_tables,
         tables=tables,
@@ -387,29 +418,26 @@ def _first_existing(columns: list[str], candidates: tuple[str, ...]) -> str | No
     return None
 
 
-RESERVED_COLUMNS = {"__split__", "__row_id__", "sample_weight"}
-
-
 def context_for_frame(ctx: DataContext, frame) -> DataContext:
     import numpy as np
 
+    columns = [c for c in frame.columns if not is_internal_column(c)]
     semantic_types = {}
     for table in ctx.tables.values():
         semantic_types.update(table.semantic_types)
-    semantic_types = {c: semantic_types[c] for c in frame.columns if c in semantic_types}
-    for column in frame.columns:
+    semantic_types = {c: semantic_types[c] for c in columns if c in semantic_types}
+    for column in columns:
         if column not in semantic_types:
             sample = frame[column].dropna().head(16)
             if any(isinstance(value, (list, tuple, np.ndarray)) for value in sample):
                 semantic_types[column] = "categorical_list"
-    table = replace(ctx.primary_context, shape=frame.shape,
-                    dtypes={c: str(frame[c].dtype) for c in frame.columns},
-                    semantic_types=semantic_types)
+    table = replace(ctx.primary_context, shape=(len(frame), len(columns)),
+                    dtypes={c: str(frame[c].dtype) for c in columns}, semantic_types=semantic_types)
     return replace(ctx, tables={**ctx.tables, ctx.primary_table: table}, select_primary_only=True)
 
 
 def _special_cols(ctx: DataContext) -> set[str | None]:
-    return RESERVED_COLUMNS | {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
+    return {ctx.target_col, ctx.id_col, ctx.user_col, ctx.item_col, ctx.time_col}
 
 
 def _dedupe(cols) -> list[str]:

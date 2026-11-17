@@ -260,11 +260,11 @@ class FraudDetectionData(TabularData):
 
         train_trans = pd.read_csv(os.path.join(data_dir, "train_transaction.csv"))
         train_id = pd.read_csv(os.path.join(data_dir, "train_identity.csv"))
-        self.train_df = train_trans.merge(train_id, on="TransactionID", how="left")
+        self.train_df = train_trans.merge(train_id, on="TransactionID", how="left", validate='one_to_one')
 
         test_trans = pd.read_csv(os.path.join(data_dir, "test_transaction.csv"))
         test_id = pd.read_csv(os.path.join(data_dir, "test_identity.csv"))
-        self.test_df = test_trans.merge(test_id, on="TransactionID", how="left")
+        self.test_df = test_trans.merge(test_id, on="TransactionID", how="left", validate='one_to_one')
 
         print(f"Train merged: {self.train_df.shape}, Test merged: {self.test_df.shape}")
         return self.train_df, self.test_df

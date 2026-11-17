@@ -65,6 +65,18 @@ pretrained_delivery_20261102/
 
 本机工具的共享盘挂载为 /mnt/cephfs_zjk/；给 GPU 服务器执行的命令使用 /mnt/cephfs/，不要直接套用工具挂载点。
 
+### 附评测结果的归档
+
+`pretrained_delivery_20261102_with_results.tar.gz` 使用相同的顶层目录 `pretrained_delivery_20261102/`，包含上述权重及新增 `evaluation_results/`：
+
+- `summary.csv`、`summary.json`：打包时已完成且通过结果检查的正式批量标准测试结果，按 baseline/task/model 去重；原 FlowPipe 缓存失败由成功 retry 替代。
+- `<baseline>/<task>_<model>/`：原始 metrics.csv、status.json、best_pipeline.yaml，以及存在的 command.json 和方法日志 JSON。
+- `experiment_configs/`：对应原始实验参数。
+- `inventory.json`：来源目录、已完成条目、未完成条目及明确跳过的实验。
+- `smoke/`：早期单任务试跑结果，单独保存，不计入正式批量汇总。
+
+不包含重复微调权重、海量 launch.log 或半成品实验输出。原始错误和在途任务不会被伪装成完成结果；剩余任务只记录状态，不保证进程实时存活。结果是合并前运行的旧代码实验，不能宣称采用当前合并后的数据处理或 HAIPipe 推荐迁移。AUC/RMSE 等指标应结合原始 CSV 和实验配置解释。归档生成后可按 SHA256SUMS 验证所有文件。
+
 ## 3. 训练设置与兼容合同
 
 交付五组的训练来源均为 seed=42、small_n=1500、fast_train=false、held_out_tasks=[]，属于 seen-task 跨任务预训练，不是未见任务泛化实验。

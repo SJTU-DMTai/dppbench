@@ -1,44 +1,72 @@
-cd /home/jiaqinyi/code/dppbench
 
-mkdir -p logs/exp_1_1
-
-GPU_ID=1 bash <<'BASH' > logs/exp_1_1/exp1_1_dagpipe_credit_42.log 2>&1
+#!/usr/bin/env bash
 set -euo pipefail
 
-export BASELINES="DAGPipe"
+cd "$(dirname "$0")/../.."
 
-export SEEDS="42"
+# 加载公共配置
+source scripts/exps/common.sh
 
-DATASETS=(
- amazon_beauty 
- kuairec 
- movielens 
- yelp 
- elliptic_bitcoin
-  beijing_air_quality 
-  berka bike_sharing 
-  citibike_jc_hourly 
-  default_credit 
-  fraud_detection 
-  home_credit 
-  nyc_taxi_hourly
-  polish_bankruptcy
+# 实验配置
+SEED_LIST="42"
+GPU_ID=-1
+
+TASK_LIST=(
+   elliptic_bitcoin
 )
 
-for task in "${DATASETS[@]}"
-do
-  echo "======================================"
-  echo "[START] task=$task time=$(date)"
-  echo "[BASELINES] $BASELINES"
-  echo "======================================"
+BASELINES=(
+  DAGPipe
+)
 
-  TASKS="$task" \
-  OUTPUT_ROOT="/mnt/sdb/jiaqinyi/dppbench/output/exps_1_1/$task" \
-  GPU_ID=1 \
-    bash scripts/exps/01_exp1_1_cost_effectiveness.sh
+HARD_MEMORY_GIB=85
 
-  echo "[DONE] task=$task time=$(date)"
+FAILED=()
+
+for seed in $SEED_LIST; do
+
+  # 日志目录随 seed 自动变化
+  LOG_DIR="logs/exp1_10_30/seed${seed}"
+  mkdir -p "$LOG_DIR"
+
+  for task in "${TASK_LIST[@]}"; do
+    for baseline in "${BASELINES[@]}"; do
+
+      # 每个实验单独保存日志
+      LOG="${LOG_DIR}/${task}_${baseline}_seed${seed}.log"
+
+      echo "=================================================="
+      echo "[START] task=$task baseline=$baseline seed=$seed"
+      echo "[LOG] $LOG"
+      echo "[TIME] $(date)"
+
+      # 每次执行都会启动新的 Python 进程
+      if GPU_ID="$GPU_ID" \
+          TASKS="$task" \
+          SEEDS="$seed" \
+          BASELINES="$baseline" \
+          DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
+          python scripts/run_memory_limited.py \
+            --memory-gib "$HARD_MEMORY_GIB" -- \
+            bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
+            > "$LOG" 2>&1
+      then
+        echo "[SUCCESS] task=$task baseline=$baseline seed=$seed"
+      else
+        code=$?
+        echo "[FAILED] task=$task baseline=$baseline seed=$seed exit=$code"
+        FAILED+=("$task $baseline seed=$seed exit=$code")
+      fi
+
+    done
+  done
 done
 
+echo "=================================================="
 echo "[ALL DONE] $(date)"
-BASH
+echo "[FAILED COUNT] ${#FAILED[@]}"
+
+if ((${#FAILED[@]} > 0)); then
+  printf '[FAILED] %s\n' "${FAILED[@]}"
+  exit 1
+fi

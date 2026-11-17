@@ -80,10 +80,17 @@ class SIM(RecModel):
     def _recent_top_k(self, keys_emb, keys_len):
         max_len = keys_emb.size(1)
         top_k = min(self.sim_top_k, max_len)
-        if top_k == max_len:
-            return keys_emb, keys_len
-        start = max_len - top_k
-        return keys_emb[:, start:, :], torch.clamp(keys_len - start, min=0, max=top_k)
+        if top_k < 1:
+            raise ValueError('SIM requires a positive top-k and a nonempty padded sequence axis')
+        lengths = keys_len.long().clamp(min=0, max=max_len)
+        selected_lengths = lengths.clamp(max=top_k)
+        positions = torch.arange(top_k, device=keys_emb.device).unsqueeze(0)
+        starts = (lengths - top_k).clamp(min=0).unsqueeze(1)
+        indices = (starts + positions).clamp(max=max_len-1)
+        selected = keys_emb.gather(1, indices.unsqueeze(-1).expand(-1, -1, keys_emb.size(-1)))
+        # Validity is positional: an observed OOV token 0 is still an event.
+        mask = positions < selected_lengths.unsqueeze(1)
+        return selected.masked_fill(~mask.unsqueeze(-1), 0), selected_lengths
 
     def _query_embedding(self, X):
         query_emb_list = []

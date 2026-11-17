@@ -236,15 +236,21 @@ class CtxPipe:
                   f"ops={len(env.op_names)}  gte={self.gte_model_path}")
 
         model_name = resolved_model(train_evaluator)
-        agent.checkpoint_metadata = contract("CtxPipe", env, model_name,
+        from baselines.common.training_utils import resolve_policy_source
+        policy_model, source_path, fallback_reason = resolve_policy_source(
+            'CtxPipe', model_name, self.pretrained_checkpoint, self.pretrained_dir, self.training_mode)
+        agent.checkpoint_metadata = contract("CtxPipe", env, policy_model,
                                          {"path": os.path.realpath(self.gte_model_path), "dim": 4096})
-        source_path = pretrained_path("CtxPipe", model_name, self.pretrained_checkpoint, self.pretrained_dir)
+        if fallback_reason:
+            print(f'[CtxPipe] {fallback_reason}: {source_path}', flush=True)
         if self.training_mode != "scratch" and os.path.realpath(source_path) == os.path.realpath(os.path.join(self.output_dir, "q_network.pt")):
             raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
         source_provenance = {}
         if self.training_mode != "scratch":
             source_provenance = load_pretrained(agent, source_path, agent.checkpoint_metadata)
         agent.provenance = {"mode": self.training_mode, "target_task": self.data_name,
+                            "source_model": policy_model, "target_model": model_name,
+                            "cross_model_transfer": policy_model != model_name, "fallback_reason": fallback_reason,
                             "source_checkpoint": source_path if self.training_mode != "scratch" else None,
                             "source_provenance": source_provenance,
                             "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}
@@ -294,7 +300,15 @@ class CtxPipe:
             full_eval.set_evaluate_std_test(False)
             isolate_training_data(full_eval)
 
-        test_out = tester.run(agent=agent, env=env, eval_full_with=full_eval)
+        if train_evaluator.evaluation_budget_exhausted:
+            if train_evaluator.best_pipeline is None:
+                raise RuntimeError('CtxPipe search budget exhausted without a successful candidate')
+            result = train_evaluator.best_result
+            pipeline = train_evaluator.best_pipeline.copy()
+            test_out = dict(pipeline=pipeline, pipeline_yaml=pipeline.to_yaml(), ops=pipeline.op_names(),
+                            fitness=result.fitness, metrics=result.metrics, error=None, trace=[])
+        else:
+            test_out = tester.run(agent=agent, env=env, eval_full_with=full_eval)
         final_pipeline = test_out["pipeline"]
 
         # 6. Decide best pipeline: prefer the *final* pipeline if it succeeds;
@@ -347,7 +361,7 @@ class CtxPipe:
             print(f"[CtxPipe] DONE in {duration:.1f}s")
             fit_str = f"{best_fitness:.4f}" if isinstance(best_fitness, float) else "n/a"
             print(f"[CtxPipe] best fitness = {fit_str}")
-            print(f"[CtxPipe] best metrics = {best_metrics}")
+            print(f"[CtxPipe] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
             print(f"[CtxPipe] best pipeline saved to: {out_yaml}")
             print(f"[CtxPipe] q-network saved to: {weights_path}")
             print(f"[CtxPipe] unique evaluations: "

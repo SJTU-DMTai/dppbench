@@ -121,18 +121,21 @@ class BeijingAirQualityData(TabularData):
             c for c in self.POLLUTANTS + self.METEO
             if c in df.columns and c != self.target_col
         ]
-        meta = (
-            df[["station"] + meta_cols]
-            .groupby("station")
-            .mean(numeric_only=True)
-            .reset_index()
-        )
+        # Schema only: statistics are fitted after the actual frozen split and
+        # search sampling, never from the full raw time period.
+        meta = df[["station"] + meta_cols].iloc[:0].copy()
 
         self.train_df = df.reset_index(drop=True)
         self.test_df = None
         self.auxiliary_dfs["station_meta"] = meta
 
         return self.train_df, self.test_df
+
+    def fit_tabular_references(self, train):
+        cols = [c for c in self.POLLUTANTS + self.METEO
+                if c in train and c != self.target_col]
+        self.auxiliary_dfs['station_meta'] = train[['station'] + cols].groupby(
+            'station', as_index=False).mean(numeric_only=True)
 
     def split(self, val_ratio=0.2, seed=42):
         prepared = self._prepared_splits()

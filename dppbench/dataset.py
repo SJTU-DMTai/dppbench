@@ -67,6 +67,17 @@ class BaseData:
         self.model_cfg = cfg or {}
 
     def _protect_aggregate_target(self, df, op, op_name):
+        from dppbench.feature_contracts import target_feature_errors
+        configured_target = getattr(self, "target_col", None) or getattr(self, "model_cfg", {}).get("feature", {}).get("target_col")
+        if op_name in {"CreateLagFeature", "CreateRollingFeature"} and op.target_col == configured_target:
+            raise ValueError(f"{op_name} cannot read supervised targets under batch held-out evaluation")
+        errors = target_feature_errors(op_name, vars(op), configured_target)
+        if errors:
+            raise ValueError("; ".join(errors))
+        if op_name == "LabelEncode" and op.cols is None:
+            op.exclude_cols = list(dict.fromkeys([*getattr(op, "exclude_cols", ()), configured_target,
+                getattr(self, '_user_id_col', None), getattr(self, '_item_id_col', None),
+                *[c for c, kind in getattr(self, 'col_types', {}).items() if kind == 'timestamp']]))
         target = getattr(self, "target_col", None) or getattr(self, "model_cfg", {}).get("feature", {}).get("target_col")
         if op_name in {"CreateLagFeature", "CreateRollingFeature"} and op.target_col == target:
             raise ValueError(f"{op_name} cannot read supervised targets under batch held-out evaluation")
@@ -372,6 +383,7 @@ class BaseData:
         edges = self._relation_dag_edges_from_prev(spec, ops, source_ids)
         order, incoming = self._toposort_relation_dag(op_ids, source_ids, edges)
         values = dict(source_tables)
+        del source_tables, available_sources
         remaining_uses = {}
         for src, _ in edges:
             remaining_uses[src] = remaining_uses.get(src, 0) + 1
@@ -386,11 +398,31 @@ class BaseData:
             print(f"DAG params {ref} {op_name}: {raw_params}")
             params = {k: self._resolve_param(v) for k, v in raw_params.items()}
 
+            from dppbench.time_applicability import resolve_time_params, TIME_OPS, HISTORY_OPS
+            if op_name in TIME_OPS | HISTORY_OPS:
+                from dppbench.tabular_contracts import dataset_key
+                cfg = getattr(self, 'model_cfg', {}) or {}
+                params, errors = resolve_time_params(op_name, params, dataset_key(self),
+                    cfg.get('feature', {}).get('time_rules', {}),
+                    cfg.get('history_protocol', cfg.get('tabular_history', {})),
+                    getattr(self, 'target_col', None))
+                if errors:
+                    raise ValueError('; '.join(errors))
             op_cls = self._load_op(op_name)
             params = self._bind_relation_secondary_inputs(
                 op_cls, params, input_dfs[1:], op_name
             )
             op = op_cls(**params)
+            if op_name in HISTORY_OPS:
+                from dppbench.time_applicability import declared_clock, declared_history
+                history_config = declared_history(dataset_key(self), params,
+                    cfg.get('history_protocol', cfg.get('tabular_history', {})))
+                history_config.update(history_config.get('sources', {}).get(op.target_col, {}))
+                clock_rules = dict(cfg.get('feature', {}).get('time_rules', {}))
+                if history_config.get('time_rule'):
+                    clock_rules[op.time_col] = history_config['time_rule']
+                op._declared_history_rules = {c: declared_clock(dataset_key(self), c, clock_rules)
+                    for c in (op.time_col, op.available_at_col) if c}
             df = input_dfs[0]
             # A labelled DAG branch is not an independent lookup table.
             # Reject ambiguous reuse rather than joining held-out labels back
@@ -534,117 +566,8 @@ class RecData(BaseData):
         )
 
     def _remap_ids(self):
-        import numpy as np
-        for id_col, related_cols in [
-            (self._user_id_col, self._user_id_related_cols),
-            (self._item_id_col, self._item_id_related_cols),
-        ]:
-            unique_vals = set()
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None:
-                    continue
-                if id_col in df.columns:
-                    unique_vals.update(df[id_col].dropna().unique())
-                for rel_col in related_cols:
-                    if rel_col in df.columns:
-                        for val_list in df[rel_col]:
-                            if isinstance(val_list, (list, np.ndarray)):
-                                unique_vals.update(val_list)
-
-            if not unique_vals:
-                continue
-
-            mapping = {val: idx + 1 for idx, val in enumerate(sorted(unique_vals, key=str))}
-
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None:
-                    continue
-                if id_col in df.columns:
-                    df[id_col] = df[id_col].map(mapping)
-                for rel_col in related_cols:
-                    if rel_col in df.columns:
-                        df[rel_col] = df[rel_col].apply(
-                            lambda x: [mapping.get(v, 0) for v in x] if isinstance(x, (list, np.ndarray)) else x
-                        )
-
-        already_remapped = set(self._item_id_related_cols + self._user_id_related_cols)
-        for col, col_type in list(self.col_types.items()):
-            if col_type != self.CATEGORICAL_LIST or col in already_remapped:
-                continue
-            has_list = False
-            list_sample_is_str = False
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                for val in df[col]:
-                    if isinstance(val, (list, np.ndarray)) and len(val) > 0:
-                        has_list = True
-                        if not isinstance(val[0], (int, np.integer)):
-                            list_sample_is_str = True
-                        break
-                if has_list:
-                    break
-            if not has_list or not list_sample_is_str:
-                continue
-            all_tokens = set()
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                for val in df[col]:
-                    if isinstance(val, (list, np.ndarray)):
-                        all_tokens.update(val)
-            tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
-            for df_attr in ("interaction_df", "user_df", "item_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                df[col] = df[col].apply(
-                    lambda x: [tok2idx.get(v, 0) for v in x] if isinstance(x, (list, np.ndarray)) else x
-                )
-
-        id_cols = {self._user_id_col, self._item_id_col}
-        for col, col_type in list(self.col_types.items()):
-            if col_type != self.CATEGORICAL or col in id_cols:
-                continue
-            need_remap = False
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                non_null = df[col].dropna()
-                if len(non_null) == 0:
-                    continue
-                all_integer = non_null.map(
-                    lambda value: isinstance(value, (int, np.integer))
-                ).all()
-                if not all_integer:
-                    need_remap = True
-                    break
-                col_min = int(non_null.min())
-                col_max = int(non_null.max())
-                col_nunique = int(non_null.nunique())
-                if col_max - col_min + 1 > col_nunique * 2 + 10:
-                    need_remap = True
-                    break
-            if not need_remap:
-                continue
-
-            all_tokens = set()
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                all_tokens.update(df[col].dropna().unique())
-            tok2idx = {tok: idx + 1 for idx, tok in enumerate(sorted(all_tokens, key=str))}
-            for df_attr in ("interaction_df", "user_df", "item_df", "std_test_negatives_df"):
-                df = getattr(self, df_attr, None)
-                if df is None or col not in df.columns:
-                    continue
-                df[col] = df[col].map(tok2idx).fillna(0).astype("int64")
+        from .rec_protocol import remap_training_categories
+        remap_training_categories(self)
 
     def _resolve_param(self, value):
         if isinstance(value, str) and value.startswith("$"):
@@ -720,10 +643,19 @@ class RecData(BaseData):
         if not os.path.exists(frozen_path):
             raise FileNotFoundError(f"Frozen test requires disjoint training artifact: {frozen_path}")
         self.interaction_df = pd.read_parquet(frozen_path)
+        if "__split__" in self.interaction_df and not self.interaction_df["__split__"].eq("train").all():
+            raise ValueError("Frozen recommendation training file contains held-out partitions")
 
         std_df = pd.read_parquet(std_test_path).copy()
+        from .rec_protocol import assert_disjoint
+        self.split_audit_ = assert_disjoint(self.interaction_df, std_df, self._user_id_col, self._item_id_col,
+                                          self.model_cfg.get("feature", {}).get("time_col", "timestamp"))
         std_df["__split__"] = "std_test"
 
+        # Freeze original training identities/types before held-out concat can
+        # promote timestamp/label dtypes or add columns to the training frame.
+        self._validation_prepared = False
+        self._prepare_validation()
         base = self.interaction_df.copy()
         if "__split__" not in base.columns:
             base["__split__"] = "train"
@@ -736,6 +668,8 @@ class RecData(BaseData):
         self.interaction_df = pd.concat(
             [base, std_df[base.columns]], ignore_index=True
         )
+        self._rec_active_positions = np.concatenate([
+            self._rec_active_positions, np.full(len(std_df), -1, dtype=np.int64)])
 
         self._has_std_test = True
         feat_cfg = self.model_cfg.get("feature", {}) if self.model_cfg else {}
@@ -802,19 +736,67 @@ class RecData(BaseData):
             config, available_sources,
             lambda df, op, op_name: self._transform_rec_dag_df(df, op, op_name),
         )
+        from .rec_time_context import EVENT_CONTEXT
+        final_df = final_df.drop(columns=[EVENT_CONTEXT], errors='ignore')
         self.interaction_df = final_df
         self._require_training_rows(final_df, "Pipeline")
         self._remap_ids()
 
     def _transform_rec_dag_df(self, df, op, op_name):
+        from .rec_time_context import EVENT_CONTEXT, preserve_event_context, event_context
+        # Preserve the original event clock before a representation operator
+        # replaces it. This metadata is never fitted or encoded.
+        time_col = self.model_cfg.get('feature', {}).get('time_col', 'timestamp')
+        from .feature_contracts import _names
+        clock_writers = {'ParseDate', 'ParseNumber', 'CastType', 'RenameColumn',
+                         'DropColumns', 'DiscretizeFeature', 'ScaleFeature',
+                         'TransformPower', 'ClipOutlier', 'HandleOutlier'}
         self._protect_aggregate_target(df, op, op_name)
+        if op_name in ('ParseDate', 'ExtractDateTimeFeature'):
+            from .rec_time_context import time_rule
+            op.time_rules = {c: (getattr(op, 'time_rules', {}).get(c) or time_rule(self, c))
+                             for c in op.cols}
+        # None-valued numeric selectors are resolved by the guard above.
+        if op_name in clock_writers and time_col in _names(vars(op)) and time_col in df:
+            df = preserve_event_context(df, self._user_id_col, time_col)
+        has_context = EVENT_CONTEXT in df
+        if has_context:
+            # Inspect selectors, not fitted state (e.g. OneHot output_columns_
+            # legitimately carries this passthrough field when replayed).
+            from .feature_contracts import FEATURE_SELECTORS
+            selectors = set(FEATURE_SELECTORS.get(op_name, ())) | {
+                'cols', 'subset', 'by', 'feature_cols', 'key_col',
+                'output_col', 'output_cols', 'seq_col'}
+            if EVENT_CONTEXT in _names({key: getattr(op, key, None) for key in selectors}):
+                raise ValueError('Operators cannot select recommendation event context metadata')
+            if op_name == 'Deduplicate' and op.subset is None:
+                # Execution metadata must not change duplicate equivalence.
+                op.subset = [c for c in df if c not in (EVENT_CONTEXT, '__split__')]
+            if op_name == 'LabelEncode' and op.cols is None:
+                op.exclude_cols = [*getattr(op, 'exclude_cols', ()), EVENT_CONTEXT]
+        if op_name == "RenameColumn":
+            op.output_col_types = {new: self.col_types[old] for old, new in op.rename_map.items() if old in self.col_types}
+            op.drop_col_types = list(op.rename_map)
         applies_to_std_test = getattr(op, "APPLIES_TO_STD_TEST", True)
         uses_train_history = getattr(op, "USES_TRAIN_HISTORY_FOR_STD_TEST", False)
-        if "__split__" in df.columns and uses_train_history:
-            new_df = op.transform(df)
+        if op_name in {"AggregateGroupFeature", "CreateLagFeature", "CreateRollingFeature"}:
+            from .rec_protocol import history_transform
+            time_col = getattr(op, "time_col", None) or self.model_cfg.get("feature", {}).get("time_col")
+            time_col = time_col or next((c for c, t in self.col_types.items() if t == self.TIMESTAMP and c in df), None)
+            new_df = history_transform(df, op, time_col)
+            op.output_col_types = {c: (self.col_types.get(op.target_col, self.NUMERIC)
+                                      if op_name == "CreateLagFeature" else self.NUMERIC)
+                                   for c in new_df if c not in df}
+        elif "__split__" in df.columns and uses_train_history:
+            reference = getattr(self, '_rec_history_reference', None)
+            if op_name == 'CreateSequence' and reference is not None:
+                from .rec_protocol import sequence_reference
+                new_df = op.transform_with_history(df, sequence_reference(self, df, op))
+            else:
+                new_df = op.transform(df)
         elif "__split__" in df.columns:
             parts = []
-            std_test_pre = df[df["__split__"] == "std_test"]
+            std_test_count = int((df["__split__"] == "std_test").sum())
             deferred_std_test = None
             transformed_train = None
             for split_name in ["train", "val", "test", "std_test"]:
@@ -823,15 +805,24 @@ class RecData(BaseData):
                     continue
                 if split_name != "train" and not applies_to_std_test:
                     if split_name != "std_test":
-                        parts.append(group.copy())
+                        parts.append(group)
                         continue
-                    deferred_std_test = group.copy()
+                    deferred_std_test = group
                     continue
-                group = group.drop(columns="__split__")
+                # Boolean selection already owns this partition. Removing only
+                # metadata avoids copying every feature again via drop().
+                group.pop("__split__")
                 transformed = op.transform(group)
-                if split_name == "train":
-                    transformed_train = transformed.copy()
-                transformed["__split__"] = split_name
+                if split_name == "train" and getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False):
+                    transformed_train = transformed
+                # Avoid consolidating the whole wide table just to add metadata.
+                transformed = transformed.copy(deep=False)
+                # Fragmentation is intentional here: consolidation would duplicate
+                # every dummy column. Adding one metadata column is inexpensive.
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
+                    transformed["__split__"] = split_name
                 parts.append(transformed)
             if deferred_std_test is not None:
                 if (
@@ -842,21 +833,31 @@ class RecData(BaseData):
                         deferred_std_test, transformed_train, op_name, op
                     )
                 parts.append(deferred_std_test)
+            from dppbench.memory import require_memory_headroom
+            require_memory_headroom(sum(int(part.memory_usage(index=False, deep=False).sum())
+                                        for part in parts), "rec.partition_concat")
             new_df = pd.concat(parts, ignore_index=True)
+            parts.clear()
+            transformed_train = deferred_std_test = None
+            group = transformed = None
             if (
-                len(std_test_pre) > 0
+                std_test_count > 0
                 and (new_df["__split__"] == "std_test").sum() == 0
                 and not getattr(op, "FILTER_STD_TEST_TO_TRAIN_DOMAIN", False)
             ):
                 print(
                     f"  [std_test] op {op_name} would drop all "
-                    f"{len(std_test_pre)} std_test rows; "
+                    f"{std_test_count} std_test rows; "
                     "preserving them untouched."
                 )
-                new_df = pd.concat([new_df, std_test_pre.copy()], ignore_index=True)
+                new_df = pd.concat([new_df, df[df["__split__"] == "std_test"]], ignore_index=True)
         else:
             new_df = op.transform(df)
 
+        if has_context:
+            if EVENT_CONTEXT not in new_df:
+                raise ValueError(f'{op_name} lost recommendation event context')
+            event_context(new_df)
         if hasattr(op, 'output_col_types') and op.output_col_types:
             self.register_col_types(op.output_col_types)
         if hasattr(op, 'drop_col_types') and op.drop_col_types:
@@ -864,26 +865,17 @@ class RecData(BaseData):
                 self.col_types.pop(col_name, None)
         if "__split__" in df.columns:
             self._require_training_rows(new_df, op_name)
+        imputers = list(df.attrs.get('_dppbench_history_imputers', ()))
+        if op_name == 'HandleMV' and op.action == 'impute':
+            import copy
+            imputers.append(copy.deepcopy(op))
+        if imputers:
+            new_df.attrs['_dppbench_history_imputers'] = imputers
         return new_df
 
     def _prepare_validation(self):
-        if getattr(self, "_validation_prepared", False):
-            return
-        from sklearn.model_selection import train_test_split
-        cfg = getattr(self, "model_cfg", {})
-        train_cfg = cfg.get("train", {})
-        df = self.interaction_df.copy()
-        if "__split__" not in df:
-            df["__split__"] = "train"
-        pool = df.loc[df["__split__"] == "train"]
-        target = cfg.get("feature", {}).get("target_col")
-        stratify = pool[target] if target in pool and 1 < pool[target].nunique() <= 50 else None
-        train, val = train_test_split(pool, test_size=train_cfg.get("val_ratio", 0.1),
-                                      random_state=train_cfg.get("seed", 42), stratify=stratify)
-        self.interaction_df = pd.concat([
-            train, val.assign(__split__="val"), df.loc[df["__split__"] != "train"],
-        ], ignore_index=True)
-        self._validation_prepared = True
+        from .rec_partition import prepare_validation
+        prepare_validation(self)
 
     def run_pre_process(self, yaml_path):
         if not self._has_std_test and not getattr(self, "_skip_std_test_loading", False):
@@ -1087,7 +1079,28 @@ class TabularData(BaseData):
         self._require_training_rows(final_df, "Pipeline")
 
     def _transform_tabular_dag_df(self, df, op, op_name):
+        from dppbench.tabular_contracts import diagnostic_columns, time_rule
+        # CorrectLabel is allowed to change training labels, but its marker is
+        # bookkeeping. Remove it before ANY later transform, including defaults.
+        df = df.drop(columns=[c for c in diagnostic_columns(df.columns, self.target_col)
+                              if c not in ('__split__', 'sample_weight')], errors='ignore')
+        if op_name in ('ParseDate', 'ExtractDateTimeFeature'):
+            op.time_rules = {c: (getattr(op, 'time_rules', {}).get(c) or time_rule(self.name, c)) for c in op.cols}
         self._protect_aggregate_target(df, op, op_name)
+        if op_name in ('CreateLagFeature', 'CreateRollingFeature'):
+            from dppbench.tabular_history import transform_partitioned_history
+            return transform_partitioned_history(self, df, op)
+        if op_name == "AugmentMixup":
+            task = (getattr(self, "model_cfg", {}) or {}).get("model_params", {}).get("task", "classification")
+            op.task = "regression" if task == "regression" else "classification"
+            op.exclude_cols = list(dict.fromkeys([
+                *getattr(op, "exclude_cols", []), getattr(self, "id_col", None),
+            ]))
+        if op_name == "LabelEncode":
+            # Row identity is bookkeeping, not a categorical model feature.
+            op.exclude_cols = list(dict.fromkeys([
+                *getattr(op, "exclude_cols", []), getattr(self, "id_col", None),
+            ]))
         if op_name == "SelectFeature":
             # Dataset contract also covers existing YAMLs and other baseline
             # adapters, which may not have supplied graph metadata exclusions.
@@ -1138,6 +1151,8 @@ class TabularData(BaseData):
             new_df = op.transform(df)
         if "__split__" in df.columns:
             self._require_training_rows(new_df, op_name)
+        if op_name == 'CorrectLabel':
+            new_df = new_df.drop(columns=[op.mask_col], errors='ignore')
         return new_df
 
     def run_pre_process(self, yaml_path):
@@ -1221,6 +1236,11 @@ class TabularData(BaseData):
         cfg = getattr(self, "model_cfg", {}).get("train", {})
         # Dispatch to the task's original split (including chronological splits).
         splits = self.split(val_ratio=cfg.get("val_ratio", 0.2), seed=cfg.get("seed", 42))
+        from dppbench.tabular_contracts import fixed_search_view, prepare_references
+        if not hasattr(self, 'build_graph'):
+            splits = fixed_search_view(self, splits, getattr(self, '_tabular_search_small_n', 0),
+                                       getattr(self, '_tabular_search_seed', cfg.get('seed', 42)))
+            prepare_references(self, splits['train'])
         parts = []
         for name in ("train", "val", "std_test"):
             frame = splits.get(name)

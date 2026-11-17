@@ -157,8 +157,13 @@ class LLMClient:
             timeout=self.cfg.timeout,
         )
         usage = getattr(completion, "usage", None)
-        if usage is not None and getattr(usage, "total_tokens", None):
-            self.total_tokens_used += int(usage.total_tokens)
+        from baselines.common.search_cost import record_work
+        values = {name: getattr(usage, name, None) for name in
+                  ("prompt_tokens", "completion_tokens", "total_tokens")}
+        counts = {name: int(value) for name, value in values.items() if value is not None}
+        if values["total_tokens"] is not None:
+            self.total_tokens_used += int(values["total_tokens"])
+        record_work("llm_tokens", calls=1, missing_usage_calls=int(len(counts) != 3), **counts)
         ans = completion.choices[0].message.content or ""
         self.last_response = ans
         return ans
@@ -242,6 +247,13 @@ class LLMClient:
                 eos_token_id=eos_ids or None,
             )
         gen_ids = out[0][inputs["input_ids"].shape[1]:]
+        from baselines.common.search_cost import record_work
+        prompt_tokens = int(inputs["attention_mask"].sum().item())
+        completion_tokens = int(gen_ids.numel())
+        self.total_tokens_used += prompt_tokens + completion_tokens
+        record_work("llm_tokens", calls=1, missing_usage_calls=0,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens)
         # DeepPrep action markers may be registered as special tokens. They
         # must survive decoding so the protocol parser can see them.
         ans = tok.decode(gen_ids, skip_special_tokens=False)

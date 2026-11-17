@@ -67,6 +67,8 @@ class SemanticContextLoader:
             raise ValueError(
                 f"FlowPipe context must have {self.ctx_dim} values, got {value.numel()}"
             )
+        from baselines.common.search_cost import record_work
+        record_work("embedding_tokens", input_tokens=0, calls=0, cache_hits=1)
         return value.reshape(self.ctx_dim)
 
     def resolved_model_path(self) -> Path:
@@ -148,6 +150,9 @@ class SemanticContextLoader:
         ).to(torch_device)
         with torch.no_grad():
             result = self._model(**tokens, output_hidden_states=True, use_cache=False)
+        from baselines.common.search_cost import record_work
+        record_work("embedding_tokens", calls=1, cache_hits=0,
+                    input_tokens=int(tokens["attention_mask"].sum().item()))
         hidden = result.hidden_states[-1]
         last_index = tokens["attention_mask"].sum(dim=1).sub(1).clamp(min=0)
         embedding = hidden[

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 try:
     import resource
 except ImportError:  # Windows: preserve actual process-memory accounting.
@@ -86,12 +87,15 @@ class Budget:
         self._monitor_stop = None
         self._monitor_thread = None
 
-    def consume_evaluation(self) -> None:
+    def check_evaluation_available(self) -> None:
         self.check_resources()
         if self.max_evaluations is not None and self.evaluations_used >= self.max_evaluations:
             raise BudgetExceededError(
                 f"evaluation budget exhausted: {self.evaluations_used}/{self.max_evaluations}"
             )
+
+    def consume_evaluation(self) -> None:
+        self.check_evaluation_available()
         self.evaluations_used += 1
 
     def consume_llm_call(self) -> None:
@@ -210,6 +214,17 @@ _ACTIVE_BUDGET: contextvars.ContextVar[Budget | None] = contextvars.ContextVar(
 
 def get_active_budget() -> Budget | None:
     return _ACTIVE_BUDGET.get()
+
+
+def memory_checkpoint(stage: str) -> None:
+    """Diagnostic checkpoints, NOT a substitute for an OS memory limit."""
+    budget = get_active_budget()
+    if os.environ.get("DPPBENCH_MEMORY_TRACE") == "1" or (
+        budget is not None and budget.max_memory_mb is not None
+    ):
+        print(f"[memory] stage={stage} rss_mb={_process_peak_memory_mb():.1f}", flush=True)
+    if budget is not None:
+        budget.check_resources()
 
 
 @contextlib.contextmanager

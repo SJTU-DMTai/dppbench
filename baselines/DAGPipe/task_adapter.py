@@ -29,18 +29,21 @@ def rec_adapter(data, config):
         raise ValueError('DAGPipe recommendation requires feature.target_col')
     return {
         'task_type': 'rec', 'target': target,
+        'fixed_partition_protocol': 'rec_fixed_validation_v1',
         'user': data._user_id_col, 'item': data._item_id_col,
         'time': feature.get('time_col', 'timestamp'),
         'sequences': dict(feature.get('seq_cols', {})),
         'max_len': int(feature.get('seq_max_len', 20)),
         'split': {'val_ratio': config.get('train', {}).get('val_ratio', .1),
-                  'seed': config.get('train', {}).get('seed', 42)},
+                  'seed': config.get('train', {}).get('seed', 42),
+                  **({'split_protocol': config['train']['split_protocol']}
+                     if config.get('train', {}).get('split_protocol') else {})},
         'side_tables': [name for name in ('user', 'item')
                         if getattr(data, name + '_df', None) is not None],
     }
 
 
-def rec_splits(data, config, include_std_test=False, adapter=None):
+def rec_splits(data, config, include_std_test=False, adapter=None, small_n=0):
     # The original checkout uses " operators" (a leading space), so these
     # files are not necessarily importable as dppbench.operators. Respect the
     # dataset's dynamic loader; also support checkouts with the normal name.
@@ -54,6 +57,9 @@ def rec_splits(data, config, include_std_test=False, adapter=None):
 
     adapter = adapter or rec_adapter(data, config)
     data.interaction_df = frozen_frame(data, 'interaction_frozen.parquet')
+    data.model_cfg = copy.deepcopy(config)
+    data.model_cfg.setdefault('train', {}).update(adapter['split'])
+    data._validation_prepared = False
     data._has_std_test = False
     if include_std_test and not data.load_std_test_frozen():
         raise FileNotFoundError('DAGPipe requires frozen recommendation standard test')
@@ -64,10 +70,16 @@ def rec_splits(data, config, include_std_test=False, adapter=None):
     labels = pd.to_numeric(frame[target], errors='coerce')
     if not np.isfinite(labels.to_numpy(dtype=float)).all():
         raise ValueError('DAGPipe recommendation labels must be finite')
-    data.model_cfg = copy.deepcopy(config)
-    data.model_cfg.setdefault('train', {}).update(adapter['split'])
-    data._validation_prepared = False
     data._prepare_validation()
+    from dppbench.rec_partition import persist_partition
+    partition = persist_partition(data)
+    expected = (adapter.get('partition') or {}).get('canonical_sha256')
+    if expected and expected != partition['canonical_sha256']:
+        raise ValueError('DAGPipe checkpoint/fixed recommendation partition mismatch')
+    if not expected:
+        # A learned checkpoint's identity is immutable across HPO trials.
+        # Runtime config/artifact metadata belongs to data, not its payload.
+        adapter['partition'] = partition
     frame = data.interaction_df
     # Join only new side features; metadata/labels cannot be overwritten.
     for name in adapter['side_tables']:
@@ -83,6 +95,10 @@ def rec_splits(data, config, include_std_test=False, adapter=None):
                                max_len=adapter['max_len']).transform(frame)
         frame[history_length_col(sequence)] = frame[sequence].map(len).astype(float)
     data.interaction_df = frame
+    if small_n and not include_std_test:
+        from dppbench.rec_partition import public_search_view
+        public_search_view(data, small_n)
+        frame = data.interaction_df
     return {name: frame.loc[frame['__split__'].eq(name)].reset_index(drop=True)
             for name in ('train', 'val', 'std_test')}
 

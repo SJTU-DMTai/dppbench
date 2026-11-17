@@ -22,6 +22,16 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 
+
+def categorical_dtype(dtype):
+    from pandas.api.types import is_object_dtype, is_string_dtype, pandas_dtype
+    import pandas as pd
+    try:
+        dtype = pandas_dtype(dtype)
+        return is_object_dtype(dtype) or is_string_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype)
+    except (TypeError, ValueError):
+        return False
+
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
@@ -56,6 +66,7 @@ class ObsState:
     null_ratio: float
     text: str
     tables: dict = field(default_factory=dict)
+    col_types: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -85,13 +96,18 @@ class Sandbox:
         data_dir: Optional[str] = None,
         small_n: int = 0,
         seed: int = 42,
+        model_name: Optional[str] = None,
     ) -> None:
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
-        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir)
+        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir,
+                                          seed=self.seed, model_name=model_name)
+        self.model_config = self._executor.get_model_config()
+        if self._executor.task_type == 'rec':
+            self._executor.set_evaluate_std_test(False)
         self._tmpdir = tempfile.mkdtemp(prefix="deepprep_sandbox_")
         self.task_type: str = self._executor.task_type
         self.data = None  # populated by reset()
@@ -103,12 +119,22 @@ class Sandbox:
     # ------------------------------------------------------------------
     def reset(self) -> ExecutionResult:
         """(Re)load the original data and return the initial observation."""
+        cache_key = (self.small_n, self.seed, os.environ.get("DPPBENCH_YELP_SIDE_TABLE_SCOPE", "full"))
+        if (self.data_name == "yelp" and self.small_n > 0 and self._initial_snapshot is not None
+                and getattr(self, "_yelp_snapshot_key", None) == cache_key):
+            obs = self.restore(self._initial_snapshot)
+            return ExecutionResult(success=True, obs=obs, snapshot=self._initial_snapshot)
         data = self._executor._make_configured_data_instance()
+        if self.data_name == "yelp" and self.small_n > 0:
+            data._search_small_n = self.small_n
+            data._search_seed = self.seed
         data.load_data()
+        self._executor._restrict_rec_training(data)
         # run_pre_process() loads frozen std-test lazily and may replace the
         # sampled training frame with the full frozen frame. Load it first so
         # the sandbox's small-N sample is the frame actually executed.
-        data.load_std_test_frozen()
+        if not getattr(data, "_has_std_test", False) and not getattr(data, '_skip_std_test_loading', False):
+            data.load_std_test_frozen()
         if self.small_n > 0:
             subsample_data_inplace(data, small_n=self.small_n, seed=self.seed)
         # Fix train/validation partitions before any tree edge (also for RecData).
@@ -118,6 +144,7 @@ class Sandbox:
         self.data = data
         self._ctx = get_data_ctx(self.data_name, self.data, self.task_type)
         self._initial_snapshot = self.snapshot()
+        self._yelp_snapshot_key = cache_key
         obs = self._observe()
         return ExecutionResult(success=True, obs=obs, snapshot=self._initial_snapshot)
 
@@ -147,7 +174,7 @@ class Sandbox:
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    def execute_chain(self, steps: list[PipelineStep]) -> ExecutionResult:
+    def execute_chain(self, steps: list[PipelineStep], pipeline: Pipeline | None = None) -> ExecutionResult:
         """Apply ``steps`` to the current data state using common DAG APIs.
 
         On failure, the data state is rolled back to what it was before this
@@ -160,10 +187,11 @@ class Sandbox:
             return ExecutionResult(success=True, obs=self._observe(), applied_ops=[])
 
         pre_snapshot = self.snapshot()
-        pipe = Pipeline(steps=[PipelineStep.from_dict(s.to_dict()) for s in steps])
+        pipe = pipeline.copy() if pipeline is not None else Pipeline(steps=[PipelineStep.from_dict(s.to_dict()) for s in steps])
         ctx = self._context()
         try:
-            assign_dag_structure(pipe, ctx, _random.Random(self.seed))
+            if pipeline is None:
+                assign_dag_structure(pipe, ctx, _random.Random(self.seed))
             # This DAG executes only the next edge, not the final pipeline.
             # Keep referenced sources; auxiliary tables remain in sandbox data
             # and can be joined by a later edge. Final validation uses all sources.
@@ -218,7 +246,7 @@ class Sandbox:
     # Observation rendering
     # ------------------------------------------------------------------
     def _primary_df(self):
-        if self.task_type == "tabular":
+        if self.task_type in ("tabular", "graph"):
             return getattr(self.data, "train_df", None)
         return getattr(self.data, "interaction_df", None)
 
@@ -254,11 +282,12 @@ class Sandbox:
             null_ratio=null_ratio,
             text=text,
             tables=tables,
+            col_types=dict(getattr(self.data, 'col_types', {})),
         )
 
     def _collect_tables(self) -> dict:
         named = {}
-        if self.task_type == "tabular":
+        if self.task_type in ("tabular", "graph"):
             named["main"] = getattr(self.data, "train_df", None)
             named.update(getattr(self.data, "auxiliary_dfs", {}) or {})
         else:
@@ -308,7 +337,7 @@ class Sandbox:
             lines.append(f"  columns ({len(cols)}){more}:")
             for col in col_view:
                 lines.append(f"    - {col}: {profile['dtypes'][col]}")
-            categorical = [c for c in cols if profile['dtypes'][c] in ('object', 'string', 'category')]
+            categorical = [c for c in cols if categorical_dtype(profile['dtypes'][c])]
             lines.append(f"  categorical_columns: {categorical}")
             rows = [{c: row[c] for c in col_view if c in row} for row in profile['head']]
             lines.append(f"  sample_rows (displayed columns only): {rows}")

@@ -31,6 +31,7 @@ class Evaluator:
         self.task_type = "tabular"
         self.metric_key = "auc"
         self.n_unique_evaluations = 0
+        self.evaluation_budget_exhausted = False
         self.frame = pd.DataFrame({"x": [1., 2., 3., 4.], "target": [0, 1, 0, 1]})
         self._executor = SimpleNamespace(get_model_config=lambda: {"model": "LightGBM"}, cleanup=lambda: None)
 
@@ -104,6 +105,119 @@ class BaselineTrainingTests(unittest.TestCase):
                 load_pretrained(agent, path, {"actions": ["b", "a"]})
             with self.assertRaises(FileNotFoundError):
                 load_pretrained(agent, str(Path(root) / "missing"), agent.checkpoint_metadata)
+
+    def test_graph_policy_source_priorities_and_explicit_modes(self):
+        from baselines.common.training_utils import resolve_policy_source
+        with tempfile.TemporaryDirectory() as root:
+            for baseline in ('HAIPipe', 'CtxPipe', 'FlowPipe'):
+                filename = 'aipipe.pt' if baseline == 'HAIPipe' else 'checkpoint.pt'
+                files = (filename, 'alternative_evaluator.pt') if baseline == 'HAIPipe' else (filename,)
+                with self.subTest(baseline=baseline):
+                    explicit = str(Path(root) / 'explicit.pt')
+                    for mode, path in (('scratch', None), ('finetune', explicit)):
+                        source, _, reason = resolve_policy_source(baseline, 'GraphSAGE', path, root, mode)
+                        self.assertEqual(source, 'GraphSAGE')
+                        self.assertIsNone(reason)
+                    with self.assertRaises(FileNotFoundError):
+                        resolve_policy_source(baseline, 'GraphSAGE', root=root)
+                    for model in ('DIN', 'LightGBM', 'GraphSAGE'):
+                        folder = Path(root) / baseline / model
+                        folder.mkdir(parents=True)
+                        for name in files:
+                            (folder / name).write_bytes(b'checkpoint')
+                        source, path, reason = resolve_policy_source(baseline, 'GraphSAGE', root=root)
+                        self.assertEqual(source, model)
+                        self.assertEqual(Path(path), folder / filename)
+                        self.assertEqual(reason is None, model == 'GraphSAGE')
+                    native = Path(root) / baseline / 'GraphSAGE'
+                    (native / files[-1]).write_bytes(b'')
+                    self.assertEqual(resolve_policy_source(baseline, 'GraphSAGE', root=root)[0], 'LightGBM')
+                    with self.assertRaisesRegex(ValueError, 'Incompatible agent checkpoint'):
+                        agent = GFNAgent(4, 3, hidden_dim=8, ctx_dim=5)
+                        agent.checkpoint_metadata = {'model': 'wrong'}
+                        agent.save(str(Path(root) / baseline / 'LightGBM' / filename))
+                        _, path, _ = resolve_policy_source(baseline, 'GraphSAGE', root=root)
+                        load_pretrained(agent, path, {'model': 'LightGBM'})
+
+    def test_graph_runners_transfer_policy_without_changing_target_model(self):
+        import baselines.CtxPipe.ctxpipe as ctx_module
+        import baselines.FlowPipe.flowpipe as flow_module
+        import baselines.HAIPipe.haipipe as hai_module
+        from baselines.CtxPipe.trainer import CtxPipeTrainer
+        from baselines.CtxPipe.tester import CtxPipeTester
+        from baselines.FlowPipe.context import SemanticContextLoader
+        from baselines.FlowPipe.trainer import FlowPipeTrainer
+        from baselines.HAIPipe.pretrain import CrossTaskPretrainer, save_alternative_evaluator
+        from baselines.HAIPipe.active_learning import ScoreNN
+        from baselines.common.utils import get_data_ctx
+
+        class GraphEvaluator(Evaluator):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.task_type = 'graph'
+                self._executor.get_model_config = lambda: {'model': 'GraphSAGE'}
+
+        pipeline = Pipeline([PipelineStep('LabelEncode'), PipelineStep('HandleMV', params={'method': 'median'})])
+        inference = {'pipeline': pipeline, 'pipeline_yaml': pipeline.to_yaml(), 'fitness': .7,
+                     'metrics': {'auc': .7}, 'error': None}
+        for baseline, module, runner_cls in (
+                ('HAIPipe', hai_module, hai_module.HAIPipe),
+                ('CtxPipe', ctx_module, ctx_module.CtxPipe),
+                ('FlowPipe', flow_module, flow_module.FlowPipe)):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as root, ExitStack() as stack:
+                runner = runner_cls('unused', 'graph_target', pretrained_dir=root, training_mode='pretrained',
+                                    output_dir=str(Path(root) / 'target'), eval_full=False, verbose=False)
+                source_ctx = get_data_ctx('toy', Evaluator().load_data(), 'tabular')
+                folder = Path(root) / baseline / 'LightGBM'
+                folder.mkdir(parents=True)
+                encoder = None
+                if baseline == 'HAIPipe':
+                    env = HAIPipeEnv(Evaluator(), source_ctx, model_name='LightGBM')
+                    agent = CrossTaskPretrainer([env], frames=4).agent
+                    training = stack.enter_context(patch.object(CrossTaskPretrainer, 'train'))
+                    stack.enter_context(patch.object(module, 'build_hi_pipeline', return_value=pipeline))
+                    stack.enter_context(patch.object(HAIPipeEnv, 'rollout', return_value=(pipeline, [])))
+                    stack.enter_context(patch.object(module, 'combine_pipelines', return_value=[pipeline]))
+                    stack.enter_context(patch.object(module, 'select_best_candidate', return_value=SimpleNamespace(
+                        pipeline=pipeline, fitness=.7, metrics={'auc': .7}, candidates=[])))
+                elif baseline == 'CtxPipe':
+                    env = PipelineEnv(Evaluator(), source_ctx)
+                    agent = DQNAgent(env.component_action_dims, env.primitive_vocab_size, env.n_logical_pipelines)
+                    encoder = {'path': str(Path(runner.gte_model_path).resolve()), 'dim': 4096}
+                    training = stack.enter_context(patch.object(CtxPipeTrainer, 'train'))
+                    stack.enter_context(patch.object(CtxPipeTester, 'run', return_value=inference))
+                else:
+                    env = FlowPipeEnv(Evaluator(), source_ctx)
+                    agent = GFNAgent(env.state_dim, env.action_dim, hidden_dim=runner.hidden_dim, ctx_dim=runner.ctx_dim)
+                    encoder = {'path': str(Path(runner.llama_model_path).resolve()),
+                               'name': runner.llm_name, 'dim': runner.ctx_dim}
+                    training = stack.enter_context(patch.object(FlowPipeTrainer, 'train'))
+                    stack.enter_context(patch.object(SemanticContextLoader, 'load', return_value=torch.zeros(runner.ctx_dim)))
+                    precompute = stack.enter_context(patch.object(SemanticContextLoader, 'precompute'))
+                    stack.enter_context(patch.object(GFNAgent, 'sample_trajectory', return_value=(.7, {
+                        'actions': [0], 'errors': [], 'success': True, 'fitness': .7, 'metrics': {'auc': .7}})))
+                    stack.enter_context(patch.object(FlowPipeEnv, 'current_pipeline', return_value=pipeline))
+                agent.checkpoint_metadata = contract(baseline, env, 'LightGBM', encoder)
+                source = folder / ('aipipe.pt' if baseline == 'HAIPipe' else 'checkpoint.pt')
+                agent.save(str(source))
+                if baseline == 'HAIPipe':
+                    score = ScoreNN(env.data_dim, len(env.primitive_vocabulary))
+                    save_alternative_evaluator(score, str(folder / 'alternative_evaluator.pt'),
+                        data_dim=env.data_dim, primitive_vocabulary=env.primitive_vocabulary,
+                        checkpoint_metadata=agent.checkpoint_metadata)
+                original = source.read_bytes()
+                stack.enter_context(patch.object(module, 'SearchPipelineEvaluator', GraphEvaluator))
+                result = runner.run()
+                provenance = result['training_provenance']
+                self.assertEqual(provenance['target_model'], 'GraphSAGE')
+                self.assertEqual(provenance.get('source_model', provenance.get('source_policy_model')), 'LightGBM')
+                self.assertTrue(provenance['cross_model_transfer'])
+                self.assertIsNotNone(provenance['fallback_reason'])
+                self.assertEqual(Path(provenance['source_checkpoint']), source)
+                self.assertEqual(source.read_bytes(), original)
+                training.assert_not_called()
+                if baseline == 'FlowPipe':
+                    self.assertEqual(precompute.call_args.args[0], 'graph_target')
 
     def test_agent_profiles_and_execution_never_load_frozen_test(self):
         for kind in ("tabular", "rec"):

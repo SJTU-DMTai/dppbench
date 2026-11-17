@@ -2,21 +2,27 @@ from ..base_op import TabularOp
 
 
 class CreateLagFeature(TabularOp):
-    """Create lagged time-series features."""
+    """Observation lags within an explicit entity and strict available history."""
 
-    def __init__(self, target_col, lags, group_cols=None, time_col=None):
+    def __init__(self, target_col, lags, group_cols=None, time_col=None,
+                 available_at_col=None, availability=None):
         super().__init__(name="CreateLagFeature")
         self.target_col = target_col
-        self.lags = lags if isinstance(lags, list) else [lags]
-        self.group_cols = group_cols or []
+        from dppbench.tabular_history import positive_counts
+        self.lags = positive_counts(lags, 'lags')
+        self.group_cols = group_cols
         self.time_col = time_col
+        self.available_at_col = available_at_col
+        self.availability = availability
 
     def get_op_description(self):
         description = """Operator name: CreateLagFeature
 
 Function description:
 Add <target>_lag_k columns using shift(k), optionally
-within groups and sorted by time.
+within explicit entities and strictly earlier event times. Availability must
+be declared by available_at_col or availability='event_time'. Dataset replay
+uses training history for held-out queries; equal-time peers are excluded.
 
 Input:
 df : pd.DataFrame — Input table accepted by transform; required columns are listed in Parameters.
@@ -29,7 +35,7 @@ pd.DataFrame — Transformed table after applying the operator.
 
 Example:
 >>> df = pd.DataFrame({'user_id': [1, 1, 1], 'day': [1, 2, 3], 'amount': [10, 20, 30]})
->>> op = CreateLagFeature(target_col='amount', lags=[1], group_cols=['user_id'], time_col='day')
+>>> op = CreateLagFeature(target_col='amount', lags=[1], group_cols=['user_id'], time_col='day', availability='event_time')
 >>> op.transform(df)
    user_id  day  amount  amount_lag_1
 0        1    1      10           NaN
@@ -54,6 +60,7 @@ dag:
       group_cols:
       - user_id
       time_col: day
+      availability: event_time
   train:
     prev:
     - o1
@@ -61,16 +68,5 @@ dag:
         return description.strip()
 
     def transform(self, df):
-        if self.target_col not in df.columns:
-            return df
-        df = df.copy()
-        sort_cols = [c for c in self.group_cols if c in df.columns]
-        if self.time_col and self.time_col in df.columns:
-            sort_cols.append(self.time_col)
-        if sort_cols:
-            df = df.sort_values(sort_cols, kind="mergesort").reset_index(drop=True)
-        group_cols = [c for c in self.group_cols if c in df.columns]
-        source = df.groupby(group_cols)[self.target_col] if group_cols else df[self.target_col]
-        for lag in self.lags:
-            df[f"{self.target_col}_lag_{lag}"] = source.shift(int(lag))
-        return df
+        from dppbench.tabular_history import history_features
+        return history_features(df, df, self)

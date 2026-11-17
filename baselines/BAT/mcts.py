@@ -149,11 +149,12 @@ class MCTSSolver:
         while node.children and not node.is_terminal():
             unvisited = next((child for child in node.children if child.N == 0), None)
             if unvisited is not None:
-                return unvisited
-            node = max(
-                node.children,
-                key=lambda child: self._ucb_score(child, node.N),
-            )
+                node = unvisited
+            else:
+                node = max(
+                    node.children,
+                    key=lambda child: self._ucb_score(child, node.N),
+                )
         return node
 
     # ------------------------------------------------------------------
@@ -202,7 +203,7 @@ class MCTSSolver:
         """Random rollout from ``node`` until an END node is reached."""
         cur = node
         while not cur.is_terminal():
-            children = self.expand(cur)
+            children = cur.children or self.expand(cur)
             if not children:
                 break
             cur = self.rng.choice(children)

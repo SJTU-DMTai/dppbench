@@ -27,9 +27,8 @@ def convert_datetime_features(X, datetime_cols=None):
         numeric = pd.Series(0.0, index=out.index, dtype=np.float64)
         mask = values.notna()
         if mask.any():
-            numeric.loc[mask] = (
-                values.loc[mask].astype("int64").astype(np.float64) / 1_000_000_000.0
-            )
+            from dppbench.tabular_contracts import datetime_seconds
+            numeric.loc[mask] = datetime_seconds(values.loc[mask])
         out[col] = numeric
 
     return out, datetime_cols

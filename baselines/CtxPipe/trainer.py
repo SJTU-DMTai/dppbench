@@ -84,6 +84,8 @@ class CtxPipeTrainer:
         best_pipeline_yaml = None
 
         for frame in range(1, self.frames + 1):
+            if getattr(self.env.evaluator, 'evaluation_budget_exhausted', False):
+                break
             epsilon = self._epsilon(frame)
             component = self.env.current_component_id()
             if component is None:
@@ -169,6 +171,8 @@ class CtxPipeTrainer:
                         f"eps={epsilon:.3f} lp={record.logical_pipeline_id} "
                         f"fitness={value} ops={record.ops}"
                     )
+                if getattr(self.env.evaluator, 'evaluation_budget_exhausted', False) is True:
+                    break
                 episode = self._start_episode(epsilon)
 
         return {

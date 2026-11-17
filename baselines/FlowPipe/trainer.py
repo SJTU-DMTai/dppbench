@@ -54,6 +54,8 @@ class FlowPipeTrainer:
                 trajectory_pool = []
                 self.agent.set_context(context)
                 for _ in range(self.trajectories_per_combo):
+                    if getattr(env.evaluator, 'evaluation_budget_exhausted', False) is True:
+                        break
                     env.reset()
                     reward, trajectory = self.agent.sample_trajectory(env)
                     rewards.append(reward)

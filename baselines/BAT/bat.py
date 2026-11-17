@@ -113,7 +113,9 @@ class BAT:
         fast_train: Optional[bool] = None,
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        shared_repair: bool = True,
     ) -> None:
+        self.shared_repair = shared_repair
         cfg = load_baseline_config(
             config_path or default_config_path(__file__), CONFIG_KEYS
         )
@@ -279,6 +281,9 @@ class BAT:
                       f"downstream_eval_n={self.downstream_eval_n or 'OFF'}")
                 print("=" * 60)
 
+            ctx.shared_repair = self.shared_repair
+            ctx.repair_seed = self.seed
+            ctx.repair_max_len = self.max_chain_len
             # 3. LLM + reward + MCTS.
             llm = self._build_llm()
             reward_model = BATReward(
@@ -312,11 +317,11 @@ class BAT:
                     print("[BAT] no terminal candidate; returning an empty failure candidate.")
                 pipeline = Pipeline()
             else:
-                pipeline = Pipeline(steps=list(best_node.final_pipeline_steps))
+                pipeline = (best_node.effective_pipeline.copy() if self.shared_repair
+                            else Pipeline(steps=list(best_node.final_pipeline_steps)))
 
-            # 4. Attach deterministic DAG metadata and hard-validate the exact
-            # candidate. Never insert operators or repair BAT's answer.
-            assign_dag_structure(pipeline, ctx)
+            if not self.shared_repair:
+                assign_dag_structure(pipeline, ctx)
             check_report = check_pipeline(pipeline, ctx)
             legal = check_report.valid
 
@@ -436,7 +441,7 @@ class BAT:
             fit_str = (f"{reported_fitness:.4f}"
                        if isinstance(reported_fitness, float) else "n/a")
             print(f"[BAT] downstream fitness = {fit_str}")
-            print(f"[BAT] downstream metrics = {reported_metrics}")
+            print(f"[BAT] downstream metrics = {dict((k, v) for k, v in reported_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[BAT] eval error: {eval_error}")
             print(f"[BAT] best pipeline saved to: {out_yaml_path}")

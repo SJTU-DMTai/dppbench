@@ -91,7 +91,9 @@ class DeepPrep:
         fast_train: Optional[bool] = None,
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        shared_repair: bool = True,
     ) -> None:
+        self.shared_repair = shared_repair
         cfg = load_baseline_config(
             config_path or default_config_path(__file__), CONFIG_KEYS
         )
@@ -198,6 +200,7 @@ class DeepPrep:
             data_dir=self.data_dir,
             small_n=self.small_n,
             seed=self.seed,
+            model_name=self.model_name,
         )
         try:
             ctx = self._infer_context(sandbox)
@@ -240,15 +243,24 @@ class DeepPrep:
                 verbose=self.verbose,
                 seed=self.seed,
                 downstream_evaluator=agent_evaluator,
+                model_config=sandbox.model_config,
+                shared_repair=self.shared_repair,
             )
             run = agent.run()
             pipeline: Pipeline = run.pipeline
 
-            # 3. Assign serialization-only DAG metadata, then hard-validate.
-            # No semantic repair or mandatory operator insertion is allowed.
-            assign_dag_structure(pipeline, ctx)
+            if not self.shared_repair:
+                assign_dag_structure(pipeline, ctx)
             check_report = check_pipeline(pipeline, ctx)
-            legal = check_report.valid
+            repaired = next((item for item in agent.repaired_candidates.values()
+                             if item['pipeline'].hash() == pipeline.hash()), None)
+            node = agent.tree.find_by_steps(pipeline.steps)
+            snapshot = repaired['snapshot'] if repaired else node.snapshot if node else None
+            if snapshot is not None:
+                check_report.errors.extend(agent.target_schema.validate_observation(sandbox.restore(snapshot)))
+            else:
+                check_report.errors.append('Final pipeline has no materialized sandbox snapshot')
+            legal = not check_report.errors
 
             if self.verbose:
                 print(f"[DeepPrep] agent done. success={run.success}  "
@@ -284,7 +296,8 @@ class DeepPrep:
 
         reported_fitness = eval_fitness
         reported_metrics = eval_metrics
-        scored = [r for r in run.solution_attempts if r.get('fitness') is not None]
+        scored = [r for r in run.solution_attempts if r.get('fitness') is not None
+                  and r.get('effective_hash') == pipeline.hash()]
         if not self.eval_full and scored:
             best = max(scored, key=lambda r: r['fitness'])
             reported_fitness = best['fitness']
@@ -302,9 +315,14 @@ class DeepPrep:
                 {
                     "data_name": self.data_name,
                     "task_type": ctx.task_type,
+                    "shared_repair": self.shared_repair,
+                    "repairs": [dict(raw_yaml=item['raw_yaml'], effective_yaml=item['pipeline'].to_yaml(),
+                                     **item['diff']) for item in agent.repaired_candidates.values()],
                     "success": run.success,
                     "n_turns": run.n_turns,
                     "n_errors": run.n_errors,
+                    "termination_reason": run.termination_reason,
+                    "no_legal_candidate": run.no_legal_candidate,
                     "transcript": run.transcript,
                     "ops": [s.op for s in pipeline.steps],
                     "check_errors": check_report.errors,
@@ -332,7 +350,7 @@ class DeepPrep:
                 f"{reported_fitness:.4f}" if isinstance(reported_fitness, float) else "n/a"
             )
             print(f"[DeepPrep] downstream fitness = {fit_str}")
-            print(f"[DeepPrep] downstream metrics = {reported_metrics}")
+            print(f"[DeepPrep] downstream metrics = {dict((k, v) for k, v in reported_metrics.items() if k != 'rec_protocol')}")
             if eval_error:
                 print(f"[DeepPrep] eval error: {eval_error}")
             print(f"[DeepPrep] best pipeline saved to: {out_yaml_path}")

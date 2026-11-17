@@ -17,9 +17,17 @@ def probe_pipeline(task, task_type):
     from .runtime import make_model
     layers = [['Identity']]
     model = make_model(layers, 1)
+    adapter = {'task_type': task_type}
+    if task_type == 'rec':
+        # Synthetic route fixture only: actual replay still recomputes the
+        # partition and rejects this synthetic digest on real task data.
+        adapter.update(fixed_partition_protocol='rec_fixed_validation_v1',
+                       split={'seed': 42},
+                       partition={'canonical_sha256': hashlib.sha256(b'data-free-preflight-only').hexdigest(),
+                                  'split_protocol': 'rec_event_group_split_v1' if task == 'amazon_beauty' else 'rec_row_stratified_v1'})
     return DAGPipePipeline({
         'format': 'dppbench.DAGPipe.reference.v2', 'task': task, 'seed': 42,
-        'adapter': {'task_type': task_type}, 'layers': layers,
+        'adapter': adapter, 'layers': layers,
         'encoder': [{'column': 'probe', 'kind': 'numeric', 'fill': 0., 'mean': 0., 'scale': 1.}],
         'state_dict': {k: v.detach().cpu().tolist() for k, v in model.state_dict().items()},
         'reference': [[0.], [1.]],

@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import torch
-
 MODES = ("scratch", "pretrained", "finetune")
 
 
@@ -18,6 +16,21 @@ def validate_mode(mode):
 def pretrained_path(baseline, model, explicit=None, root=None, filename="checkpoint.pt"):
     root = root or os.environ.get("DPPBENCH_PRETRAINED_DIR", "checkpoints/pretrained")
     return str(Path(explicit or Path(root) / baseline / model / filename).expanduser().resolve())
+
+
+def resolve_policy_source(baseline, model, explicit=None, root=None, training_mode='finetune'):
+    filename = 'aipipe.pt' if baseline == 'HAIPipe' else 'checkpoint.pt'
+    primary = pretrained_path(baseline, model, explicit, root, filename)
+    if training_mode == 'scratch' or explicit or model not in ('GraphSAGE', 'GCN', 'GAT'):
+        return model, primary, None
+    files = (filename, 'alternative_evaluator.pt') if baseline == 'HAIPipe' else (filename,)
+    for source_model in dict.fromkeys((model, 'LightGBM', 'DIN')):
+        path = pretrained_path(baseline, source_model, root=root, filename=filename)
+        if all((Path(path).parent / name).is_file() and (Path(path).parent / name).stat().st_size > 0
+               for name in files):
+            reason = None if source_model == model else f'{model} policy bundle missing; using {source_model} policy'
+            return source_model, path, reason
+    raise FileNotFoundError(f'Pretrained agent missing: {primary}; no complete native, LightGBM or DIN policy bundle for {baseline}')
 
 
 def contract(baseline, env, model, encoder=None):
@@ -44,6 +57,7 @@ def contract(baseline, env, model, encoder=None):
 
 
 def load_pretrained(agent, path, expected):
+    import torch
     if not Path(path).is_file():
         raise FileNotFoundError(f"Pretrained agent missing: {path}. Run scripts/pretrain_baselines.py first, "
                                 "or explicitly choose --training_mode scratch.")

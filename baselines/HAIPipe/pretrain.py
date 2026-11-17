@@ -68,6 +68,8 @@ class CrossTaskPretrainer:
         episode_count = 0
         while self.trainer.frames < self.frames:
             env = self.environments[episode_count % len(self.environments)]
+            if getattr(env.evaluator, 'evaluation_budget_exhausted', False) is True:
+                break
             epsilon = self.agent.epsilon(self.trainer.frames, *self.epsilon_parameters)
             episode = env.episode(self.agent, epsilon=epsilon)
             executable, report = finalize_pipeline(

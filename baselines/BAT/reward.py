@@ -101,7 +101,10 @@ class BATReward:
 
         steps = list(end_node.final_pipeline_steps
                      or end_node.latest_pipeline_steps())
-        pipeline = Pipeline(steps=steps)
+        pipeline = getattr(end_node, 'effective_pipeline', None) or Pipeline(steps=steps)
+        if getattr(end_node, 'repair_report', None):
+            breakdown.update(repair=end_node.repair_report, raw_yaml=end_node.raw_pipeline_yaml,
+                             effective_yaml=pipeline.to_yaml())
 
         # ---- 1. Execute the pipeline in the sandbox to compute column sim
         column_similarity = 0.0
@@ -111,7 +114,8 @@ class BATReward:
             exec_error = exec_error or "empty pipeline"
         elif not exec_error:
             self.sandbox.restore(self.sandbox._initial_snapshot)  # type: ignore[arg-type, attr-defined]
-            exec_res = self.sandbox.execute_chain(steps)
+            exec_res = (self.sandbox.execute_chain(steps, pipeline=pipeline)
+                        if getattr(self.ctx, 'shared_repair', False) else self.sandbox.execute_chain(steps))
             if not exec_res.success:
                 exec_error = exec_res.error
             else:

@@ -11,6 +11,9 @@ When ``small_n`` is ``None`` or ``0`` the evaluator behaves like the common
 from __future__ import annotations
 
 from typing import Optional
+import pickle
+import json
+import os
 
 from baselines.common.evaluator import EvaluationResult, PipelineEvaluator
 from baselines.common.budget import Budget
@@ -45,17 +48,28 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         )
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
+        self._search_snapshot = None
+        self._search_snapshot_key = None
 
         # Patch the executor so each `data.load_data()` call subsamples.
         self._orig_make_data_instance = self._executor._make_data_instance
         if self.small_n > 0:
             self._executor._make_data_instance = self._patched_make_data_instance
 
+    def release_search_data(self):
+        """Discard snapshot and break the search loader callback cycle."""
+        self._search_snapshot = None
+        self._search_snapshot_key = None
+        self._executor._make_data_instance = self._orig_make_data_instance
+        self._executor.clear_data_cache()
+
     # ------------------------------------------------------------------
     def set_small_n(self, small_n: Optional[int]) -> None:
         """Toggle subsampling at runtime."""
         new_n = int(small_n) if small_n else 0
         self.small_n = new_n
+        self._search_snapshot = None
+        self._search_snapshot_key = None
         if new_n > 0:
             self._executor._make_data_instance = self._patched_make_data_instance
         else:
@@ -78,23 +92,33 @@ class SearchPipelineEvaluator(PipelineEvaluator):
         original_load_std_test = getattr(data, "load_std_test_frozen", None)
 
         def patched_load_data(*args, **kwargs):
+            # Yelp has a projected frozen-data loader. Cache unprocessed state,
+            # never bound methods. Side tables are full by default for semantics.
+            if self.data_name == "yelp":
+                key = (data.data_dir, small_n, seed, getattr(data, '_search_include_std_test', True),
+                       os.environ.get("DPPBENCH_YELP_SIDE_TABLE_SCOPE", "full"),
+                       json.dumps(data.model_cfg, sort_keys=True))
+                if self._search_snapshot_key != key:
+                    original_load_data(*args, **kwargs)
+                    self._search_snapshot = pickle.dumps({
+                        k: v for k, v in vars(data).items() if not callable(v)
+                    }, protocol=pickle.HIGHEST_PROTOCOL)
+                    self._search_snapshot_key = key
+                else:
+                    # pandas deep copies do not isolate lists in object cells.
+                    data.__dict__.update(pickle.loads(self._search_snapshot))
+                return data.interaction_df, data.user_df, data.item_df
             ret = original_load_data(*args, **kwargs)
-            try:
-                _subsample_data_inplace(data, small_n=small_n, seed=seed)
-            except Exception:
-                # Subsampling is best-effort: never break training over it.
-                pass
+            _subsample_data_inplace(data, small_n=small_n, seed=seed)
             return ret
 
         data.load_data = patched_load_data  # type: ignore[assignment]
         if callable(original_load_std_test):
             def patched_load_std_test(*args, **kwargs):
+                if self.data_name == "yelp" and data._has_std_test:
+                    return True
                 ret = original_load_std_test(*args, **kwargs)
-                try:
-                    _subsample_data_inplace(data, small_n=small_n, seed=seed)
-                except Exception:
-                    # Subsampling is best-effort: never break training over it.
-                    pass
+                _subsample_data_inplace(data, small_n=small_n, seed=seed)
                 return ret
 
             data.load_std_test_frozen = patched_load_std_test  # type: ignore[assignment]
@@ -118,9 +142,20 @@ def _subsample_data_inplace(data, small_n: int, seed: int) -> None:
     """
     if small_n <= 0:
         return
+    if getattr(data, '_rec_training_only', False):
+        # The executor restores the full frozen pool, fixes validation first,
+        # then applies the original TOTAL search-row cap. Never truncate here.
+        return
 
     # ---- Tabular ----
     train_df = getattr(data, "train_df", None)
+    from dppbench.dataset import TabularData
+    if isinstance(data, TabularData) and not hasattr(data, 'build_graph'):
+        # load_data can still contain raw rows, later replaced by frozen data.
+        # Defer sampling until _prepare_validation fixes the canonical split.
+        data._tabular_search_small_n = int(small_n)
+        data._tabular_search_seed = int(seed)
+        return
     if train_df is not None:
         if "__split__" in train_df.columns:
             data.train_df = _subsample_split_frame(

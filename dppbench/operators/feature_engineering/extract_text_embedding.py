@@ -1,3 +1,4 @@
+import hashlib
 import numpy as np
 from ..base_op import TextOp
 
@@ -12,6 +13,7 @@ class ExtractTextEmbedding(TextOp):
         self.cols = cols if isinstance(cols, list) else [cols]
         self.method = method
         self.dim = int(dim)
+        self.output_col_types = {}
         self.model_name = model_name
 
     def get_op_description(self):
@@ -61,7 +63,7 @@ dag:
     def _hash_embed(self, text):
         vec = np.zeros(self.dim, dtype=float)
         for token in str(text).split():
-            idx = abs(hash(token)) % self.dim
+            idx = int.from_bytes(hashlib.md5(token.encode("utf-8")).digest()[:8], "big") % self.dim
             vec[idx] += 1.0
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec
@@ -75,4 +77,5 @@ dag:
             emb = np.vstack([self._hash_embed(v) for v in df[col].fillna("")])
             for i in range(self.dim):
                 df[f"{base}{i}"] = emb[:, i]
+                self.output_col_types[f"{base}{i}"] = "numeric"
         return df

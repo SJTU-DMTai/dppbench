@@ -89,7 +89,7 @@ class CreateFeature(BaseOp):
         self.output_col = output_col
         self.method = method
         self.method_kwargs = dict(method_kwargs or {})
-        self.output_col_types = {output_col: "numeric"}
+        self.output_col_types = {}
 
     def get_op_description(self):
         description = """Operator name: CreateFeature
@@ -152,7 +152,7 @@ dag:
         except (TypeError, ValueError):
             first = ""
         if first in ("df", "frame", "data"):
-            return method(df, source_cols, **self.method_kwargs)
+            return method(df[source_cols].copy(), source_cols, **self.method_kwargs)
         if len(source_cols) == 1:
             return df[source_cols[0]].apply(
                 lambda x: method(x, **self.method_kwargs)
@@ -168,6 +168,7 @@ dag:
             return df
         if callable(self.method):
             df[self.output_col] = self._resolve_callable(df, existing)
+            self._register_output(df)
             return df
         if isinstance(self.method, str):
             fn = BUILTIN_METHODS.get(self.method)
@@ -177,7 +178,16 @@ dag:
                     f"Supported: {list(BUILTIN_METHODS.keys())}"
                 )
             df[self.output_col] = fn(df, existing, **self.method_kwargs)
+            self._register_output(df)
             return df
         raise TypeError(
             f"CreateFeature: method must be str or callable, got {type(self.method).__name__}"
         )
+
+    def _register_output(self, df):
+        series = df[self.output_col]
+        if series.map(lambda value: isinstance(value, (list, tuple, dict, np.ndarray))).any():
+            raise ValueError("CreateFeature must return scalar numeric or categorical values")
+        kind = ("timestamp" if pd.api.types.is_datetime64_any_dtype(series) else
+                "numeric" if pd.api.types.is_numeric_dtype(series) else "categorical")
+        self.output_col_types[self.output_col] = kind

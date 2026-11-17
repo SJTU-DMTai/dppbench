@@ -4,12 +4,17 @@ from ..base_op import TabularOp
 class AggregateGroupFeature(TabularOp):
     """Create group-by aggregate features and merge them back."""
 
+    FIT_ON_TRAIN_ONLY = True
+
     def __init__(self, group_cols, agg_cols=None, agg_funcs=None):
         super().__init__(name="AggregateGroupFeature")
-        # self.group_cols = group_cols if isinstance(group_cols, list) else [group_cols]
+        # An entity ID may also be the recommendation user key. Repeating a
+        # key creates duplicate index names and makes reset_index() fail.
         keys = group_cols if isinstance(group_cols, list) else [group_cols]
         self.group_cols = list(dict.fromkeys(keys))
         self.agg_cols = agg_cols
+        self.grouped_ = None
+        self.output_col_types = {}
         self.agg_funcs = agg_funcs or ["mean", "sum", "count", "std"]
 
     def get_op_description(self):
@@ -73,7 +78,9 @@ dag:
             cols = [c for c in self.agg_cols if c in df.columns and c not in keys]
         if not cols:
             return df
-        grouped = df.groupby(keys)[cols].agg(self.agg_funcs)
-        grouped.columns = [f"{col}_{func}" for col, func in grouped.columns]
-        grouped = grouped.reset_index()
-        return df.merge(grouped, on=keys, how="left")
+        if self.grouped_ is None:
+            grouped = df.groupby(keys, dropna=False)[cols].agg(self.agg_funcs)
+            grouped.columns = [f"{col}_{func}" for col, func in grouped.columns]
+            self.grouped_ = grouped.reset_index()
+            self.output_col_types = {c: "numeric" for c in grouped if c not in keys}
+        return df.merge(self.grouped_, on=keys, how="left", validate="many_to_one")

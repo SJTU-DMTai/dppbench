@@ -13,6 +13,7 @@ class FrequencyEncode(TabularOp):
         self.cols = cols if isinstance(cols, list) else [cols]
         self.suffix = suffix
         self.drop_original = bool(drop_original)
+        self.drop_col_types = []
         self.freq_maps_ = {}
         self.fitted_ = False
         self.output_col_types = {f"{col}{self.suffix}": "numeric" for col in self.cols}
@@ -113,6 +114,7 @@ dag:
                 if col in df.columns
             ]
             df = df.drop(columns=drop_cols)
+            self.drop_col_types = drop_cols
 
         return df
 

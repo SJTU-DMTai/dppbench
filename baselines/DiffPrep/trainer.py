@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 
 from .search_space import ContinuousPipeline
+from baselines.common.search_cost import measured_call
 
 
 @dataclass
@@ -86,13 +87,14 @@ class DiffPrepTrainer:
 
     @staticmethod
     def _grad_or_zero(loss: torch.Tensor, params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
-        grads = torch.autograd.grad(loss, params, allow_unused=True, retain_graph=True)
+        grads = measured_call('gradient.autograd', torch.autograd.grad,
+                              loss, params, allow_unused=True, retain_graph=True)
         return [torch.zeros_like(p) if g is None else g for p, g in zip(params, grads)]
 
     def _virtual_model_step(self) -> tuple[list[torch.Tensor], float]:
         model_params = self._params(self.surrogate)
         backup = [p.detach().clone() for p in model_params]
-        train_loss = self.train_step_fn(self.continuous, self.surrogate)
+        train_loss = measured_call('proxy_train.virtual', self.train_step_fn, self.continuous, self.surrogate)
         grads_w = self._grad_or_zero(train_loss, model_params)
         with torch.no_grad():
             for p, g in zip(model_params, grads_w):
@@ -121,13 +123,13 @@ class DiffPrepTrainer:
         with torch.no_grad():
             for p, old, v in zip(model_params, backup, vector):
                 p.copy_(old + r * v)
-        loss_pos = self.train_step_fn(self.continuous, self.surrogate)
+        loss_pos = measured_call('proxy_train.hvp_positive', self.train_step_fn, self.continuous, self.surrogate)
         grad_pos = self._grad_or_zero(loss_pos, self.arch_params)
 
         with torch.no_grad():
             for p, old, v in zip(model_params, backup, vector):
                 p.copy_(old - r * v)
-        loss_neg = self.train_step_fn(self.continuous, self.surrogate)
+        loss_neg = measured_call('proxy_train.hvp_negative', self.train_step_fn, self.continuous, self.surrogate)
         grad_neg = self._grad_or_zero(loss_neg, self.arch_params)
 
         self._restore_model(backup)
@@ -139,7 +141,7 @@ class DiffPrepTrainer:
         model_params = self._params(self.surrogate)
         backup, virtual_train_loss = self._virtual_model_step()
 
-        val_loss, val_acc = self.val_step_fn(self.continuous, self.surrogate)
+        val_loss, val_acc = measured_call('proxy_val.architecture', self.val_step_fn, self.continuous, self.surrogate)
         dval_dalpha = self._grad_or_zero(val_loss, self.arch_params)
 
         if self.second_order:
@@ -152,7 +154,7 @@ class DiffPrepTrainer:
 
         for p, g in zip(self.arch_params, arch_grads):
             p.grad = g.detach().clone()
-        self.opt_alpha.step()
+        measured_call('optimizer.architecture', self.opt_alpha.step)
         return (
             float(val_loss.detach().cpu().item()),
             float(val_acc),
@@ -161,9 +163,9 @@ class DiffPrepTrainer:
 
     def _step_inner(self) -> float:
         self.opt_w.zero_grad()
-        train_loss = self.train_step_fn(self.continuous, self.surrogate)
-        train_loss.backward()
-        self.opt_w.step()
+        train_loss = measured_call('proxy_train.inner', self.train_step_fn, self.continuous, self.surrogate)
+        measured_call('gradient.backward', train_loss.backward)
+        measured_call('optimizer.weights', self.opt_w.step)
         return float(train_loss.detach().cpu().item())
 
     def train(self) -> List[EpochRecord]:

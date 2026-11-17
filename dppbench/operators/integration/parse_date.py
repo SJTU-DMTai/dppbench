@@ -10,7 +10,7 @@ class ParseDate(TabularOp):
     ERRORS = "coerce"
 
     def __init__(self, cols, mode="string", target_format=None,
-                 out_features=None, drop_original=False):
+                 out_features=None, drop_original=False, time_rules=None):
         super().__init__(name="ParseDate")
         self.cols = cols if isinstance(cols, list) else [cols]
         if mode not in ("string", "int_yymmdd", "berka_birth"):
@@ -22,6 +22,7 @@ class ParseDate(TabularOp):
             "year", "month", "day", "days_since_epoch"
         ]
         self.drop_original = bool(drop_original)
+        self.time_rules = time_rules or {}
 
     def get_op_description(self):
         description = """Operator name: ParseDate
@@ -84,7 +85,7 @@ dag:
             iv = int(value)
         except (TypeError, ValueError):
             return None
-        if iv <= 0:
+        if iv <= 0 or float(value) != iv or len(str(iv)) > 6:
             return None
         s = str(iv).zfill(6)
         try:
@@ -127,10 +128,8 @@ dag:
             df[f"{col}_day_of_week"] = parsed.dt.weekday
 
     def _parse_string(self, df, col):
-        try:
-            parsed = pd.to_datetime(df[col], errors=self.ERRORS, format="mixed")
-        except ValueError:
-            parsed = pd.to_datetime(df[col], errors=self.ERRORS)
+        from dppbench.tabular_contracts import parse_time
+        parsed = parse_time(df[col], self.time_rules.get(col), df)
         if self.target_format is not None:
             df[col] = parsed.dt.strftime(self.target_format)
         else:

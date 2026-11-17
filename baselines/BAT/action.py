@@ -556,20 +556,34 @@ class EndAction(BaseAction):
     target_node_type = MCTSNodeType.END
 
     def create_children_nodes(self, parent, action_ctx):
-        # Preserve the exact LLM candidate. DPPBench legality is a hard gate;
-        # unlike finalize_pipeline(), this never inserts or rewrites operators.
         steps = parent.latest_pipeline_steps()
         pipe = Pipeline(steps=list(steps))
-        assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+        if getattr(action_ctx.ctx, 'shared_repair', False):
+            pipe = Pipeline.from_yaml(pipe.to_yaml())
+        else:
+            assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+        raw_yaml = pipe.to_yaml()
+        repair = None
+        repair_error = None
+        if getattr(action_ctx.ctx, 'shared_repair', False):
+            from baselines.common.shared_repair import complete_pipeline
+            try:
+                pipe, repair = complete_pipeline(pipe, action_ctx.ctx, action_ctx.ctx.repair_seed,
+                                                 action_ctx.ctx.repair_max_len)
+            except ValueError as exc:
+                repair_error = str(exc)
         report = check_pipeline(pipe, action_ctx.ctx)
         child = MCTSNode(
             node_type=MCTSNodeType.END,
             parent=parent,
             parent_action=self,
             depth=parent.depth + 1,
-            final_pipeline_steps=list(steps),
-            exec_error=None if report.valid else "; ".join(report.errors),
+            final_pipeline_steps=list(pipe.steps),
+            exec_error=repair_error or (None if report.valid else "; ".join(report.errors)),
         )
+        child.effective_pipeline = pipe
+        child.repair_report = repair
+        child.raw_pipeline_yaml = raw_yaml
         return [child]
 
 

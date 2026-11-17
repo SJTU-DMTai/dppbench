@@ -98,11 +98,15 @@ def test_berka_search_reproducible_without_reading_std_test(tmp_path, monkeypatc
     monkeypatch.setattr(pd, 'read_parquet', guarded)
     kwargs = dict(task_dir=str(Path(__file__).resolve().parents[2] / 'dppbench/tasks/berka'),
                   data_name='berka', data_dir=str(data_dir), seed=42, device='cpu',
-                  n_epochs=2, small_n=0, eval_full=False, max_pipeline_len=10, verbose=False)
+                  n_epochs=2, small_n=0, eval_full=False, max_pipeline_len=10, verbose=False,
+                  join_overrides={})  # Test legacy behavior independently of experiment config.
     first = DiffPrep(**kwargs, output_dir=str(tmp_path / 'first')).run()
     second = DiffPrep(**kwargs, output_dir=str(tmp_path / 'second')).run()
     assert first['best_pipeline_yaml'] == second['best_pipeline_yaml']
     contract = json.loads((tmp_path / 'first/search_contract.json').read_text(encoding='utf-8'))
     assert contract == first['search_contract']
-    assert contract['version'] == 2
+    assert contract['version'] == 'tabular_legacy_torch_fixed_partition_v1'
     assert contract['exported_joins']
+    assert contract['search_joins'] == contract['exported_joins']
+    assert 'district_id' in contract['search_feature_columns'] or any(
+        c.endswith('district_id') for c in contract['search_feature_columns'])

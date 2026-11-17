@@ -15,7 +15,7 @@ from .tabular_adapter import augment_splits
 from .task_adapter import rec_splits, rec_output, graph_splits
 
 
-def training_splits(data, config, include_std_test=False):
+def training_splits(data, config, include_std_test=False, small_n=0, seed=None):
     """Canonical task split applied to the canonical frozen training subset.
 
     In search/HPO, never read std_test.parquet (not even its labels/schema).
@@ -34,11 +34,21 @@ def training_splits(data, config, include_std_test=False):
         if not data.load_std_test_frozen():
             raise FileNotFoundError(f'DAGPipe frozen standard test missing in {std_dir}')
     train = config.get('train', {})
-    return data.split(val_ratio=train.get('val_ratio', .2), seed=train.get('seed', 42))
+    split_seed = train.get('seed', 42) if seed is None else seed
+    splits = data.split(val_ratio=train.get('val_ratio', .2), seed=split_seed)
+    if not include_std_test:
+        from dppbench.tabular_contracts import fixed_search_view, prepare_references
+        splits = fixed_search_view(data, splits, small_n, split_seed)
+        prepare_references(data, splits['train'])
+    return splits
 
 
 class DAGPipeExecutor(TrainingExecutor):
     pipeline = None
+    # The checkpoint adapter already owns frozen train-only splits and never
+    # reads held-out identities/schema during search/HPO. Do not wrap it in the
+    # generic public-DAG loader (which performs a projected identity audit).
+    _rec_adapter_owns_splits = True
 
     def _make_configured_data_instance(self):
         data = super()._make_configured_data_instance()
@@ -125,6 +135,19 @@ class DAGPipeEvaluator(PipelineEvaluator):
         adapter_type = pipeline.payload.get('adapter', {}).get('task_type', 'tabular')
         if adapter_type != self.task_type:
             errors.append('DAGPipe checkpoint task type does not match evaluator task type')
+        if adapter_type == 'rec' and pipeline.payload.get('adapter', {}).get('fixed_partition_protocol') != 'rec_fixed_validation_v1':
+            errors.append('DAGPipe recommendation checkpoint predates fixed validation protocol; search again')
+        if adapter_type == 'rec':
+            partition = pipeline.payload.get('adapter', {}).get('partition') or {}
+            digest = partition.get('canonical_sha256')
+            if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                errors.append('DAGPipe recommendation checkpoint is missing a valid partition SHA256; search again')
+            if self.data_name == 'amazon_beauty' and partition.get('split_protocol') != 'rec_event_group_split_v1':
+                errors.append('DAGPipe Amazon checkpoint predates event-group split protocol')
+            requested_seed = getattr(self._executor, 'seed', None)
+            if requested_seed is not None and (pipeline.payload.get('seed') != requested_seed or
+                    pipeline.payload.get('adapter', {}).get('split', {}).get('seed') != requested_seed):
+                errors.append('DAGPipe recommendation checkpoint partition seed mismatch')
         if pipeline.payload['task'] != self.data_name:
             errors.append('DAGPipe checkpoint task does not match evaluator task')
         if budget is not None:
@@ -162,7 +185,9 @@ class DAGPipeEvaluator(PipelineEvaluator):
                 raise ValueError('; '.join(report.errors))
             self._executor.pipeline = pipeline
             self._executor.write_yaml(pipeline.to_yaml())
-            result = self._run_scoring_method(method)
+            from baselines.common.search_cost import measured_call
+            result = measured_call('pipeline_score.' + self._display_method(method),
+                                   self._run_scoring_method, method)
             metrics = dict(result.get('metrics') or {})
             report = self._check_pipeline(
                 pipeline, None, budget=self.budget,

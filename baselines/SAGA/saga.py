@@ -244,7 +244,9 @@ class SAGA:
                 )
                 full_eval.set_evaluate_std_test(False)
                 full_eval.ctx = ctx
-                ev = full_eval.evaluate(best.pipeline)
+                from baselines.common.search_cost import cost_phase
+                with cost_phase('post_selection'):
+                    ev = full_eval.evaluate(best.pipeline)
                 if ev.success:
                     best_fitness = float(ev.fitness)
                     best_metrics = dict(ev.metrics or {})
@@ -262,7 +264,7 @@ class SAGA:
             print("=" * 60)
             print(f"[SAGA] DONE in {duration:.1f}s")
             print(f"[SAGA] best fitness = {best_fitness:.4f}")
-            print(f"[SAGA] best metrics = {best_metrics}")
+            print(f"[SAGA] best metrics = {dict((k, v) for k, v in best_metrics.items() if k != 'rec_protocol')}")
             print(f"[SAGA] best pipeline saved to: {out_yaml}")
             print(f"[SAGA] unique evaluations: {evaluator.n_unique_evaluations}")
             print("=" * 60)

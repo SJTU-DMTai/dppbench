@@ -14,7 +14,7 @@ from baselines.common.pipeline import Pipeline, check_pipeline
 from baselines.common.search_evaluator import SearchPipelineEvaluator
 from baselines.common.state_features import primary_feature_frame
 from baselines.common.utils import get_data_ctx
-from baselines.common.training_utils import (validate_mode, pretrained_path, contract, load_pretrained, freeze_agent, resolved_model, isolate_training_data)
+from baselines.common.training_utils import (validate_mode, resolve_policy_source, contract, load_pretrained, freeze_agent, resolved_model, isolate_training_data)
 from baselines.common.budget import BudgetExceededError
 
 from .agent import GFNAgent
@@ -127,8 +127,6 @@ class FlowPipe:
         """Precompute and persist this task's frozen Llama embedding."""
         evaluator = self._build_evaluator()
         data = evaluator.load_data()
-        if evaluator.task_type == "graph":
-            raise ValueError("Official FlowPipe does not support graph tasks")
         ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
         frame = (
             getattr(data, "interaction_df", None)
@@ -161,40 +159,41 @@ class FlowPipe:
         torch.manual_seed(self.seed)
         evaluator = self._build_evaluator()
         data = evaluator.load_data()
-        if evaluator.task_type == "graph":
-            return {
-                "unsupported_task_type": "graph",
-                "error": "Official FlowPipe defines tabular classification pipelines; graph tasks are unsupported.",
-                "best_pipeline_yaml": None,
-                "duration_seconds": time.time() - started,
-            }
+        model_name = resolved_model(evaluator)
+        policy_model, source_path, fallback_reason = resolve_policy_source(
+            "FlowPipe", model_name, self.pretrained_checkpoint or self.checkpoint_path,
+            self.pretrained_dir, self.training_mode)
+        if fallback_reason and self.verbose:
+            print(f"[FlowPipe] {fallback_reason}: {source_path}")
         if not self._explicit_context_cache and self.training_mode != "scratch":
-            self.context_cache_dir = os.path.join(os.path.dirname(pretrained_path(
-                "FlowPipe", resolved_model(evaluator), self.pretrained_checkpoint or self.checkpoint_path,
-                self.pretrained_dir)), "context_cache")
+            self.context_cache_dir = os.path.join(os.path.dirname(source_path), "context_cache")
         ctx = get_data_ctx(self.data_name, data, evaluator.task_type)
         env = FlowPipeEnv(evaluator, ctx, max_steps=self.max_steps, seed=self.seed)
-        context = SemanticContextLoader(
+        with SemanticContextLoader(
             self.context_cache_dir, self.llm_name, self.ctx_dim,
             llama_model_path=self.llama_model_path,
-        ).load(self.data_name)
+        ) as loader:
+            if evaluator.task_type == "graph" and not loader.path_for(self.data_name).is_file():
+                loader.precompute(self.data_name, primary_feature_frame(data.train_df, target_col=None),
+                                  ctx, device=self.device)
+            context = loader.load(self.data_name)
         agent = GFNAgent(
             env.state_dim, env.action_dim, hidden_dim=self.hidden_dim,
             ctx_dim=self.ctx_dim, learning_rate=self.learning_rate,
             buffer_capacity=self.buffer_capacity, failure_weight=self.failure_weight,
             reward_temperature=self.reward_temperature, device=self.device,
         )
-        model_name = resolved_model(evaluator)
-        agent.checkpoint_metadata = contract("FlowPipe", env, model_name,
+        agent.checkpoint_metadata = contract("FlowPipe", env, policy_model,
             {"path": os.path.realpath(self.llama_model_path), "name": self.llm_name, "dim": self.ctx_dim})
-        source_path = pretrained_path("FlowPipe", model_name,
-                                  self.pretrained_checkpoint or self.checkpoint_path, self.pretrained_dir)
         if self.training_mode != "scratch" and os.path.realpath(source_path) == os.path.realpath(os.path.join(self.output_dir, "gfn.pt")):
             raise ValueError("Target output must not overwrite the shared pretrained checkpoint")
         source_provenance = {}
         if self.training_mode != "scratch":
             source_provenance = load_pretrained(agent, source_path, agent.checkpoint_metadata)
         agent.provenance = {"mode": self.training_mode, "target_task": self.data_name,
+                            "source_policy_model": policy_model, "target_model": model_name,
+                            "cross_model_transfer": policy_model != model_name,
+                            "fallback_reason": fallback_reason,
                             "source_checkpoint": source_path if self.training_mode != "scratch" else None,
                             "source_provenance": source_provenance,
                             "target_seen_in_pretraining": self.data_name in source_provenance.get("training_tasks", [])}
@@ -218,9 +217,11 @@ class FlowPipe:
         self.checkpoint_path = os.path.join(self.output_dir, 'gfn.pt')
         freeze_agent(agent)
 
-        candidates = []
+        candidates = list(trainer.candidates)
         count = self.inference_samples if self.inference_mode == "sample" else self.inference_top_n
         for index in range(max(1, count)):
+            if evaluator.evaluation_budget_exhausted:
+                break
             env.reset()
             rank = None if self.inference_mode == "sample" else index
             try:
@@ -238,13 +239,19 @@ class FlowPipe:
             })
         if not candidates:
             raise RuntimeError('FlowPipe task training produced no complete trajectory: ' + str(budget_error))
-        eligible = [item for item in candidates if item.get('success')
-                    and check_pipeline(item['pipeline'], ctx).valid]
+        diagnostics = []
+        for item in candidates:
+            report = check_pipeline(item['pipeline'], ctx)
+            item['is_legal'] = report.valid
+            diagnostics.append({**{k: v for k, v in item.items() if k != 'pipeline'},
+                                'pipeline_yaml': item['pipeline'].to_yaml(),
+                                'check_errors': report.errors, 'check_warnings': report.warnings})
+        eligible = [item for item in candidates if item.get('success') and item['is_legal']]
         if not eligible:
             with open(os.path.join(self.output_dir, 'flowpipe_log.json'), 'w') as handle:
                 json.dump({'training_mode': 'per_task', 'optimizer_updates': trainer.optimizer_updates,
                            'training_history': trainer.history, 'budget_error': budget_error,
-                           'candidates': [{k: v for k, v in item.items() if k != 'pipeline'} for item in candidates]},
+                           'candidates': diagnostics},
                           handle, indent=2, default=str)
             raise RuntimeError('FlowPipe produced no legal, successfully evaluated candidate; see flowpipe_log.json')
         best = max(eligible, key=lambda item: item["fitness"])
@@ -267,9 +274,7 @@ class FlowPipe:
                 "llama_model_path": self.llama_model_path,
                 "llm_name": self.llm_name,
                 "inference_mode": self.inference_mode,
-                "candidates": [
-                    {k: v for k, v in item.items() if k != "pipeline"} for item in candidates
-                ],
+                "candidates": diagnostics,
             }, handle, indent=2, ensure_ascii=False)
         return {
             "best_pipeline_yaml": pipeline.to_yaml(),

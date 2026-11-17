@@ -15,14 +15,14 @@ timeout: 600
 # Hugging Face checkpoint loading settings.
 torch_dtype: bfloat16
 device_map: auto
-# Maximum tree-agent exploration turns, including error correction and answer.
-max_explore_turn: 6
+# Include error correction and answer; still capped by the shared LLM-call budget.
+max_explore_turn: 12
 # max_chain_len (default: 6): Maximum operator chain length.
 max_chain_len: 6
 # max_depth (default: 8): Maximum search tree depth.
 max_depth: 8
-# max_err_cnt (default: 5): Cumulative agent error budget.
-max_err_cnt: 5
+# Cumulative agent error budget within the exploration limit.
+max_err_cnt: 10
 # small_n (default: 0): Sandbox row subsample size; 0 disables.
 small_n: 0
 # eval_full (default: true): Re-evaluate the best pipeline on full data.

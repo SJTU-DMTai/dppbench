@@ -86,11 +86,11 @@ def build_transformation_tree(
 
     whitelist = whitelist_for(table_kind)
     candidate_ops: list[tuple[str, float, dict]] = []
-    for op_name in whitelist:
+    for op_name in sorted(whitelist):
         spec = CATALOG[op_name]
         # Skip mandatory ops here; they are appended outside the tree by the
         # solver to ensure they always end up in the final pipeline.
-        if spec.mandatory:
+        if spec.mandatory or op_name == "JoinTable":
             continue
         params = build_default_params(op_name, ctx, rng)
         if params is None:
@@ -101,7 +101,7 @@ def build_transformation_tree(
         candidate_ops.append((op_name, prob, params))
 
     # Sort once by prob descending; we re-rank within each layer below.
-    candidate_ops.sort(key=lambda x: -x[1])
+    candidate_ops.sort(key=lambda x: (-x[1], x[0]))
 
     # Beam search
     beam: list[TreeNode] = [TreeNode()]
@@ -115,7 +115,7 @@ def build_transformation_tree(
                 next_beam.append(node.extend(op_name, prob, params))
             # Allow keeping the node as-is (early termination of this branch).
             next_beam.append(node)
-        next_beam.sort(key=lambda n: -n.log_prob)
+        next_beam.sort(key=lambda n: (-n.log_prob, n.op_chain))
         # de-duplicate by op_chain
         seen = set()
         deduped = []

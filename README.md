@@ -78,7 +78,3 @@ python scripts/evaluate_baseline.py --baseline SAGA --data_names amazon_beauty -
 The baseline evaluator writes artifacts under
 `<output_dir>/<baseline>/<data_name>_<model>/` and writes the default summary
 CSV to `<output_dir>/<baseline>/results.csv`.
-
-
-Baseline comparison:
-

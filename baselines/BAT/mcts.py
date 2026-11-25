@@ -11,8 +11,6 @@ Faithfully reproduces ``ZJU-DAILY/BAT/src/mcts/mcts.py``:
 """
 from __future__ import annotations
 
-from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
-
 import math
 import random
 import time
@@ -83,7 +81,6 @@ class MCTSSolver:
         self.rng = random.Random(seed)
         self.verbose = bool(verbose)
         self.previous_pipeline_texts: list[str] = []
-        self.structural_cache: dict = {}
 
     # ------------------------------------------------------------------
     def _log(self, *a, **kw) -> None:
@@ -102,7 +99,6 @@ class MCTSSolver:
             verbose=self.verbose,
             previous_pipeline_texts=self.previous_pipeline_texts,
             downstream_evaluator=getattr(self.reward_model, 'downstream_evaluator', None),
-            structural_cache=self.structural_cache,
         )
 
     # ------------------------------------------------------------------
@@ -111,7 +107,7 @@ class MCTSSolver:
             return float("inf")
         exploit = child.Q / max(child.N, 1)
         explore = self.exploration_constant * math.sqrt(
-            math.log(max(parent_N, 1)) / child.N
+            math.log(parent_N) / child.N
         )
         return exploit + explore
 
@@ -123,8 +119,6 @@ class MCTSSolver:
                 self.sandbox.reset()
                 initial = getattr(self.sandbox, "_initial_snapshot", None)
             except Exception as e:
-                from baselines.DeepPrep.resource_errors import raise_if_resource_error
-                raise_if_resource_error(e)
                 self._log(f"failed to reset sandbox: {e}")
                 return False
         try:
@@ -146,23 +140,21 @@ class MCTSSolver:
                     return False
             return True
         except Exception as e:
-            from baselines.DeepPrep.resource_errors import raise_if_resource_error
-            raise_if_resource_error(e)
             node.exec_error = f"{type(e).__name__}: {e}"
             self._log(f"node replay raised: {node.exec_error}")
             return False
 
     def select(self, root: MCTSNode) -> MCTSNode:
         node = root
-        while not node.is_terminal():
-            available = [child for child in node.children if not child.exhausted]
-            if not available:
-                if node.expanded:
-                    node.exhausted = True
-                return node
-            unvisited = next((child for child in available if child.N == 0), None)
-            node = unvisited if unvisited is not None else max(
-                available, key=lambda child: self._ucb_score(child, node.N))
+        while node.children and not node.is_terminal():
+            unvisited = next((child for child in node.children if child.N == 0), None)
+            if unvisited is not None:
+                node = unvisited
+            else:
+                node = max(
+                    node.children,
+                    key=lambda child: self._ucb_score(child, node.N),
+                )
         return node
 
     # ------------------------------------------------------------------
@@ -171,20 +163,12 @@ class MCTSSolver:
             return []
         if node.children:
             raise AssertionError("BAT expands only childless nodes")
-        if node.expanded or node.exhausted:
-            return []
-        node.expanded = True
         if not self._restore_node_state(node):
-            node.exhausted = True
             return []
         if node.node_type == MCTSNodeType.TRANSFORMATION:
             evaluate_downstream_feedback(node, self._action_ctx())
         legal_actions = get_valid_action_space_for_node(node)
-        if node.depth >= self.max_depth:
-            from .action import EndAction
-            legal_actions = [action for action in legal_actions if action is EndAction]
         if not legal_actions:
-            node.exhausted = True
             return []
         new_children: list[MCTSNode] = []
         for action_cls in legal_actions:
@@ -202,8 +186,6 @@ class MCTSSolver:
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as e:
-                from baselines.DeepPrep.resource_errors import raise_if_resource_error
-                raise_if_resource_error(e)
                 self._log(f"action {action_cls.__name__} failed: {e}")
                 continue
             for c in children:
@@ -214,8 +196,6 @@ class MCTSSolver:
                 node.children.append(c)
                 new_children.append(c)
         self.rng.shuffle(node.children)
-        if not new_children:
-            node.exhausted = True
         return new_children
 
     # ------------------------------------------------------------------
@@ -223,10 +203,8 @@ class MCTSSolver:
         """Random rollout from ``node`` until an END node is reached."""
         cur = node
         while not cur.is_terminal():
-            children = ([c for c in cur.children if not c.exhausted]
-                        if cur.children else self.expand(cur))
+            children = cur.children or self.expand(cur)
             if not children:
-                cur.exhausted = True
                 break
             cur = self.rng.choice(children)
         return cur
@@ -259,10 +237,6 @@ class MCTSSolver:
             # 1. Selection
             try:
                 leaf = self.select(root)
-                if leaf.exhausted:
-                    if root.exhausted:
-                        break
-                    continue
                 if not leaf.is_terminal():
                     children = self.expand(leaf)
                     if children:
@@ -276,7 +250,6 @@ class MCTSSolver:
                 self._log(f"stopping with evaluated candidates: {exc}")
                 break
             if not end_node.is_terminal():
-                end_node.exhausted = True
                 self._log("simulation failed to reach END; skipping rollout")
                 continue
 
@@ -306,7 +279,7 @@ class MCTSSolver:
                     ) + ")" for step in end_node.final_pipeline_steps
                 )
                 self.previous_pipeline_texts.append(chain)
-            if reward == 1.0 and is_new_pipeline and self._candidate_valid(end_node):
+            if reward == 1.0 and is_new_pipeline and not end_node.exec_error:
                 perfect_nodes.append(end_node)
                 if len(perfect_nodes) >= self.early_stop_n_paths:
                     self._log(
@@ -320,7 +293,7 @@ class MCTSSolver:
         selected_keys = {_pipeline_key(node.final_pipeline_steps) for node in selected_nodes}
         if len(selected_nodes) < self.early_stop_n_paths:
             ranked = sorted(
-                [node for node in end_nodes if self._candidate_valid(node)],
+                [node for node in end_nodes if node.reward_value is not None and not node.exec_error],
                 key=lambda node: node.Q / node.N if node.N else node.reward_value,
                 reverse=True,
             )
@@ -346,20 +319,6 @@ class MCTSSolver:
             best_paths=best_paths,
             n_rollouts=n_completed_rollouts,
         )
-
-    def _candidate_valid(self, node: MCTSNode) -> bool:
-        if not node.final_pipeline_steps or node.exec_error or node.downstream_error:
-            return False
-        if node.reward_value is None or not math.isfinite(node.reward_value):
-            return False
-        config = getattr(self.reward_model, 'config', None)
-        if getattr(config, 'use_downstream', False):
-            if node.downstream_fitness is None or not math.isfinite(node.downstream_fitness):
-                return False
-        from baselines.common.pipeline import Pipeline
-        pipeline = Pipeline(steps=list(node.final_pipeline_steps))
-        assign_dag_structure(pipeline, self.ctx)
-        return check_pipeline(pipeline, self.ctx).valid
 
     def _find_end_nodes(self, node: MCTSNode) -> list[MCTSNode]:
         if node.is_terminal():

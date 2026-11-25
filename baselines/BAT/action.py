@@ -16,8 +16,6 @@ action class cannot reappear on the same path).
 """
 from __future__ import annotations
 
-from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
-
 import json
 import random
 import re
@@ -30,6 +28,8 @@ from baselines.common.data_ctx import DataContext
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
+    assign_dag_structure,
+    check_pipeline,
 )
 
 from . import prompts
@@ -142,8 +142,7 @@ def _summary_text(ctx: DataContext) -> str:
         f"#categorical_cols={len(ctx.categorical_cols)} "
         f"#list_cols={len(ctx.list_cols)} #text_cols={len(ctx.text_cols)}\n"
         f"has_user_df={ctx.has_user_df} has_item_df={ctx.has_item_df} "
-        f"aux_dfs={ctx.aux_dfs}\n"
-        f"auxiliary_relationships={ {name: {'keys': table.join_keys_to_primary, 'right_key_unique': table.join_key_unique} for name, table in ctx.tables.items() if name != ctx.primary_table} }"
+        f"aux_dfs={ctx.aux_dfs}"
         "\nFor wide tables, use LabelEncode(cols=None) to encode all object columns, "
         "and HandleMV(cols=None) for applicable missing columns; do not enumerate "
         "hundreds of columns. Keep reasoning to one sentence."
@@ -174,7 +173,7 @@ def _observation_text(obs) -> str:
 def expected_target_columns(ctx: DataContext) -> list[str]:
     """Compute the BAT target-instance-free schema expectation."""
     cols: list[str] = []
-    if ctx.task_type in {"tabular", "graph"}:
+    if ctx.task_type in ("tabular", "graph"):
         cols.extend(ctx.numeric_cols)
         cols.extend(ctx.categorical_cols)
         if ctx.target_col:
@@ -202,7 +201,7 @@ def expected_target_columns(ctx: DataContext) -> list[str]:
 def _sandbox_columns(sandbox: "Sandbox") -> list[str]:
     if sandbox.data is None:
         return []
-    if sandbox.task_type in {"tabular", "graph"}:
+    if sandbox.task_type in ("tabular", "graph"):
         df = getattr(sandbox.data, "train_df", None)
     else:
         df = getattr(sandbox.data, "interaction_df", None)
@@ -250,9 +249,6 @@ def _score_steps_structurally(
     report = check_pipeline(pipe, action_ctx.ctx)
     if not report.valid:
         return list(steps), False, 0.0, "; ".join(report.errors)
-    cache_key = _pipeline_key(pipe.steps)
-    if cache_key in action_ctx.structural_cache:
-        return list(pipe.steps), *action_ctx.structural_cache[cache_key]
     initial = getattr(action_ctx.sandbox, "_initial_snapshot", None)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
@@ -260,15 +256,13 @@ def _score_steps_structurally(
     if not exec_res.success:
         if initial is not None:
             action_ctx.sandbox.restore(initial)
-        action_ctx.structural_cache[cache_key] = (False, 0.0, exec_res.error)
         return list(pipe.steps), False, 0.0, exec_res.error
     actual = _sandbox_columns(action_ctx.sandbox)
     expected = expected_target_columns(action_ctx.ctx)
     sim = _column_similarity(actual, expected)
     if initial is not None:
         action_ctx.sandbox.restore(initial)
-    action_ctx.structural_cache[cache_key] = (set(actual) == set(expected), sim, None)
-    return list(pipe.steps), set(actual) == set(expected), sim, None
+    return list(steps), set(actual) == set(expected), sim, None
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +280,6 @@ class ActionContext:
     verbose: bool = False
     previous_pipeline_texts: list[str] = field(default_factory=list)
     downstream_evaluator: Any = None
-    structural_cache: dict = field(default_factory=dict)
 
 
 def evaluate_downstream_feedback(node: MCTSNode, action_ctx: ActionContext) -> None:
@@ -434,7 +427,6 @@ class TransformationAction(BaseAction):
             max_chain_len=action_ctx.max_chain_len,
         )
         prompt += _previous_pipeline_prompt(action_ctx.previous_pipeline_texts or [])
-        prompt += prompts.JOIN_CONTRACT
         nodes = []
         seen: set[str] = set()
         for _ in range(max(1, action_ctx.n_action_samples)):
@@ -512,7 +504,6 @@ class TransformationRevisionAction(BaseAction):
             max_chain_len=action_ctx.max_chain_len,
         )
         prompt += _previous_pipeline_prompt(action_ctx.previous_pipeline_texts or [])
-        prompt += prompts.JOIN_CONTRACT
         nodes = []
         seen: set[str] = set()
         for _ in range(max(1, action_ctx.n_action_samples)):
@@ -565,20 +556,34 @@ class EndAction(BaseAction):
     target_node_type = MCTSNodeType.END
 
     def create_children_nodes(self, parent, action_ctx):
-        # Preserve the exact LLM candidate. DPPBench legality is a hard gate;
-        # unlike finalize_pipeline(), this never inserts or rewrites operators.
         steps = parent.latest_pipeline_steps()
         pipe = Pipeline(steps=list(steps))
-        assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+        if getattr(action_ctx.ctx, 'shared_repair', False):
+            pipe = Pipeline.from_yaml(pipe.to_yaml())
+        else:
+            assign_dag_structure(pipe, action_ctx.ctx, action_ctx.rng)
+        raw_yaml = pipe.to_yaml()
+        repair = None
+        repair_error = None
+        if getattr(action_ctx.ctx, 'shared_repair', False):
+            from baselines.common.shared_repair import complete_pipeline
+            try:
+                pipe, repair = complete_pipeline(pipe, action_ctx.ctx, action_ctx.ctx.repair_seed,
+                                                 action_ctx.ctx.repair_max_len)
+            except ValueError as exc:
+                repair_error = str(exc)
         report = check_pipeline(pipe, action_ctx.ctx)
         child = MCTSNode(
             node_type=MCTSNodeType.END,
             parent=parent,
             parent_action=self,
             depth=parent.depth + 1,
-            final_pipeline_steps=list(steps),
-            exec_error=None if report.valid else "; ".join(report.errors),
+            final_pipeline_steps=list(pipe.steps),
+            exec_error=repair_error or (None if report.valid else "; ".join(report.errors)),
         )
+        child.effective_pipeline = pipe
+        child.repair_report = repair
+        child.raw_pipeline_yaml = raw_yaml
         return [child]
 
 
@@ -594,22 +599,6 @@ def _parse_chain_safe(
         return [], "empty pipeline chain"
     try:
         steps = chain_to_steps(chain_str, ctx, rng, strict_instances=True)
-        list_columns = set(ctx.list_cols)
-        for step in steps:
-            if step.op == 'CreateSequence':
-                list_columns.add(step.params.get('seq_col', 'item_id_seq'))
-            elif step.op == 'RenameColumn':
-                for old, new in (step.params.get('rename_map') or {}).items():
-                    if old in list_columns:
-                        list_columns.remove(old)
-                        list_columns.add(new)
-            cols = step.params.get("cols")
-            cols = [cols] if isinstance(cols, str) else (cols or [])
-            bad = sorted(set(cols).intersection(list_columns))
-            if step.op == "LabelEncode" and bad:
-                return [], f"LabelEncode cannot encode list-valued columns {bad} as scalar categories; preserve them for token-wise encoding"
-            if step.op == 'DropColumns':
-                list_columns.difference_update(cols)
     except ChainParseError as e:
         return [], f"ChainParseError: {e}"
     except Exception as e:  # pragma: no cover - defensive

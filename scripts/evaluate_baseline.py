@@ -85,7 +85,7 @@ def _load_class(cls_path: str):
 # training during pipeline construction; std-test scoring is performed
 # separately in Phase 2).
 BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
-    "LLMAutoDP": {
+    "LLM-AutoDP-Adapted": {
         "cls_path": "baselines.LLMAutoDP.llm_autodp.LLMAutoDP",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
@@ -108,29 +108,9 @@ BASELINE_CONFIGS: dict[str, dict[str, Any]] = {
         "max_len_arg": "max_pipeline_len",
         "kwargs": {},
     },
-    "SPIO": {
-        "cls_path": "baselines.SPIO.spio.SPIO",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
-    "ReAct": {
-        "cls_path": "baselines.ReAct.react.ReAct",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_pipeline_len",
-        "kwargs": {},
-    },
+
     "BAT": {
         "cls_path": "baselines.BAT.bat.BAT",
-        "supports_eval_full": True,
-        "time_cost_kind": "search_inference",
-        "max_len_arg": "max_chain_len",
-        "kwargs": {},
-    },
-    "DataMaster": {
-        "cls_path": "baselines.DataMaster.data_master.DataMaster",
         "supports_eval_full": True,
         "time_cost_kind": "search_inference",
         "max_len_arg": "max_chain_len",
@@ -218,8 +198,16 @@ def _std_test_present(task_name: str, data_dir: str | None = None) -> bool:
     d = _std_test_dir(task_name, data_dir=data_dir)
     if not os.path.isdir(d):
         return False
-    # std_test.parquet is required for every task type.
-    return os.path.isfile(os.path.join(d, "std_test.parquet"))
+    kind = STD_TEST_TASKS.get(task_name, (None, None))[1]
+    training = 'interaction_frozen.parquet' if kind == 'rec' else 'train_frozen.parquet'
+    paths = [os.path.join(d, name) for name in ('meta.json', training, 'std_test.parquet')]
+    if not all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in paths):
+        return False
+    import pyarrow.parquet as pq
+    try:
+        return all(pq.read_metadata(path).num_rows > 0 for path in paths[1:])
+    except (OSError, ValueError):
+        return False
 
 
 def _load_std_test_meta(task_name: str, data_dir: str | None = None) -> dict:
@@ -297,12 +285,17 @@ def parse_args():
     )
     parser.add_argument("--resume_pipeline", default=None,
                         help="Saved pipeline path for any baseline; supports {task} and {model}. Never searches or rebuilds frozen data.")
+    parser.add_argument('--shared_repair', action=argparse.BooleanOptionalAction, default=True,
+                        help='Complete parsed BAT/DeepPrep/LLMAutoDP candidates before search scoring; policy methods retain native completion')
     parser.add_argument("--training_mode", choices=("scratch", "pretrained", "finetune"), default=None,
                         help="CtxPipe/HAIPipe/FlowPipe training mode; default finetune from config")
     parser.add_argument("--pretrained_dir", default=None, help="Pretrained checkpoint directory, grouped by baseline/model")
     parser.add_argument("--pretrained_checkpoint", default=None, help="Explicit pretrained checkpoint; HAIPipe scorer must be alongside it")
     parser.add_argument("--finetune_frames", type=int, default=None, help="CtxPipe/HAIPipe target interaction budget")
     parser.add_argument("--finetune_epochs", type=int, default=None, help="FlowPipe target fine-tuning epochs")
+    parser.add_argument("--small_n", type=int, default=None, help="Search sample size for CtxPipe/HAIPipe/FlowPipe; 0 uses the full training pool")
+    parser.add_argument("--fast_train", action=argparse.BooleanOptionalAction, default=None,
+                        help="Reduced downstream training during search; does not affect final evaluation")
     parser.add_argument("--context_cache_dir", default=None, help="CtxPipe or FlowPipe embedding cache")
     parser.add_argument("--final_hpo", action="store_true", help="Tune model learning rate on validation only after pipeline search.")
     parser.add_argument("--baseline_config_path", default=None,
@@ -353,33 +346,30 @@ def parse_args():
             "Useful for CI to ensure std-tests are pre-built."
         ),
     )
+    parser.add_argument("--llmautodp_model_path", default=None,
+                        help="Use local LLMAutoDP with this checkpoint instead of its configured API backend")
+    parser.add_argument("--preflight_only", action="store_true",
+                        help="Validate frozen test artifacts without running baselines; combine with --skip_build for read-only checks")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--gpu_id", type=int, default=-1,
-        help="GPU enable/legacy physical index (-1 = CPU). With an explicit/external visibility list, uses its first GPU for downstream training.",
+        help="GPU index to use (-1 = CPU). Sets CUDA_VISIBLE_DEVICES.",
     )
-    parser.add_argument('--cuda_visible_devices', default=None,
-                        help='Physical GPU visibility list, e.g. 0,1. Downstream uses logical cuda:0.')
-    parser.add_argument('--llm_device_map', choices=['auto', 'balanced', 'balanced_low_0', 'sequential', 'cpu'])
-    parser.add_argument('--llm_max_memory', help='JSON per-device limits, e.g. {"0":"12GiB","1":"18GiB"}')
     return parser.parse_args()
 
 
-def _resolve_device(gpu_id, visible_devices=None, *, llm=False):
-    if llm or visible_devices is not None:
-        from baselines.DeepPrep.gpu_config import resolve_device
-        return resolve_device(gpu_id, visible_devices)
-    # Preserve the original device behavior for non-LLM baselines.
+def _resolve_device(gpu_id):
     if gpu_id is None or gpu_id < 0:
-        return 'cpu'
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        return "cpu"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     try:
-        import torch
+        import torch  # noqa: F401
         if not torch.cuda.is_available():
-            return 'cpu'
+            print(f"[warn] gpu_id={gpu_id} requested but CUDA not available; falling back to CPU.")
+            return "cpu"
     except Exception:
-        return 'cpu'
-    return 'cuda:0'
+        return "cpu"
+    return "cuda:0"
 
 
 def _ensure_std_test(
@@ -441,20 +431,24 @@ def _apply_baseline_model_paths(
 ) -> None:
     """Map experiment checkpoint arguments to each baseline's public API."""
     if baseline_name == "CtxPipe":
-        kwargs["gte_model_path"] = args.ctxpipe_gte_model_path
+        path = args.ctxpipe_gte_model_path
+        kwargs["gte_model_path"] = path
     elif baseline_name == "DeepPrep":
         kwargs.update({
             "llm_backend": "local",
             "llm_model": args.deepprep_model_path,
         })
-    elif baseline_name in {"BAT", "LLMAutoDP"}:
+    elif baseline_name == "LLM-AutoDP-Adapted" and getattr(args, "llmautodp_model_path", None):
+        kwargs.update(llm_backend="local", llm_model=args.llmautodp_model_path)
+    elif baseline_name == "BAT":
         kwargs.update({
             "llm_backend": "local",
             "llm_model": args.qwen3_model_path,
         })
     elif baseline_name == "FlowPipe":
+        path = args.qwen3_model_path
         kwargs.update({
-            "llama_model_path": args.qwen3_model_path,
+            "llama_model_path": path,
             "llm_name": "Qwen3-8B",
         })
 
@@ -536,10 +530,17 @@ def _run_baseline_and_eval(
                 raise ValueError(f"{baseline_name} does not support config_path")
             kwargs["config_path"] = args.baseline_config_path
         _apply_baseline_model_paths(baseline_name, kwargs, args)
+        if baseline_name in {'BAT', 'DeepPrep', 'LLM-AutoDP-Adapted'}:
+            kwargs['shared_repair'] = getattr(args, 'shared_repair', False)
         if baseline_name in {"CtxPipe", "HAIPipe", "FlowPipe"}:
-            for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs"):
+            if getattr(args, "small_n", None) is not None and args.small_n < 0:
+                raise ValueError("--small_n must be nonnegative")
+            for key in ("training_mode", "pretrained_dir", "pretrained_checkpoint", "finetune_frames", "finetune_epochs", "small_n", "fast_train"):
                 if getattr(args, key, None) is not None:
                     kwargs[key] = getattr(args, key)
+            if not kwargs.get("pretrained_dir"):
+                batch = "seed42_v3_20261026_213243" if baseline_name == "FlowPipe" else "seed42_v3_retry_20261029_211708"
+                kwargs["pretrained_dir"] = os.environ.get("DPPBENCH_PRETRAINED_DIR") or os.path.join(_ROOT, "ckpts", "pretrained", batch)
             if baseline_name != "HAIPipe" and getattr(args, "context_cache_dir", None):
                 kwargs["context_cache_dir"] = args.context_cache_dir
         if conf["supports_eval_full"]:
@@ -573,13 +574,6 @@ def _run_baseline_and_eval(
             f"unsupported_task_type={result['unsupported_task_type']}"
         )
         raise RuntimeError(error)
-
-    if result.get("no_valid_scored_candidate"):
-        raise RuntimeError(
-            f"{baseline_name}: no successfully scored candidate; skipping final HPO/test. "
-            f"Candidate errors: {result.get('candidate_errors')}. "
-            f"See {result.get('agent_log_path')}"
-        )
 
     pipeline_yaml = result.get("best_pipeline_yaml")
     if result.get('diagnostic_only'):
@@ -829,6 +823,8 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
         "search_cost", "search_pipeline_score_calls", "search_downstream_fit_calls",
         "search_proxy_train_loss_calls", "search_proxy_val_loss_calls",
         "search_gradient_calls", "search_optimizer_steps",
+        "search_llm_prompt_tokens", "search_llm_completion_tokens", "search_llm_total_tokens",
+        "search_llm_usage_missing_calls", "search_embedding_input_tokens", "search_embedding_cache_hits",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -847,9 +843,9 @@ def _write_csv(rows: list[dict[str, Any]], path: str) -> None:
 
 
 def _canonical_baseline_name(name: str) -> str:
-    # Accept the former public name while keeping new outputs canonical.
-    if name.strip().casefold() == "llm-autodp-adapted":
-        return "LLMAutoDP"
+    # Keep existing experiment commands compatible with the adapted method name.
+    if name.strip().casefold() == 'llmautodp':
+        return 'LLM-AutoDP-Adapted'
     for canonical in BASELINE_CONFIGS:
         if canonical.casefold() == name.strip().casefold():
             return canonical
@@ -869,15 +865,7 @@ def main():
         args.baseline = _canonical_baseline_name(args.baseline)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    args.device = _resolve_device(args.gpu_id, args.cuda_visible_devices,
-                                  llm=args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'})
-    if args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'}:
-        if args.llm_device_map:
-            os.environ['DPPBENCH_LLM_DEVICE_MAP'] = args.llm_device_map
-        if args.llm_max_memory:
-            os.environ['DPPBENCH_LLM_MAX_MEMORY'] = args.llm_max_memory
-        from baselines.DeepPrep.gpu_config import llm_placement
-        llm_placement()  # Validate before starting an expensive experiment.
+    args.device = _resolve_device(args.gpu_id)
 
     if args.data_names:
         tasks = [s.strip() for s in args.data_names.split(",") if s.strip()]
@@ -890,6 +878,21 @@ def main():
             f"Unknown tasks: {unknown}. "
             f"Available: {sorted(STD_TEST_TASKS)}"
         )
+
+    if args.preflight_only:
+        errors = {}
+        for task_name in tasks:
+            try:
+                result = _ensure_std_test(task_name, args.data_dir, args.skip_build, args.quiet)
+                if not result.get('ok'):
+                    raise ValueError('Fixed-test artifact validation failed after building')
+                print(f"[preflight] PASS {task_name}", flush=True)
+            except Exception as exc:
+                errors[task_name] = f"{type(exc).__name__}: {exc}"
+                print(f"[preflight] FAIL {task_name}: {exc}", flush=True)
+        if errors:
+            raise SystemExit(json.dumps(errors, ensure_ascii=False, indent=2))
+        return
 
     out_root = os.path.abspath(args.output_dir)
     os.makedirs(out_root, exist_ok=True)
@@ -925,11 +928,7 @@ def main():
             "pipeline_reused": bool(args.resume_pipeline),
             "pipeline_source": _resume_path(args, task_name, model_name),
         }
-        budget_class = Budget
-        if args.baseline in {'BAT', 'DeepPrep', 'LLMAutoDP'}:
-            from baselines.DeepPrep.resource_budget import LLMResourceBudget
-            budget_class = LLMResourceBudget
-        budget = budget_class(
+        budget = Budget(
             max_pipeline_length=args.max_pipeline_len,
             max_evaluations=args.max_evaluations,
             max_memory_mb=args.max_memory_mb,

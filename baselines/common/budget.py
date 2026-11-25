@@ -87,12 +87,15 @@ class Budget:
         self._monitor_stop = None
         self._monitor_thread = None
 
-    def consume_evaluation(self) -> None:
+    def check_evaluation_available(self) -> None:
         self.check_resources()
         if self.max_evaluations is not None and self.evaluations_used >= self.max_evaluations:
             raise BudgetExceededError(
                 f"evaluation budget exhausted: {self.evaluations_used}/{self.max_evaluations}"
             )
+
+    def consume_evaluation(self) -> None:
+        self.check_evaluation_available()
         self.evaluations_used += 1
 
     def consume_llm_call(self) -> None:

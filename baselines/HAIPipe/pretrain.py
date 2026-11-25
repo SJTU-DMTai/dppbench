@@ -68,6 +68,8 @@ class CrossTaskPretrainer:
         episode_count = 0
         while self.trainer.frames < self.frames:
             env = self.environments[episode_count % len(self.environments)]
+            if getattr(env.evaluator, 'evaluation_budget_exhausted', False) is True:
+                break
             epsilon = self.agent.epsilon(self.trainer.frames, *self.epsilon_parameters)
             episode = env.episode(self.agent, epsilon=epsilon)
             executable, report = finalize_pipeline(
@@ -92,7 +94,8 @@ class CrossTaskPretrainer:
             "held_out_tasks": list(held_out_tasks or []),
             "frames": self.trainer.frames,
         })
-        return {"frames": self.trainer.frames, "episodes": episode_count, "checkpoint": checkpoint_path}
+        return {"frames": self.trainer.frames, "episodes": episode_count, "checkpoint": checkpoint_path,
+                **self.trainer.training_statistics()}
 
 
 __all__ = ["CrossTaskPretrainer"]

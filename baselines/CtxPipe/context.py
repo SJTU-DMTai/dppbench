@@ -76,6 +76,9 @@ class GTEEmbedder:
         ).to(self.device)
         with torch.no_grad():
             output = self._model(**inputs)
+            from baselines.common.search_cost import record_work
+            record_work("embedding_tokens", calls=1, cache_hits=0,
+                        input_tokens=int(inputs["attention_mask"].sum().item()))
             embedding = self._average_pool(
                 output.last_hidden_state, inputs["attention_mask"],
             ).to(dtype=torch.float32, device="cpu").squeeze(0)
@@ -131,6 +134,8 @@ class GTEEmbedder:
         key = self._cache_key(csv_text)
         cached = self._read_cache(key)
         if cached is not None:
+            from baselines.common.search_cost import record_work
+            record_work("embedding_tokens", input_tokens=0, calls=0, cache_hits=1)
             return cached
         embedding = self.embed_text(csv_text).to(dtype=torch.float32)
         self._write_cache(key, embedding)

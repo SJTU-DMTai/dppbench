@@ -3,7 +3,7 @@ small_n: 3000  # Total search train+validation rows; 0 disables. Final HPO/test 
 operator_space: typed_public_v4
 # DAGPipe fits numeric nodes on a fixed seeded sample of up to 16 legal training rows.
 target_encoding_folds: 5
-epochs: 200
+epochs: 500
 batch_size: 256
 learning_rate: 0.01
 lambda_dag: 0.1

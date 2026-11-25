@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import pandas as pd
+import numpy as np
 
 from baselines.common.data_loader import DATASET_REGISTRY, TaskDataLoader
 
@@ -142,6 +143,29 @@ class TrainingExecutor:
         path = os.path.join(directory, 'interaction_frozen.parquet')
         if not os.path.isfile(path):
             raise FileNotFoundError(f'Recommendation search requires frozen training data: {path}')
+        if getattr(data, '_validation_prepared', False):
+            state = getattr(data, '_rec_partition_state', None)
+            frame = data.interaction_df
+            reference = getattr(data, '_rec_history_reference', None)
+            if (state is None or '__split__' not in frame
+                    or not frame['__split__'].isin(['train', 'val']).all()
+                    or reference is None or not reference['__split__'].eq('train').all()):
+                raise ValueError('Prepared recommendation search must contain only fixed train/val queries and training history')
+            active = data._rec_active_positions
+            for split, positions in [('train', 'train_positions'), ('val', 'val_positions')]:
+                if not np.isin(active[frame['__split__'].eq(split)], state[positions]).all():
+                    raise ValueError('Recommendation search queries crossed the fixed validation boundary')
+            from dppbench.rec_partition import file_fingerprint
+            if state['audit'].get('frozen_sha256') != file_fingerprint(path):
+                raise ValueError('Prepared recommendation partitions do not match the frozen training file')
+            from dppbench.rec_protocol import assert_disjoint
+            identity_cols = [data._user_id_col, data._item_id_col,
+                             data.model_cfg.get('feature', {}).get('time_col', 'timestamp')]
+            heldout = pd.read_parquet(os.path.join(directory, 'std_test.parquet'), columns=identity_cols)
+            data.split_audit_ = assert_disjoint(frame, heldout, *identity_cols)
+            data._skip_std_test_loading = True
+            data._has_std_test = False
+            return
         frame = (data.interaction_df if getattr(data, '_rec_frozen_train_only', False)
                  else pd.read_parquet(path))
         if '__split__' in frame and not frame['__split__'].eq('train').all():
@@ -157,9 +181,6 @@ class TrainingExecutor:
         data._has_std_test = False
         data._validation_prepared = False
         data._prepare_validation()
-        # Separate the full, legal history reference from budgeted model queries.
-        from dppbench.rec_protocol import training_rows
-        data._rec_history_reference = training_rows(data.interaction_df)[identity_cols].copy()
         small_n = getattr(data, '_search_small_n', 0)
         from dppbench.rec_partition import public_search_view
         public_search_view(data, small_n)

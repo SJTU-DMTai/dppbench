@@ -249,7 +249,7 @@ dppbench/tasks/<task>/std_test/
 
 - 在 [base_op.py](file:///Users/bytedance/Documents/dppbech/dppbench/%20operators/base_op.py) 的 `BaseOp` 上默认 `APPLIES_TO_STD_TEST = True`；所有 (A) Fit-on-train+transform-on-both（如 `LabelEncode`、`ScaleFeature`、`HandleMV(action=impute)`）与 (B) 结构性特征构造（如 `JoinTable`、`CreateSequence`、`CustomProcess`）算子默认继承 `True`，与训练数据走同样的 `transform`，保证特征维度对齐。
 - (C) 训练专属算子在自己的源码文件里 override 为 `False`：`HandleOutlier`、`HandleError`、`HandleNonIID`、`ReweightUPG`、`Deduplicate`、`FilterSample`、`SampleNegative`、`FilterKCore`、`Undersample`、`Oversample`、`AugmentMixup`、`AugmentNoise`（`HandleMV` 仅在 `action=delete` 下置 `False`，运行时切换）。
-- baseline（SAGA / CtxPipe / DiffPrep / SPIO / ReAct / Learn2Clean / DataMaster / DeepPrep / AutoPrep / AlphaClean）和 task 维护者**都不需要感知 / 输出 / 声明**这个字段；他们生成 / 维护的 `prepare.yaml` 内容保持不变。
+- baseline（SAGA / CtxPipe / DiffPrep / Learn2Clean / DeepPrep / AutoPrep / AlphaClean）和 task 维护者**都不需要感知 / 输出 / 声明**这个字段；他们生成 / 维护的 `prepare.yaml` 内容保持不变。
 - 框架（`run_pre_process`，[dataset.py](file:///Users/bytedance/Documents/dppbech/dppbench/dataset.py)）在拿到 op 实例后读 `op.APPLIES_TO_STD_TEST` 自行决定是否把 `__split__ == "std_test"` 的行临时摘出再拼回。
 
 ### 7.5 评测兼容性

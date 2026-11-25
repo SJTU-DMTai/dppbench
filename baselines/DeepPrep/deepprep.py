@@ -8,11 +8,8 @@ back into search; full-data final evaluation remains separate.
 """
 from __future__ import annotations
 
-from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
-
 import json
 import os
-import math
 import time
 from typing import Optional
 
@@ -22,12 +19,11 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
 from baselines.common.utils import get_data_ctx
 
 from .evaluator import DeepPrepEvaluator
 from .llm_client import LLMClient
-from .rec_validation import check_deepprep_pipeline
 from .sandbox import Sandbox
 from .tree_agent import TreeAgent
 
@@ -47,7 +43,6 @@ CONFIG_KEYS = (
     "max_chain_len",
     "max_depth",
     "max_err_cnt",
-    "max_repeated_paths",
     "small_n",
     "eval_full",
     "downstream_feedback",
@@ -96,7 +91,9 @@ class DeepPrep:
         fast_train: Optional[bool] = None,
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        shared_repair: bool = True,
     ) -> None:
+        self.shared_repair = shared_repair
         cfg = load_baseline_config(
             config_path or default_config_path(__file__), CONFIG_KEYS
         )
@@ -149,7 +146,6 @@ class DeepPrep:
         self.max_chain_len = int(max_chain_len)
         self.max_depth = int(max_depth)
         self.max_err_cnt = int(max_err_cnt)
-        self.max_repeated_paths = int(cfg["max_repeated_paths"])
 
         self.small_n = int(small_n) if small_n else 0
         self.eval_full = bool(eval_full)
@@ -199,13 +195,12 @@ class DeepPrep:
 
         # 1. Sandbox (also drives schema-based context inference)
         sandbox = Sandbox(
-            graph_training_only=True,
             task_dir=self.task_dir,
             data_name=self.data_name,
             data_dir=self.data_dir,
             small_n=self.small_n,
             seed=self.seed,
-            validate_rec_lookup=True,
+            model_name=self.model_name,
         )
         try:
             ctx = self._infer_context(sandbox)
@@ -245,33 +240,27 @@ class DeepPrep:
                 max_chain_len=self.max_chain_len,
                 max_depth=self.max_depth,
                 max_err_cnt=self.max_err_cnt,
-                max_repeated_paths=self.max_repeated_paths,
                 verbose=self.verbose,
                 seed=self.seed,
                 downstream_evaluator=agent_evaluator,
-                model_config=(agent_evaluator._executor.get_model_config() if agent_evaluator is not None else sandbox._executor.get_model_config()),
+                model_config=sandbox.model_config,
+                shared_repair=self.shared_repair,
             )
-            try:
-                run = agent.run()
-            except Exception as exc:
-                # Save the original failure even when generation/initialization
-                # failed before any response or candidate was produced.
-                with open(os.path.join(self.output_dir, 'agent_log.json'), 'w', encoding='utf-8') as handle:
-                    json.dump({'data_name': self.data_name, 'success': False,
-                               'stop_reason': 'infrastructure_error',
-                               'error_type': type(exc).__name__, 'error': str(exc),
-                               'search_stats': agent.search_stats,
-                               'transcript': agent.transcript}, handle, ensure_ascii=False, indent=2)
-                raise
-            if self.verbose:
-                print("[DeepPrep] search_stats=" + json.dumps(agent.search_stats), flush=True)
+            run = agent.run()
             pipeline: Pipeline = run.pipeline
 
-            # 3. Assign serialization-only DAG metadata, then hard-validate.
-            # No semantic repair or mandatory operator insertion is allowed.
-            assign_dag_structure(pipeline, ctx)
-            check_report = check_deepprep_pipeline(pipeline, ctx)
-            legal = check_report.valid
+            if not self.shared_repair:
+                assign_dag_structure(pipeline, ctx)
+            check_report = check_pipeline(pipeline, ctx)
+            repaired = next((item for item in agent.repaired_candidates.values()
+                             if item['pipeline'].hash() == pipeline.hash()), None)
+            node = agent.tree.find_by_steps(pipeline.steps)
+            snapshot = repaired['snapshot'] if repaired else node.snapshot if node else None
+            if snapshot is not None:
+                check_report.errors.extend(agent.target_schema.validate_observation(sandbox.restore(snapshot)))
+            else:
+                check_report.errors.append('Final pipeline has no materialized sandbox snapshot')
+            legal = not check_report.errors
 
             if self.verbose:
                 print(f"[DeepPrep] agent done. success={run.success}  "
@@ -281,14 +270,11 @@ class DeepPrep:
         finally:
             sandbox.cleanup()
 
-        scored_candidates = [r for r in run.solution_attempts
-                             if r.get("fitness") is not None and math.isfinite(r["fitness"]) and not r.get("error")]
-        no_valid_scored_candidate = self.downstream_feedback and not scored_candidates
         # 4. Final downstream evaluation (NOT fed back to the agent).
         eval_metrics: dict = {}
         eval_fitness: Optional[float] = None
         eval_error: Optional[str] = None
-        if self.eval_full and not no_valid_scored_candidate:
+        if self.eval_full:
             evaluator = DeepPrepEvaluator(
                 task_dir=self.task_dir,
                 data_name=self.data_name,
@@ -310,7 +296,8 @@ class DeepPrep:
 
         reported_fitness = eval_fitness
         reported_metrics = eval_metrics
-        scored = [r for r in run.solution_attempts if r.get('fitness') is not None]
+        scored = [r for r in run.solution_attempts if r.get('fitness') is not None
+                  and r.get('effective_hash') == pipeline.hash()]
         if not self.eval_full and scored:
             best = max(scored, key=lambda r: r['fitness'])
             reported_fitness = best['fitness']
@@ -328,10 +315,14 @@ class DeepPrep:
                 {
                     "data_name": self.data_name,
                     "task_type": ctx.task_type,
+                    "shared_repair": self.shared_repair,
+                    "repairs": [dict(raw_yaml=item['raw_yaml'], effective_yaml=item['pipeline'].to_yaml(),
+                                     **item['diff']) for item in agent.repaired_candidates.values()],
                     "success": run.success,
-                    "stop_reason": run.stop_reason,
                     "n_turns": run.n_turns,
                     "n_errors": run.n_errors,
+                    "termination_reason": run.termination_reason,
+                    "no_legal_candidate": run.no_legal_candidate,
                     "transcript": run.transcript,
                     "ops": [s.op for s in pipeline.steps],
                     "check_errors": check_report.errors,
@@ -342,7 +333,6 @@ class DeepPrep:
                     "downstream_feedback": self.downstream_feedback,
                     "downstream_eval_n": self.downstream_eval_n,
                     "candidate_scores": run.solution_attempts,
-                    "search_stats": agent.search_stats,
                 },
                 f,
                 ensure_ascii=False,
@@ -374,14 +364,10 @@ class DeepPrep:
             "best_fitness": reported_fitness,
             "best_metrics": reported_metrics,
             "eval_error": eval_error,
-            "no_valid_scored_candidate": no_valid_scored_candidate,
-            "candidate_errors": [r.get("error") for r in run.solution_attempts if r.get("error")],
-            "stop_reason": run.stop_reason,
             "agent_success": run.success,
             "agent_n_turns": run.n_turns,
             "agent_n_errors": run.n_errors,
             "agent_solution_attempts": run.solution_attempts,
-            "search_stats": agent.search_stats,
             "final_pipeline_ops": [s.op for s in pipeline.steps],
             "is_legal": legal,
             "check_errors": check_report.errors,

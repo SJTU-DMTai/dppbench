@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import torch
-
 MODES = ("scratch", "pretrained", "finetune")
 
 
@@ -20,6 +18,21 @@ def pretrained_path(baseline, model, explicit=None, root=None, filename="checkpo
     return str(Path(explicit or Path(root) / baseline / model / filename).expanduser().resolve())
 
 
+def resolve_policy_source(baseline, model, explicit=None, root=None, training_mode='finetune'):
+    filename = 'aipipe.pt' if baseline == 'HAIPipe' else 'checkpoint.pt'
+    primary = pretrained_path(baseline, model, explicit, root, filename)
+    if training_mode == 'scratch' or explicit or model not in ('GraphSAGE', 'GCN', 'GAT'):
+        return model, primary, None
+    files = (filename, 'alternative_evaluator.pt') if baseline == 'HAIPipe' else (filename,)
+    for source_model in dict.fromkeys((model, 'LightGBM', 'DIN')):
+        path = pretrained_path(baseline, source_model, root=root, filename=filename)
+        if all((Path(path).parent / name).is_file() and (Path(path).parent / name).stat().st_size > 0
+               for name in files):
+            reason = None if source_model == model else f'{model} policy bundle missing; using {source_model} policy'
+            return source_model, path, reason
+    raise FileNotFoundError(f'Pretrained agent missing: {primary}; no complete native, LightGBM or DIN policy bundle for {baseline}')
+
+
 def contract(baseline, env, model, encoder=None):
     """IDs are part of the contract, not merely tensor dimensions."""
     from .op_spec import CATALOG
@@ -27,6 +40,7 @@ def contract(baseline, env, model, encoder=None):
         "version": 1, "baseline": baseline, "model": model,
         "operators": list(CATALOG), "reward": "bounded_score_or_reciprocal_error_v1",
         "encoder": encoder,
+        "search_semantics": "primary_schema_random_subset_rec_optional_fe_v2",
     }
     if baseline == "CtxPipe":
         result.update(actions={k: list(v.candidates) for k, v in env.components.items()},
@@ -42,14 +56,50 @@ def contract(baseline, env, model, encoder=None):
     return result
 
 
-def load_pretrained(agent, path, expected):
+def checkpoint_contract_differences(actual, expected, prefix=""):
+    """Compare contracts structurally, retaining actionable field-level evidence."""
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        differences = []
+        for key in sorted(set(actual) | set(expected)):
+            field = f"{prefix}.{key}" if prefix else str(key)
+            if key not in actual or key not in expected:
+                differences.append(dict(field=field, saved=actual.get(key), expected=expected.get(key),
+                                        missing_in="saved" if key not in actual else "expected"))
+            else:
+                differences.extend(checkpoint_contract_differences(actual[key], expected[key], field))
+        return differences
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        if len(actual) != len(expected):
+            return [dict(field=prefix, saved=actual, expected=expected)]
+        return [diff for i, (left, right) in enumerate(zip(actual, expected))
+                for diff in checkpoint_contract_differences(left, right, f"{prefix}[{i}]")]
+    return [] if actual == expected else [dict(field=prefix or "checkpoint_metadata", saved=actual, expected=expected)]
+
+
+def load_pretrained(agent, path, expected, report_path=None):
+    import torch
     if not Path(path).is_file():
         raise FileNotFoundError(f"Pretrained agent missing: {path}. Run scripts/pretrain_baselines.py first, "
                                 "or explicitly choose --training_mode scratch.")
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    if payload.get("checkpoint_metadata") != expected:
-        raise ValueError(f"Incompatible agent checkpoint: {path}; retrain with the same model, "
-                         "operator IDs, encoder and state contract.")
+    saved = payload.get("checkpoint_metadata")
+    differences = checkpoint_contract_differences(saved, expected)
+    if differences:
+        import json
+        report = dict(checkpoint=str(path), compatible=False, differences=differences,
+                      saved=saved, expected=expected)
+        if report_path:
+            destination = Path(report_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        details = "; ".join(f"{d['field']}: saved={str(d['saved'])[:160]!r}, "
+                            f"expected={str(d['expected'])[:160]!r}" for d in differences[:12])
+        hint = ("Encoder path differs: verify checkpoint identity before relocating metadata. "
+                if any(d['field'] == 'encoder.path' for d in differences) else "")
+        raise ValueError(f"Incompatible agent checkpoint: {path}; {details}. " + hint +
+                         "Changed operator IDs/actions/state/reward/search semantics require matching "
+                         "pretraining; do not bypass this check." +
+                         (f" Full report: {report_path}" if report_path else ""))
     agent.load(path)
     agent.checkpoint_metadata = expected
     return payload.get("provenance", {})
@@ -118,11 +168,6 @@ def isolate_training_data(evaluator):
     evaluator._orig_make_data_instance = make_isolated
     evaluator._executor._make_data_instance = (evaluator._patched_make_data_instance
                                              if evaluator.small_n > 0 else make_isolated)
-    evaluator._search_snapshot = None
-    evaluator._search_snapshot_key = None
-    if hasattr(evaluator, "_cache"):
-        evaluator._cache.clear()
-    evaluator._data_context = None
     evaluator._executor.clear_data_cache()
     evaluator._training_data_isolated = True
     return evaluator

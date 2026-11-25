@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -7,20 +8,10 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="42"
-
-# TASK_LIST=(
-#   home_credit
-#   nyc_taxi_hourly
-#   polish_bankruptcy
-# )
+SEED_LIST="42 43 44"
+GPU_ID=1
 
 TASK_LIST=(
-  amazon_beauty
-  kuairec
-  movielens
-  elliptic_bitcoin
-  beijing_air_quality
   berka
   bike_sharing
   citibike_jc_hourly
@@ -29,19 +20,29 @@ TASK_LIST=(
   home_credit
   nyc_taxi_hourly
   polish_bankruptcy
-  yelp
+  movielens
+  elliptic_bitcoin
+  beijing_air_quality
+  amazon_beauty
+  kuairec
+)
+
+BASELINES=(
+  DAGPipe
 )
 
 HARD_MEMORY_GIB=85
 
-LOG_DIR="logs/exp1_10_30/seed42"
-mkdir -p "$LOG_DIR"
-
 FAILED=()
 
 for seed in $SEED_LIST; do
+
+  # 日志目录随 seed 自动变化
+  LOG_DIR="logs/DAGPipe/seed${seed}"
+  mkdir -p "$LOG_DIR"
+
   for task in "${TASK_LIST[@]}"; do
-    for baseline in $BASELINES; do
+    for baseline in "${BASELINES[@]}"; do
 
       # 每个实验单独保存日志
       LOG="${LOG_DIR}/${task}_${baseline}_seed${seed}.log"
@@ -52,14 +53,15 @@ for seed in $SEED_LIST; do
       echo "[TIME] $(date)"
 
       # 每次执行都会启动新的 Python 进程
-      if TASKS="$task" \
-         SEEDS="$seed" \
-         BASELINES="$baseline" \
-         DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
-         python scripts/run_memory_limited.py \
-           --memory-gib "$HARD_MEMORY_GIB" -- \
-           bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
-           > "$LOG" 2>&1
+      if GPU_ID="$GPU_ID" \
+          TASKS="$task" \
+          SEEDS="$seed" \
+          BASELINES="$baseline" \
+          DPPBENCH_YELP_SIDE_TABLE_SCOPE="full" \
+          python scripts/run_memory_limited.py \
+            --memory-gib "$HARD_MEMORY_GIB" -- \
+            bash scripts/exps/01_exp1_1_cost_effectiveness.sh \
+            > "$LOG" 2>&1
       then
         echo "[SUCCESS] task=$task baseline=$baseline seed=$seed"
       else

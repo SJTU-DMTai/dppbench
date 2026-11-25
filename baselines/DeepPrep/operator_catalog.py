@@ -43,7 +43,7 @@ def _param_space_text(spec: OpSpec) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
-def format_op_descriptions(task_type: str) -> str:
+def format_op_descriptions(task_type: str, mandatory_ops: list[str] | None = None) -> str:
     """Render common operator metadata for prompt injection.
 
     The prompt intentionally exposes required params, allowed values, category,
@@ -72,7 +72,8 @@ def format_op_descriptions(task_type: str) -> str:
             continue
         lines.append(f"### {cat.value}")
         for spec in sorted(specs, key=lambda s: s.op_name):
-            tag = "[mandatory]" if is_mandatory(spec.op_name, task_type) else "[optional]"
+            required_op = spec.op_name in mandatory_ops if mandatory_ops is not None else is_mandatory(spec.op_name, task_type)
+            tag = "[mandatory]" if required_op else "[optional]"
             required = ", ".join(spec.required_params) if spec.required_params else "none"
             defaults = ", ".join(spec.default_params.keys()) if spec.default_params else "none"
             targets = ", ".join(valid_targets_for(spec.op_name))

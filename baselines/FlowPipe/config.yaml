@@ -26,7 +26,7 @@ inference_mode: sample
 inference_top_n: 3
 # DPPBench has four shared operator categories; the logic action is separate.
 max_steps: 4
-small_n: 0
+small_n: 30000
 eval_full: true
 seed: 42
 fast_train: true

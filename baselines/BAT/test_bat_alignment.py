@@ -51,6 +51,64 @@ def _ctx() -> DataContext:
 
 
 class BATAlignmentTest(unittest.TestCase):
+    def test_graph_prompt_catalog_and_schema_reward(self):
+        import pandas as pd
+        from baselines.BAT.action import _sandbox_columns, expected_target_columns
+        from baselines.BAT.operator_catalog import function_family_descriptions
+
+        ctx = _ctx()
+        ctx.task_type = "graph"
+        catalog = format_op_descriptions("graph")
+        families = function_family_descriptions("graph")
+        for name in ("JoinTable", "HandleMV", "LabelEncode"):
+            self.assertIn(name, catalog)
+            self.assertIn(name, families)
+        self.assertNotIn("CreateSequence", catalog)
+        frame = pd.DataFrame({"x": [1.0], "target": [0]})
+        sandbox = SimpleNamespace(task_type="graph", data=SimpleNamespace(train_df=frame))
+        self.assertEqual(_sandbox_columns(sandbox), list(frame.columns))
+        self.assertCountEqual(expected_target_columns(ctx), frame.columns)
+
+    def test_repeated_home_credit_aggregates_preserve_features_and_rows(self):
+        import pandas as pd
+        from dppbench.operators.integration.join_table import JoinTable
+
+        frame = pd.DataFrame({"SK_ID_CURR": [20, 10, 30]})
+        for index in range(6):
+            offset = 100 * index
+            history = pd.DataFrame({"SK_ID_CURR": [10, 10, 20],
+                                    "SK_ID_PREV": [offset + 1, offset + 3, offset + 5]})
+            frame = JoinTable(method="agg", aux_df=history, key_col="SK_ID_CURR").transform(frame)
+        self.assertEqual(frame["SK_ID_CURR"].tolist(), [20, 10, 30])
+        self.assertEqual(frame.shape, (3, 19))
+        self.assertTrue(frame.columns.is_unique)
+        for index in range(6):
+            suffix = f"__join{index + 1}" if index else ""
+            for func, value in (("min", 1), ("mean", 2), ("max", 3)):
+                column = frame[f"SK_ID_PREV_{func}{suffix}"]
+                self.assertEqual(column.tolist()[:2], [100 * index + 5, 100 * index + value])
+                self.assertTrue(pd.isna(column.iloc[2]))
+
+    def test_failed_terminal_replay_cannot_win_zero_reward_tie(self):
+        for valid in (False, True):
+            solver = MCTSSolver(object(), _ctx(), object(), object(), max_rollout_steps=1, verbose=False)
+
+            def expand(root):
+                for error in (["MergeError", None] if valid else ["MergeError"]):
+                    root.children.append(MCTSNode(
+                        MCTSNodeType.END, parent=root, reward_value=0.0, exec_error=error,
+                        final_pipeline_steps=[PipelineStep("HandleMV")],
+                    ))
+                return root.children
+
+            with self.subTest(valid=valid), patch.object(solver, "expand", side_effect=expand):
+                result = solver.solve()
+                self.assertEqual(len(result.selected_nodes), int(valid))
+                if valid:
+                    self.assertIsNone(result.best_node.exec_error)
+                else:
+                    self.assertIsNone(result.best_node)
+
     def test_tabular_examples_cover_all_object_columns(self):
         examples = format_mandatory_examples(_ctx())
         self.assertIn('LabelEncode(cols=None)', examples)
@@ -82,8 +140,7 @@ class BATAlignmentTest(unittest.TestCase):
             child = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=root)
             child.children.append(MCTSNode(
                 MCTSNodeType.END, parent=child, reward_value=0.9,
-                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {}),
-                                      PipelineStep('LabelEncode', 'both', {'cols': None})],
+                final_pipeline_steps=[PipelineStep('LabelEncode', 'both', {'cols': None})],
             ))
             root.children.append(child)
             return [child]
@@ -145,6 +202,7 @@ class BATAlignmentTest(unittest.TestCase):
 
     def test_sandbox_loads_frozen_data_before_sampling(self):
         data = Mock()
+        # Unset Mock attributes are truthy and would incorrectly skip loading.
         data._has_std_test = False
         data._skip_std_test_loading = False
         events = []
@@ -268,14 +326,13 @@ class BATAlignmentTest(unittest.TestCase):
 
     def test_mcts_keeps_completed_candidate_when_next_rollout_would_overrun(self):
         reward = Mock()
-        reward.config = BATRewardConfig(use_downstream=False)
         reward.score.return_value = (1.0, {})
         solver = MCTSSolver(object(), _ctx(), object(), reward,
                             max_rollout_steps=2, verbose=False)
 
         def expand(root):
             child = MCTSNode(MCTSNodeType.END, parent=root,
-                             final_pipeline_steps=[PipelineStep("HandleMV", "both", {}), PipelineStep("LabelEncode", "both", {})])
+                             final_pipeline_steps=[PipelineStep("HandleMV", "both", {})])
             root.children.append(child)
             return [child]
 
@@ -286,18 +343,17 @@ class BATAlignmentTest(unittest.TestCase):
             result = solver.solve()
         self.assertEqual(result.n_rollouts, 1)
         self.assertEqual(expansion.call_count, 1)
-        self.assertEqual([s.op for s in result.best_node.final_pipeline_steps], ["HandleMV", "LabelEncode"])
+        self.assertEqual([s.op for s in result.best_node.final_pipeline_steps], ["HandleMV"])
 
     def test_repeated_terminal_pipeline_is_not_a_second_best_path(self):
         reward = Mock()
-        reward.config = BATRewardConfig(use_downstream=False)
         reward.score.return_value = (1.0, {})
         solver = MCTSSolver(object(), _ctx(), object(), reward,
                             max_rollout_steps=2, early_stop_n_paths=2, verbose=False)
 
         def expand(root):
             return [MCTSNode(MCTSNodeType.END, parent=root,
-                             final_pipeline_steps=[PipelineStep('HandleMV', 'both', {'method': 'mean'}), PipelineStep('LabelEncode', 'both', {})])]
+                             final_pipeline_steps=[PipelineStep('HandleMV', 'both', {'method': 'mean'})])]
 
         with patch.object(solver, 'select', side_effect=lambda root: root), patch.object(
             solver, 'expand', side_effect=expand,
@@ -349,7 +405,7 @@ class BATAlignmentTest(unittest.TestCase):
                                          (float('nan'), None, 0.0)):
                 evaluator.evaluate_for_agent.return_value = (auc, {}, error)
                 node = MCTSNode(MCTSNodeType.END,
-                                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {}), PipelineStep('LabelEncode', 'both', {})])
+                                final_pipeline_steps=[PipelineStep('HandleMV', 'both', {})])
                 value, breakdown = reward.score(node)
                 self.assertAlmostEqual(value, expected)
                 if expected == 0.0:
@@ -395,6 +451,67 @@ class BATAlignmentTest(unittest.TestCase):
             solver._ucb_score(first, root.N),
             math.sqrt(math.log(4)),
         )
+
+    def test_selection_descends_through_unvisited_expanded_nodes(self):
+        solver = MCTSSolver(object(), _ctx(), object(), object(), verbose=False)
+        root = MCTSNode(MCTSNodeType.ROOT)
+        expanded = MCTSNode(MCTSNodeType.SCHEMA_MATCH, parent=root)
+        leaf = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=expanded)
+        root.children = [expanded]
+        expanded.children = [leaf]
+        self.assertIs(solver.select(root), leaf)
+        end = MCTSNode(MCTSNodeType.END, parent=leaf)
+        leaf.children = [end]
+        self.assertIs(solver.select(root), end)
+        self.assertEqual([root.N, expanded.N, leaf.N, end.N], [0, 0, 0, 0])
+
+    def test_simulation_reuses_expanded_nodes_without_reward_or_new_calls(self):
+        reward = Mock()
+        solver = MCTSSolver(object(), _ctx(), object(), reward, verbose=False)
+        parent = MCTSNode(MCTSNodeType.SCHEMA_MATCH)
+        middle = MCTSNode(MCTSNodeType.TRANSFORMATION, parent=parent)
+        end = MCTSNode(MCTSNodeType.END, parent=middle, reward_value=0.8)
+        parent.children = [middle]
+        middle.children = [end]
+        with patch.object(solver, 'expand') as expand:
+            self.assertIs(solver.simulate(parent), end)
+            expand.assert_not_called()
+        reward.score.assert_not_called()
+        self.assertEqual([parent.N, middle.N, end.N], [0, 0, 0])
+        with self.assertRaisesRegex(AssertionError, 'childless'):
+            solver.expand(parent)
+
+    def test_solve_resumes_tree_after_rollout_fails_before_end(self):
+        reward = Mock()
+        reward.score.return_value = (0.8, {})
+        solver = MCTSSolver(object(), _ctx(), object(), reward,
+                            max_rollout_steps=2, verbose=False)
+        attempts = {}
+
+        class ResumeAction:
+            def create_children_nodes(self, parent, action_ctx):
+                kind = parent.node_type
+                attempts[kind] = attempts.get(kind, 0) + 1
+                if kind == MCTSNodeType.TRANSFORMATION and attempts[kind] == 1:
+                    raise ValueError('transient action failure')
+                next_kind = {MCTSNodeType.ROOT: MCTSNodeType.SCHEMA_MATCH,
+                             MCTSNodeType.SCHEMA_MATCH: MCTSNodeType.TRANSFORMATION,
+                             MCTSNodeType.TRANSFORMATION: MCTSNodeType.END}[kind]
+                return [MCTSNode(next_kind, parent=parent, depth=parent.depth + 1,
+                                 final_pipeline_steps=[PipelineStep('HandleMV')] if next_kind == MCTSNodeType.END else [])]
+
+        with patch.object(solver, '_restore_node_state', return_value=True), \
+             patch('baselines.BAT.mcts.get_active_budget', return_value=None), \
+             patch('baselines.BAT.mcts.get_valid_action_space_for_node', return_value=[ResumeAction]), \
+             patch('baselines.BAT.mcts.evaluate_downstream_feedback'):
+            result = solver.solve()
+        self.assertEqual(result.n_rollouts, 1)
+        self.assertIsNotNone(result.best_node)
+        self.assertEqual(attempts, {MCTSNodeType.ROOT: 1, MCTSNodeType.SCHEMA_MATCH: 1,
+                                    MCTSNodeType.TRANSFORMATION: 2})
+        self.assertEqual([node.N for node in result.best_node.path_to_root()], [1, 1, 1, 1])
+        self.assertEqual([node.Q for node in result.best_node.path_to_root()], [0.8] * 4)
+        reward.score.assert_called_once()
 
 
 if __name__ == "__main__":

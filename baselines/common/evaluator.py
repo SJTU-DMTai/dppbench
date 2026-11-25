@@ -85,7 +85,15 @@ class PipelineEvaluator:
                            else configured_metrics[0] if configured_metrics
                            else metric_key or "auc")
         self._cache: dict[str, EvaluationResult] = {}
+        self.evaluation_count = 0
+        self.best_pipeline = None
+        self.best_result = None
         self._data_context = None
+
+    @property
+    def evaluation_budget_exhausted(self):
+        return (self.budget is not None and self.budget.max_evaluations is not None
+                and self.budget.evaluations_used >= self.budget.max_evaluations)
 
     def _get_data_context(self):
         if self._data_context is None:
@@ -109,6 +117,8 @@ class PipelineEvaluator:
 
     def run_preprocessing(self, pipeline: Pipeline):
         """Run a partial pipeline without downstream model evaluation."""
+        if self.budget is not None:
+            self.budget.check_resources()
         report = self._check_pipeline(
             pipeline,
             self._get_data_context(),
@@ -135,9 +145,9 @@ class PipelineEvaluator:
                 fitness=-math.inf, success=False, metrics={},
                 error=f"BudgetExceededError: {exc}", duration_seconds=0.0,
             )
-            self._cache[key] = ev
             return ev
 
+        self.evaluation_count += 1
         report = self._check_pipeline(
             pipeline, self._get_data_context(), budget=self.budget,
         )
@@ -207,6 +217,9 @@ class PipelineEvaluator:
             duration_seconds=dur,
         )
         self._cache[key] = ev
+        if success and (self.best_result is None or fitness > self.best_result.fitness):
+            self.best_pipeline = pipeline.copy()
+            self.best_result = ev
         if self.verbose:
             if success:
                 print(f"  [eval:{label}] fitness={fitness:.4f}  ({dur:.1f}s)  steps={len(pipeline)}")
@@ -285,7 +298,7 @@ class PipelineEvaluator:
 
     @property
     def n_unique_evaluations(self) -> int:
-        return len(self._cache)
+        return self.evaluation_count
 
     def set_evaluate_std_test(self, enabled: bool) -> None:
         """Toggle frozen std-test evaluation on the underlying executor."""

@@ -285,21 +285,29 @@ def build_timeseries(task_name, data, out_dir, dry_run):
 def build_graph(task_name, data, out_dir, dry_run):
     rng = np.random.default_rng(STD_TEST_SEED)
     feats = data.train_df
-    classes = data.auxiliary_dfs.get("classes")
-    if classes is None:
-        raise ValueError(f"{task_name}: aux 'classes' df missing")
-
-    labeled = classes[classes["class"].isin(["1", "2", 1, 2])]
+    target = data.target_col
+    if target not in feats or not feats['txId'].is_unique:
+        raise ValueError(f"{task_name}: graph primary frame requires labels and unique node IDs")
+    # Keep the original class-table order so seed42 retains the established node holdout.
+    classes = getattr(data, '_class_labels', None)
+    if classes is not None:
+        if not {'txId', 'class'}.issubset(classes.columns) or not classes['txId'].is_unique:
+            raise ValueError(f'{task_name}: original class table requires labels and unique node IDs')
+        labeled = classes.loc[classes['class'].astype(str).isin(['1', '2'])]
+        expected = set(feats.loc[feats[target].isin([0, 1]), 'txId'].astype(str))
+        if set(labeled['txId'].astype(str)) != expected:
+            raise ValueError(f'{task_name}: original and normalized labeled node IDs do not match')
+    else:
+        labeled = feats.loc[feats[target].isin([0, 1])]
     n_holdout = int(len(labeled) * STD_TEST_FRAC)
+    if n_holdout == 0:
+        raise ValueError(f"{task_name}: not enough labeled nodes for fixed holdout")
     perm = rng.permutation(len(labeled))
     std_ids = set(labeled.iloc[perm[:n_holdout]]["txId"].astype(str))
 
     is_std = feats["txId"].astype(str).isin(std_ids)
     train_frozen = feats[~is_std].reset_index(drop=True)
     std_test_feats = feats[is_std].reset_index(drop=True)
-    # Attach labels for std-test rows only (raw class string).
-    cls_map = classes.set_index(classes["txId"].astype(str))["class"]
-    std_test_feats["class"] = std_test_feats["txId"].astype(str).map(cls_map)
 
     meta = {
         "task": task_name,
@@ -666,7 +674,8 @@ def main():
     print("=" * 60)
     for name, meta in summary.items():
         print(f"  {name}: {meta}")
+    return 1 if any('error' in meta for meta in summary.values()) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

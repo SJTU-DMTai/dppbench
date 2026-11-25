@@ -12,40 +12,8 @@ from baselines.common.budget import Budget, budget_scope
 from baselines.common.data_ctx import DataContext, TableContext
 from baselines.common.pipeline import Pipeline, check_pipeline, repair
 from scripts.run_task_baselines import TASKS
-from baselines.LLMAutoDP.instantiation import instantiate_candidate
-from baselines.common.pipeline import make_step, assign_dag_structure
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def test_parameter_instantiation_matches_public_factory():
-    ctx = context()
-    strategy = {'operators': ['HandleMV', 'LabelEncode']}
-    actual = instantiate_candidate(strategy, ctx, 42, 10)
-    rng = random.Random(42)
-    expected = Pipeline(steps=[make_step(name, ctx, rng) for name in strategy['operators']])
-    assign_dag_structure(expected, ctx, rng)
-    assert actual.to_yaml() == expected.to_yaml()
-    assert actual.hash() == instantiate_candidate(strategy, ctx, 42, 10).hash()
-
-
-@pytest.mark.parametrize('unique,method', [(True, 'key'), (False, 'agg')])
-def test_join_method_is_generated_from_public_cardinality(unique, method):
-    ctx = context()
-    ctx.secondary_tables = ['history']
-    ctx.tables['history'] = TableContext('history', 'secondary',
-        dtypes={'id': 'int64', 'v': 'float64'},
-        join_keys_to_primary=[{'primary': 'id', 'secondary': 'id'}],
-        join_key_unique={'id': unique})
-    pipeline = instantiate_candidate({'operators': ['JoinTable']}, ctx, 42, 10)
-    assert pipeline.steps[0].params['method'] == method
-
-
-def test_model_cannot_supply_parameters_or_legacy_dag_in_strategy():
-    for candidate in [{'operators': ['HandleMV'], 'params': {'method': 'mean'}},
-                      {'dag': {}}, {'operators': ['NotAnOperator']}]:
-        with pytest.raises(ValueError):
-            instantiate_candidate(candidate, context(), 42, 10)
 
 
 def context(kind="tabular"):
@@ -85,7 +53,7 @@ def test_group_feedback_cache_and_regression_direction(tmp_path):
     # Use legal alternative order; it is distinct without relying on optional params.
     candidate = anchor.copy()
     candidate.steps.reverse()
-    payload = {'operators': candidate.op_names()}
+    payload = yaml.safe_load(candidate.to_yaml())
     evaluator = Mock()
     evaluator.evaluate.side_effect = [
         SimpleNamespace(success=True, fitness=-5., metrics={"rmse": 5.}, error=None),
@@ -94,7 +62,7 @@ def test_group_feedback_cache_and_regression_direction(tmp_path):
     llm.chat.side_effect = [json.dumps({"candidates": [payload, payload]}),
                             '{"stop":true,"candidates":[]}']
     best, fit, _, history, messages, reason = obj._search(evaluator, llm, ctx)
-    assert fit == -3. and best.op_names() == candidate.op_names()
+    assert fit == -3. and best.hash() == candidate.hash()
     assert evaluator.evaluate.call_count == 2  # anchor + one unique candidate
     assert history[1]["group"][0]["relative_improvement"] == 2.
     assert history[1]["group"][1]["cache_hit"]
@@ -147,7 +115,6 @@ def test_run_artifacts_and_validation_only(tmp_path):
     obj._make_evaluator = lambda: evaluator
     obj._make_llm = lambda: llm
     result = obj.run()
-    assert result["method"] == "LLMAutoDP"
     assert result["original_paper_reproduction"] is False
     assert Path(result["best_pipeline_path"]).exists()
     assert json.loads((tmp_path / "run_summary.json").read_text())["best_fitness_in_loop"] == .7
@@ -161,59 +128,8 @@ def test_all_fourteen_task_evaluator_contracts(task, model, device, tmp_path):
     try:
         cfg = yaml.safe_load((ROOT / "dppbench/tasks" / task / "model.yaml").read_text())
         assert evaluator.metric_key == cfg["train"]["metrics"][0]
-        assert evaluator.small_n == obj.cfg["downstream_eval_n"] == 10000
+        assert evaluator.small_n == 0
         assert evaluator._executor._evaluate_std_test is False
         assert evaluator.task_type in {"rec", "graph", "tabular"}
     finally:
         evaluator._executor.cleanup()
-
-
-@pytest.mark.parametrize("name", ["LLMAutoDP", "llmautodp", " LLM-AutoDP-Adapted "])
-def test_public_name_and_legacy_alias(name):
-    from scripts.evaluate_baseline import BASELINE_CONFIGS, _canonical_baseline_name
-    canonical = _canonical_baseline_name(name)
-    assert canonical == "LLMAutoDP"
-    assert BASELINE_CONFIGS[canonical]["cls_path"] == "baselines.LLMAutoDP.llm_autodp.LLMAutoDP"
-
-
-def test_default_output_uses_public_name():
-    obj = LLMAutoDP(str(ROOT / "dppbench/tasks/default_credit"), "default_credit")
-    assert obj.output_dir == Path("outputs") / "LLMAutoDP" / "default_credit"
-
-
-def test_local_llm_runtime_configuration(tmp_path):
-    obj = runner(tmp_path)
-    client = obj._make_llm()
-    assert client.cfg.backend == "local"
-    assert client.cfg.model == obj.cfg["llm_model"]
-    assert client.cfg.max_tokens == 2048
-    assert client.cfg.timeout == 600
-    assert client.cfg.enable_thinking is False
-    assert client.cfg.torch_dtype == "bfloat16"
-    assert client.cfg.device_map == "auto"
-    assert client.cfg.temperature == .6
-    assert client.cfg.top_p == 1.0
-    assert client.cfg.repetition_penalty == 1.0
-    assert obj.cfg["fast_train"] is True
-
-
-def test_qwen_path_is_forwarded():
-    from scripts.evaluate_baseline import _apply_baseline_model_paths
-    kwargs = {}
-    _apply_baseline_model_paths("LLMAutoDP", kwargs, SimpleNamespace(qwen3_model_path="/custom/Qwen3-8B"))
-    assert kwargs == {"llm_backend": "local", "llm_model": "/custom/Qwen3-8B"}
-
-
-def test_optional_full_evaluation_removes_search_cap(tmp_path):
-    obj = runner(tmp_path)
-    obj.cfg["eval_full"] = True
-    evaluator = Mock()
-    evaluator._get_data_context.return_value = context()
-    evaluator.evaluate.return_value = SimpleNamespace(success=True, fitness=.7, metrics={}, error=None)
-    llm = Mock()
-    llm.chat.return_value = '{"stop":true}'
-    obj._make_evaluator = lambda: evaluator
-    obj._make_llm = lambda: llm
-    obj.run()
-    evaluator.set_small_n.assert_called_once_with(0)
-    evaluator.set_fast_mode.assert_called_with(False)

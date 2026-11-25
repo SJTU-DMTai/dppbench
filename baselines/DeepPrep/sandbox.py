@@ -11,8 +11,6 @@ any previously visited node.
 """
 from __future__ import annotations
 
-from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
-
 import os
 import pickle
 import random as _random
@@ -24,9 +22,21 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 
+
+def categorical_dtype(dtype):
+    from pandas.api.types import is_object_dtype, is_string_dtype, pandas_dtype
+    import pandas as pd
+    try:
+        dtype = pandas_dtype(dtype)
+        return is_object_dtype(dtype) or is_string_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype)
+    except (TypeError, ValueError):
+        return False
+
 from baselines.common.pipeline import (
     Pipeline,
     PipelineStep,
+    assign_dag_structure,
+    check_pipeline,
 )
 from baselines.common.search_evaluator import subsample_data_inplace
 from baselines.common.budget import BudgetExceededError
@@ -56,6 +66,7 @@ class ObsState:
     null_ratio: float
     text: str
     tables: dict = field(default_factory=dict)
+    col_types: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -85,18 +96,17 @@ class Sandbox:
         data_dir: Optional[str] = None,
         small_n: int = 0,
         seed: int = 42,
-        validate_rec_lookup: bool = False,
-        graph_training_only: bool = False,
+        model_name: Optional[str] = None,
     ) -> None:
         self.task_dir = task_dir
         self.data_name = data_name
         self.data_dir = data_dir
         self.small_n = int(small_n) if small_n else 0
         self.seed = int(seed)
-        self.validate_rec_lookup = bool(validate_rec_lookup)
-        self.graph_training_only = bool(graph_training_only)
-        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir, seed=self.seed)
-        if self._executor.task_type == 'rec' or (self._executor.task_type == 'graph' and self.graph_training_only):
+        self._executor = TrainingExecutor(task_dir, data_name=data_name, data_dir=data_dir,
+                                          seed=self.seed, model_name=model_name)
+        self.model_config = self._executor.get_model_config()
+        if self._executor.task_type == 'rec':
             self._executor.set_evaluate_std_test(False)
         self._tmpdir = tempfile.mkdtemp(prefix="deepprep_sandbox_")
         self.task_type: str = self._executor.task_type
@@ -119,11 +129,6 @@ class Sandbox:
             data._search_small_n = self.small_n
             data._search_seed = self.seed
         data.load_data()
-        if self.task_type == "graph" and self.graph_training_only:
-            # The executor installs a one-shot frozen-pool loader as a local
-            # closure. Materialization is complete: restore the class method
-            # before pickle snapshots without reloading raw or held-out data.
-            data.__dict__.pop("load_data", None)
         self._executor._restrict_rec_training(data)
         # run_pre_process() loads frozen std-test lazily and may replace the
         # sampled training frame with the full frozen frame. Load it first so
@@ -169,7 +174,7 @@ class Sandbox:
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    def execute_chain(self, steps: list[PipelineStep]) -> ExecutionResult:
+    def execute_chain(self, steps: list[PipelineStep], pipeline: Pipeline | None = None) -> ExecutionResult:
         """Apply ``steps`` to the current data state using common DAG APIs.
 
         On failure, the data state is rolled back to what it was before this
@@ -182,10 +187,11 @@ class Sandbox:
             return ExecutionResult(success=True, obs=self._observe(), applied_ops=[])
 
         pre_snapshot = self.snapshot()
-        pipe = Pipeline(steps=[PipelineStep.from_dict(s.to_dict()) for s in steps])
+        pipe = pipeline.copy() if pipeline is not None else Pipeline(steps=[PipelineStep.from_dict(s.to_dict()) for s in steps])
         ctx = self._context()
         try:
-            assign_dag_structure(pipe, ctx, _random.Random(self.seed))
+            if pipeline is None:
+                assign_dag_structure(pipe, ctx, _random.Random(self.seed))
             # This DAG executes only the next edge, not the final pipeline.
             # Keep referenced sources; auxiliary tables remain in sandbox data
             # and can be joined by a later edge. Final validation uses all sources.
@@ -193,11 +199,7 @@ class Sandbox:
             for step in pipe.steps:
                 referenced.update(step.prev)
             pipe.sources = [s for s in pipe.sources or [] if s['id'] in referenced]
-            validator = check_pipeline
-            if getattr(self, "validate_rec_lookup", False):
-                from .rec_validation import check_deepprep_pipeline
-                validator = check_deepprep_pipeline
-            report = validator(pipe, ctx, require_mandatory=False)
+            report = check_pipeline(pipe, ctx, require_mandatory=False)
             if not report.valid:
                 self.data = pickle.loads(pre_snapshot)
                 return ExecutionResult(
@@ -205,11 +207,6 @@ class Sandbox:
                     error="Pipeline precheck failed: " + "; ".join(report.errors),
                     applied_ops=[],
                 )
-            from .candidate_contracts import frame_errors
-            frame = getattr(self.data, 'train_df' if ctx.task_type in {'tabular', 'graph'} else 'interaction_df', None)
-            proposal_errors = frame_errors(pipe.steps, ctx, frame)
-            if proposal_errors:
-                return ExecutionResult(success=False, error="Pipeline precheck failed: " + "; ".join(proposal_errors), applied_ops=[])
             chain_yaml = pipe.to_yaml()
             chain_path = os.path.join(self._tmpdir, "chain.yaml")
             with open(chain_path, "w", encoding="utf-8") as f:
@@ -225,15 +222,10 @@ class Sandbox:
                 )
             else:
                 self.data.run_pre_process(chain_path)
-            primary = self._primary_df()
-            if primary is not None and not primary.columns.is_unique:
-                raise ValueError('Candidate produced duplicate column names')
         except BudgetExceededError:
             self.data = pickle.loads(pre_snapshot)
             raise
         except Exception as e:
-            from baselines.DeepPrep.resource_errors import raise_if_resource_error
-            raise_if_resource_error(e)
             err = (
                 f"{type(e).__name__}: {e}\n"
                 f"{traceback.format_exc()[-400:]}"
@@ -254,7 +246,7 @@ class Sandbox:
     # Observation rendering
     # ------------------------------------------------------------------
     def _primary_df(self):
-        if self.task_type in {"tabular", "graph"}:
+        if self.task_type in ("tabular", "graph"):
             return getattr(self.data, "train_df", None)
         return getattr(self.data, "interaction_df", None)
 
@@ -266,8 +258,6 @@ class Sandbox:
                 null_ratio=0.0, text="(no primary table available)", tables={},
             )
         df = self._visible_frame(df)
-        if not df.columns.is_unique:
-            raise ValueError('Candidate has duplicate column names; fix RenameColumn or JoinTable prefix')
         cols = [str(c) for c in df.columns]
         dtypes = {c: str(df[c].dtype) for c in cols}
         try:
@@ -292,11 +282,12 @@ class Sandbox:
             null_ratio=null_ratio,
             text=text,
             tables=tables,
+            col_types=dict(getattr(self.data, 'col_types', {})),
         )
 
     def _collect_tables(self) -> dict:
         named = {}
-        if self.task_type in {"tabular", "graph"}:
+        if self.task_type in ("tabular", "graph"):
             named["main"] = getattr(self.data, "train_df", None)
             named.update(getattr(self.data, "auxiliary_dfs", {}) or {})
         else:
@@ -308,8 +299,6 @@ class Sandbox:
             if table is None or not hasattr(table, "columns"):
                 continue
             table = self._visible_frame(table)
-            if not table.columns.is_unique:
-                raise ValueError(f'Table {name!r} has duplicate column names')
             cols = [str(c) for c in table.columns]
             dtypes = {c: str(table[c].dtype) for c in cols}
             try:
@@ -327,15 +316,41 @@ class Sandbox:
                 "dtypes": dtypes,
                 "null_ratio": null_ratio,
                 "head": rows,
+                "training_profile": self._training_profile(table),
             }
         return result
 
     @staticmethod
     def _visible_frame(frame):
-        """Do not expose frozen-test statistics or examples to the LLM."""
+        """Profile training rows only; never validation or frozen-test rows."""
         if "__split__" in frame.columns:
-            frame = frame.loc[frame["__split__"] != "std_test"]
-        return frame.drop(columns="__split__", errors="ignore")
+            frame = frame.loc[frame["__split__"].eq("train")]
+        return frame.drop(columns=[c for c in frame.columns
+                                  if c == '__split__' or str(c).startswith('__dppbench_')], errors="ignore")
+
+    def _training_profile(self, frame):
+        import numpy as np
+        types = getattr(self.data, 'col_types', {})
+        cfg = getattr(self.data, 'model_cfg', {}) or {}
+        configured = (cfg.get('feature', {}).get('seq_cols', {}) or {})
+        missing = frame.isna().mean() if len(frame) else frame.isna().sum().astype(float)
+        feature = cfg.get('feature', {})
+        target = feature.get('target_col', getattr(self.data, 'target_col', None))
+        features = [c for c in frame if c != target]
+        sequences = {}
+        for col in frame.columns:
+            if col not in configured and types.get(col) != 'categorical_list':
+                continue
+            lengths = np.fromiter((len(v) if isinstance(v, (list, tuple, np.ndarray)) else 0
+                                   for v in frame[col]), dtype=np.int64, count=len(frame))
+            sequences[col] = dict(nonempty_ratio=float((lengths > 0).mean()) if len(lengths) else 0.,
+                                  length_quantiles=dict(zip(('min', 'p50', 'p90', 'max'),
+                                      np.quantile(lengths, [0, .5, .9, 1]).tolist() if len(lengths) else [0.] * 4)))
+        top = missing.loc[features].sort_values(ascending=False).head(20)
+        return dict(scope='training_rows_only', rows=len(frame),
+                    feature_missing_rates={str(c): float(v) for c, v in top.items() if v > 0},
+                    missing_feature_count=int((missing.loc[features] > 0).sum()),
+                    sequences=sequences)
 
     def _render_text(self, tables: dict) -> str:
         lines = [f"materialized_tables: {list(tables)}"]
@@ -348,10 +363,13 @@ class Sandbox:
             lines.append(f"  columns ({len(cols)}){more}:")
             for col in col_view:
                 lines.append(f"    - {col}: {profile['dtypes'][col]}")
-            categorical = [c for c in cols if profile['dtypes'][c] in ('object', 'string', 'category')]
+            categorical = [c for c in cols if categorical_dtype(profile['dtypes'][c])]
             lines.append(f"  categorical_columns: {categorical}")
-            rows = [{c: row[c] for c in col_view if c in row} for row in profile['head']]
-            lines.append(f"  sample_rows (displayed columns only): {rows}")
+            training_profile = profile.get('training_profile', {})
+            lines.append(f"  training_profile: {training_profile}")
+            if training_profile.get('sequences'):
+                lines.append("  Empty histories are valid for events without earlier training observations. "
+                             "Use the length distribution, not the first rows, to diagnose sequences.")
         return "\n".join(lines)
 
 

@@ -336,7 +336,7 @@ def run_example_worker(args: argparse.Namespace) -> int:
                 errors.append('CtxPipe did not update both component and logical policy optimizers')
             if not stats.get('component_parameter_changes') or not stats.get('logical_parameter_changes'):
                 errors.append('CtxPipe policy parameter-change probes did not detect learning')
-        if name == 'FlowPipe' and not (result.get('training_stats') or {}).get('policy_updates'):
+        if name == 'FlowPipe' and not (result.get('training_stats') or {}).get('optimizer_updates'):
             errors.append('FlowPipe task-specific policy performed no optimizer updates')
         summary.update({
             "ok": not errors, "errors": errors, "warnings": report.warnings,

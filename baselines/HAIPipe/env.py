@@ -79,7 +79,8 @@ class HAIPipeEnv:
 
     def invalid_actions(self, component):
         return [i for i, name in enumerate(self.component_actions[component])
-                if name not in self.applicable_ops or is_mandatory(name, self.ctx.task_type)]
+                if name not in self.applicable_ops or is_mandatory(name, self.ctx.task_type)
+                or (name == "AugmentMixup" and getattr(self.ctx, "prediction_task", None) != "regression")]
 
     def episode(self, agent, *, epsilon: float = 0.0) -> dict:
         self.current_data_feature = self.data_feature.copy()

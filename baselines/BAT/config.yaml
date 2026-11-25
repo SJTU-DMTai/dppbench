@@ -36,7 +36,7 @@ use_llm_judge: false
 # Compatibility key; implementation uses exact set equality for columns_match.
 columns_match_threshold: 1.0
 # small_n (default: 0): Sandbox row subsample size; 0 disables.
-small_n: 0
+small_n: 30000
 # eval_full (default: true): Re-evaluate the best pipeline on full data.
 eval_full: true
 # downstream_eval_n (default: 10000): In-loop downstream eval subsample; 0 is full.

@@ -18,29 +18,20 @@ import yaml
 
 from baselines.common.budget import BudgetExceededError, get_active_budget
 from baselines.common.config import default_config_path, load_baseline_config
-from baselines.common.pipeline import Pipeline, repair
+from baselines.common.pipeline import Pipeline, check_pipeline, repair
 from baselines.common.search_evaluator import SearchPipelineEvaluator
-from .validation import check_candidate, task_contract
-from .instantiation import instantiate_candidate
-from baselines.DeepPrep.model_contract import sequence_input_errors
 from baselines.common.utils import get_available_ops
 from baselines.DeepPrep.llm_client import LLMClient
 
 
 CONFIG_KEYS = ("llm_backend", "llm_model", "temperature", "max_tokens", "timeout",
                "n_rounds", "n_candidates", "max_pipeline_len", "eval_full", "seed",
-               "fast_train", "top_p", "torch_dtype", "device_map", "enable_thinking",
-               "repetition_penalty", "downstream_eval_n")
+               "fast_train")
 
 
 def parse_group(text, limit):
     """Reject ambiguous/truncated responses rather than treating them as no-op."""
     text = text.strip()
-    # Transport terminators only: never discard arbitrary JSON suffixes or
-    # repair truncated candidates. Preserve the raw response in agent_log.
-    while text.endswith(("<|im_end|>", "<|endoftext|>")):
-        marker = "<|im_end|>" if text.endswith("<|im_end|>") else "<|endoftext|>"
-        text = text[:-len(marker)].rstrip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0]
     obj = json.loads(text)
@@ -66,19 +57,17 @@ def decode_pipeline(candidate):
         raise ValueError("dag.sources must be a nonempty list")
     if not isinstance(dag.get("ops"), list) or not isinstance(dag.get("train"), dict):
         raise ValueError("dag.ops and dag.train are required")
-    prev = dag["train"].get("prev")
-    if not isinstance(prev, list) or len(prev) != 1:
-        raise ValueError("dag.train.prev must contain exactly one node; connect or remove unused branches")
     return Pipeline.from_yaml(yaml.safe_dump({"dag": dag}, sort_keys=False))
 
 
 class LLMAutoDP:
-    """LLMAutoDP: compare groups against a mandatory-only anchor."""
+    """LLM-AutoDP-Adapted: compare groups against a mandatory-only anchor."""
 
     def __init__(self, task_dir, data_name, data_dir=None, output_dir=None,
                  seed=None, verbose=True, device="cpu", model_name=None,
                  eval_full=None, max_pipeline_len=None, config_path=None,
-                 llm_backend=None, llm_model=None):
+                 llm_backend=None, llm_model=None, shared_repair=True):
+        self.shared_repair = shared_repair
         self.cfg = load_baseline_config(config_path or default_config_path(__file__), CONFIG_KEYS)
         for key, value in {"seed": seed, "eval_full": eval_full,
                            "max_pipeline_len": max_pipeline_len,
@@ -90,12 +79,12 @@ class LLMAutoDP:
                 raise ValueError(f"{key} must be a positive integer")
         self.task_dir, self.data_name, self.data_dir = task_dir, data_name, data_dir
         self.verbose, self.device, self.model_name = verbose, device, model_name
-        self.output_dir = Path(output_dir or Path("outputs") / "LLMAutoDP" / data_name)
+        self.output_dir = Path(output_dir or Path("outputs") / "LLM-AutoDP-Adapted" / data_name)
 
     def _make_evaluator(self):
         evaluator = SearchPipelineEvaluator(
             task_dir=self.task_dir, data_name=self.data_name, data_dir=self.data_dir,
-            small_n=self.cfg["downstream_eval_n"], seed=self.cfg["seed"], verbose=self.verbose,
+            small_n=0, seed=self.cfg["seed"], verbose=self.verbose,
             device=self.device, model_name=self.model_name)
         evaluator.set_evaluate_std_test(False)
         evaluator.set_fast_mode(bool(self.cfg["fast_train"]))
@@ -104,10 +93,7 @@ class LLMAutoDP:
     def _make_llm(self):
         return LLMClient(backend=self.cfg["llm_backend"], model=self.cfg["llm_model"],
                          temperature=self.cfg["temperature"], max_tokens=self.cfg["max_tokens"],
-                         timeout=self.cfg["timeout"], top_p=self.cfg["top_p"],
-                         torch_dtype=self.cfg["torch_dtype"], device_map=self.cfg["device_map"],
-                         enable_thinking=self.cfg["enable_thinking"],
-                         repetition_penalty=self.cfg["repetition_penalty"])
+                         timeout=self.cfg["timeout"])
 
     def _search(self, evaluator, llm, ctx):
         # No task prepare.yaml is loaded. Required structural operators are the
@@ -115,77 +101,64 @@ class LLMAutoDP:
         anchor = repair(Pipeline(), ctx.task_type, ctx, rng=random.Random(self.cfg["seed"]))
         history, cache = [], {}
         best, best_fit, best_metrics = None, None, {}
-        executor = getattr(evaluator, "_executor", None)
-        model_config = executor.get_model_config() if executor is not None else {}
-        if not isinstance(model_config, dict):
-            model_config = {}
-        contract = task_contract(ctx, model_config)
         allowed_ops = {spec.op_name for spec in get_available_ops(ctx.task_type)}
 
-        stats = {"parsed_rounds": 0, "parse_failed_rounds": 0, "generated_candidates": 0,
-                 "legal_candidate_requests": 0, "invalid_candidates": 0,
-                 "cache_hits": 0, "new_candidate_evaluations": 0, "successful_new_candidates": 0}
-
-        def score(pipeline, is_anchor=False):
+        def score(pipeline):
             nonlocal best, best_fit, best_metrics
             if any(step.op not in allowed_ops for step in pipeline.steps):
                 return {"fitness": None, "error": "Operator outside the task whitelist"}
-            report = check_candidate(pipeline, ctx)
+            repair_fields = {}
+            if self.shared_repair and pipeline is not anchor:
+                from baselines.common.shared_repair import complete_pipeline
+                raw_yaml = pipeline.to_yaml()
+                try:
+                    pipeline, diff = complete_pipeline(pipeline, ctx, self.cfg['seed'], self.cfg['max_pipeline_len'])
+                    repair_fields = dict(repair=diff, raw_yaml=raw_yaml, effective_yaml=pipeline.to_yaml())
+                except ValueError as exc:
+                    return {'fitness': None, 'error': str(exc)}
+            report = check_pipeline(pipeline, ctx)
             if not report.valid:
                 return {"fitness": None, "error": "; ".join(report.errors)}
             if len(pipeline.steps) > self.cfg["max_pipeline_len"]:
                 return {"fitness": None, "error": "max_pipeline_len exceeded"}
-            model_errors = sequence_input_errors(pipeline, ctx, model_config)
-            if model_errors:
-                return {"fitness": None, "error": "; ".join(model_errors)}
             key = pipeline.hash()
-            if not is_anchor:
-                stats["legal_candidate_requests"] += 1
             if key in cache:
-                if not is_anchor:
-                    stats["cache_hits"] += 1
-                return {**cache[key], "cache_hit": True}
-            if not is_anchor:
-                stats["new_candidate_evaluations"] += 1
+                return {**cache[key], **repair_fields, "cache_hit": True}
             ev = evaluator.evaluate(pipeline)
             if ev.error and "BudgetExceededError" in ev.error:
                 raise BudgetExceededError(ev.error)
-            fit = float(ev.fitness) if ev.success and not ev.error and math.isfinite(ev.fitness) else None
-            if not is_anchor and fit is not None and not ev.error:
-                stats["successful_new_candidates"] += 1
-            record = {"fitness": fit, "error": ev.error, "cache_hit": False, "evaluated": True}
+            fit = float(ev.fitness) if ev.success and math.isfinite(ev.fitness) else None
+            record = {"fitness": fit, "error": ev.error, "cache_hit": False, **repair_fields}
             cache[key] = record
             if fit is not None and (best_fit is None or fit > best_fit):
                 best, best_fit, best_metrics = pipeline.copy(), fit, dict(ev.metrics or {})
             return record
 
-        anchor_result = score(anchor, is_anchor=True)
+        anchor_result = score(anchor)
         r0 = anchor_result["fitness"]
         history.append({"round": 0, "anchor": yaml.safe_load(anchor.to_yaml()), **anchor_result})
-        catalog = [{k: v for k, v in asdict(spec).items()
-                    if k not in {'default_params', 'param_space', 'required_params'}}
-                   for spec in get_available_ops(ctx.task_type)]
+        catalog = [asdict(spec) for spec in get_available_ops(ctx.task_type)]
         system = (
-            "You are LLMAutoDP, searching data preparation strategies for DPPBench. "
+            "You are LLM-AutoDP-Adapted, searching data preparation strategies for DPPBench. "
             "Generate multiple diverse complete strategies, compare each group's validation "
             "fitness and improvement relative to the fixed anchor, then revise operator choices "
             "and order. Higher fitness is better (error metrics are already negated). "
             "The anchor contains only benchmark-required preparation, not a reference solution. "
-            "Choose only operator names and order. The benchmark's public make_step factory "
-            "generates all parameters, auxiliary sources, and DAG edges using a fixed seed per strategy. "
-            "Do not emit params, sources, dag or train. Preserve target, ID, time, "
+            "Use only the supplied operators and valid parameters; preserve target, ID, time, "
             "split columns, recommendation histories and graph node/edge alignment. "
             "Never use test data or change labels. Do not generate code. "
-            "Return JSON only: {\"stop\": false, \"candidates\": "
-            "[{\"operators\": [\"HandleMV\", \"LabelEncode\"]}]}. "
-            "Retain mandatory operators; missing required operators are not added to your candidates. "
+            "Return JSON only: {\"stop\": false, \"candidates\": [{\"dag\": "
+            "{\"sources\": [{\"id\": \"s0\", \"table\": \"main\"}], "
+            "\"ops\": [{\"id\": \"o1\", \"op\": \"HandleMV\", \"prev\": [\"s0\"], "
+            "\"params\": {}}], \"train\": {\"prev\": [\"o1\"]}}}]}. "
+            "Sources must use this task's table names; retain mandatory operators. "
             f"Return 1 to {self.cfg['n_candidates']} candidates per round; at most "
             f"{self.cfg['max_pipeline_len']} operators per candidate. Start with simple diverse "
             "strategies. To stop and select the highest-scoring evaluated strategy return "
             "{\"stop\": true, \"candidates\": []}. No untested final strategies."
         )
         messages = [{"role": "user", "content": json.dumps({
-            "context": asdict(ctx), "contract": contract, "operators": catalog, "anchor": history[0],
+            "context": asdict(ctx), "operators": catalog, "anchor": history[0],
             "rounds": self.cfg["n_rounds"]}, default=str)}]
         stop_reason = "round_limit"
         for turn in range(1, self.cfg["n_rounds"] + 1):
@@ -198,53 +171,34 @@ class LLMAutoDP:
                 try:
                     stop, candidates = parse_group(response, self.cfg["n_candidates"])
                 except (ValueError, TypeError) as exc:
-                    stats["parse_failed_rounds"] += 1
                     feedback = {"round": turn, "error": str(exc)}
                 else:
-                    stats["parsed_rounds"] += 1
-                    stats["generated_candidates"] += len(candidates)
                     if stop:
                         stop_reason = "llm_stop"
                         break
                     group = []
                     for candidate in candidates:
                         try:
-                            pipeline = instantiate_candidate(candidate, ctx, self.cfg['seed'], self.cfg['max_pipeline_len'])
+                            pipeline = decode_pipeline(candidate)
                             result = score(pipeline)
-                            result['instantiated_pipeline'] = yaml.safe_load(pipeline.to_yaml())
-                            result['parameter_source'] = 'public_make_step_fixed_strategy_seed_v1'
                         except BudgetExceededError:
                             raise
                         except (ValueError, TypeError, KeyError, AttributeError) as exc:
                             result = {"fitness": None, "error": str(exc)}
-                        if not result.get("evaluated") and not result.get("cache_hit"):
-                            stats["invalid_candidates"] += 1
                         fit = result["fitness"]
                         group.append({"candidate": candidate, **result,
                                       "relative_improvement": fit - r0 if fit is not None and r0 is not None else None})
                     feedback = {"round": turn, "group": group, "anchor_fitness": r0,
                                 "best_fitness": best_fit}
-                generation = getattr(llm, "last_generation", None)
-                if isinstance(generation, dict):
-                    feedback["generation"] = generation
-                previous_errors = {entry.get("error") for r in history for entry in r.get("group", []) if entry.get("error")}
-                feedback["repeated_errors"] = sorted({entry["error"] for entry in feedback.get("group", []) if entry.get("error") in previous_errors})
-                feedback["instruction"] = "Revise operator choices and order using the reported instantiated pipeline and errors. Return operators lists only, without params or DAG edges. Submit stop=true only with an empty candidates list."
                 history.append(feedback)
                 messages.append({"role": "user", "content": json.dumps(feedback, default=str)})
                 if self.verbose:
-                    print(f"[LLMAutoDP] round={turn} best={best_fit}", flush=True)
+                    print(f"[LLM-AutoDP-Adapted] round={turn} best={best_fit}", flush=True)
             except BudgetExceededError as exc:
                 stop_reason = str(exc)
                 break
         if best is None:
             raise RuntimeError("LLM-AutoDP produced no successful validation candidate: " + json.dumps(history, default=str))
-        stats["selected_source"] = "anchor" if best.hash() == anchor.hash() else "llm_candidate"
-        stats["status"] = ("anchor_only" if stats["new_candidate_evaluations"] == 0 else
-                           "no_successful_new_candidate" if stats["successful_new_candidates"] == 0 else "searched")
-        self.search_stats = stats
-        if self.verbose:
-            print("[LLMAutoDP] search_stats=" + json.dumps(stats), flush=True)
         return best, best_fit, best_metrics, history, messages, stop_reason
 
     def run(self):
@@ -259,7 +213,6 @@ class LLMAutoDP:
         if self.cfg["eval_full"]:
             evaluator = self._make_evaluator()
             try:
-                evaluator.set_small_n(0)
                 evaluator.set_fast_mode(False)
                 final = evaluator.evaluate(best)
             finally:
@@ -268,8 +221,7 @@ class LLMAutoDP:
         pipeline_path = self.output_dir / "best_pipeline.yaml"
         pipeline_path.write_text(best.to_yaml(), encoding="utf-8")
         summary = {
-            "method": "LLMAutoDP", "original_paper_reproduction": False,
-            "parameter_source": "public_make_step_fixed_strategy_seed_v1",
+            "method": "LLM-AutoDP-Adapted", "original_paper_reproduction": False,
             "data_name": self.data_name, "task_type": ctx.task_type,
             "best_pipeline_yaml": best.to_yaml(), "best_pipeline_path": str(pipeline_path.resolve()),
             "best_fitness_in_loop": fit, "best_metrics_in_loop": metrics,
@@ -279,7 +231,6 @@ class LLMAutoDP:
             "duration_seconds": time.monotonic() - started,
             "adaptations": {"DPS": False, "PTS": False, "LESS": False,
                             "processed_prefix_cache": False, "full_candidate_cache": True},
-            "search_stats": self.search_stats,
             "config": self.cfg,
         }
         for name, value in (("run_summary.json", summary), ("trajectory.json", history),

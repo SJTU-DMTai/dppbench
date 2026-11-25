@@ -52,8 +52,20 @@ class SearchCost:
             return sum(v.get(field, 0) for k, v in ops.items()
                        if k.startswith('search/' + prefix))
 
+        def observed(kind, field):
+            entry = ops.get('search/' + kind)
+            return entry.get(field) if entry is not None else None
+
+        tokens = {
+            'search_llm_prompt_tokens': observed('llm_tokens', 'prompt_tokens'),
+            'search_llm_completion_tokens': observed('llm_tokens', 'completion_tokens'),
+            'search_llm_total_tokens': observed('llm_tokens', 'total_tokens'),
+            'search_llm_usage_missing_calls': observed('llm_tokens', 'missing_usage_calls'),
+            'search_embedding_input_tokens': observed('embedding_tokens', 'input_tokens'),
+            'search_embedding_cache_hits': observed('embedding_tokens', 'cache_hits'),
+        }
         proxy = self.baseline in {'DAGPipe', 'DiffPrep'}
-        return dict(search_cost=data,
+        return dict(search_cost=data, **tokens,
                     search_pipeline_score_calls=total('pipeline_score.'),
                     search_downstream_fit_calls=total('downstream_fit.'),
                     search_proxy_train_loss_calls=total('proxy_train.', 'completed') if proxy else None,

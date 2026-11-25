@@ -1,6 +1,7 @@
 """Official FlowPipe cached Llama-3.1 semantic-context protocol."""
 from __future__ import annotations
 
+import gc
 import os
 from pathlib import Path
 
@@ -29,6 +30,23 @@ class SemanticContextLoader:
         self.model_name = str(model_name)
         self.ctx_dim = int(ctx_dim)
         self.llama_model_path = Path(llama_model_path)
+        self._model = None
+        self._tokenizer = None
+        self._device = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def close(self):
+        device = self._device
+        self._model = self._tokenizer = self._device = None
+        gc.collect()
+        if device is not None and device.type == "cuda":
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
 
     def path_for(self, data_name: str) -> Path:
         # A generic cache path may hold another model's same-width embedding.
@@ -49,6 +67,8 @@ class SemanticContextLoader:
             raise ValueError(
                 f"FlowPipe context must have {self.ctx_dim} values, got {value.numel()}"
             )
+        from baselines.common.search_cost import record_work
+        record_work("embedding_tokens", input_tokens=0, calls=0, cache_hits=1)
         return value.reshape(self.ctx_dim)
 
     def resolved_model_path(self) -> Path:
@@ -81,8 +101,6 @@ class SemanticContextLoader:
                 f"- {column}: dtype={series.dtype}, role={role}, "
                 f"missing={missing:.4f}, unique={unique}"
             )
-        graph_note = ("Graph input is a node-feature table. Preserve node IDs, labels, time/split metadata and the separately maintained topology; rewards come from the configured GNN validation score.\n"
-                      if ctx.task_type == "graph" else "")
         categories = ", ".join(category.value for category in OpCategory)
         return (
             "EMBED-ONLY PROMPT -- GLOBAL CONTEXT FOR AUTOML PIPELINES\n"
@@ -90,8 +108,7 @@ class SemanticContextLoader:
             "Do not generate a pipeline or discuss model training. The static "
             "embedding will condition a FiLM-modulated GFlowNet.\n"
             f"Dataset: {data_name}\nTask type: {ctx.task_type}\n"
-            + graph_note
-            + f"Shape: {frame.shape[0]} rows x {frame.shape[1]} columns\n"
+            f"Shape: {frame.shape[0]} rows x {frame.shape[1]} columns\n"
             f"Target: {ctx.target_col}\nAvailable component categories: {categories}\n"
             "Summarize missingness, types, categorical cardinality, numeric scale, "
             "skew/outliers, redundancy, useful feature interactions, and operator "
@@ -108,27 +125,34 @@ class SemanticContextLoader:
         output_path = self.path_for(data_name)
         if output_path.is_file() and not overwrite:
             return output_path
-        model_path = self.resolved_model_path()
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
         torch_device = torch.device(device)
-        require_accelerate(str(torch_device))
-        tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path, local_files_only=True, **model_dtype_kwargs(local_torch_dtype(torch_device)),
-            device_map=str(torch_device),
-            quantization_config=fp8_quantization_config(torch_device),
-        )
-        model.eval()
+        if self._device is not None and self._device != torch_device:
+            raise ValueError("A shared FlowPipe encoder must stay on the same device")
+        if self._model is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            model_path = self.resolved_model_path()
+            require_accelerate(str(torch_device))
+            self._device = torch_device
+            self._tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+            if self._tokenizer.pad_token is None:
+                self._tokenizer.pad_token = self._tokenizer.eos_token
+            self._model = AutoModelForCausalLM.from_pretrained(
+                model_path, local_files_only=True, **model_dtype_kwargs(local_torch_dtype(torch_device)),
+                device_map=str(torch_device),
+                quantization_config=fp8_quantization_config(torch_device),
+            )
+            self._model.eval()
         prompt = self.build_prompt(data_name, frame, ctx)
-        tokens = tokenizer(
+        tokens = self._tokenizer(
             [prompt], return_tensors="pt", padding=True, truncation=True,
             max_length=int(max_length), add_special_tokens=True,
         ).to(torch_device)
         with torch.no_grad():
-            result = model(**tokens, output_hidden_states=True, use_cache=False)
+            result = self._model(**tokens, output_hidden_states=True, use_cache=False)
+        from baselines.common.search_cost import record_work
+        record_work("embedding_tokens", calls=1, cache_hits=0,
+                    input_tokens=int(tokens["attention_mask"].sum().item()))
         hidden = result.hidden_states[-1]
         last_index = tokens["attention_mask"].sum(dim=1).sub(1).clamp(min=0)
         embedding = hidden[

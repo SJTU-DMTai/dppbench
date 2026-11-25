@@ -177,6 +177,17 @@ dag:
             for col, func in grouped.columns
         ]
         grouped = grouped.reset_index()
+        occupied = set(df.columns)
+        names = [self.key_col]
+        for col in grouped.columns[1:]:
+            name = col
+            suffix = 2
+            while name in occupied:
+                name = f"{col}__join{suffix}"
+                suffix += 1
+            occupied.add(name)
+            names.append(name)
+        grouped.columns = names
         result = df.merge(grouped, on=self.key_col, how="left", validate='many_to_one')
         if len(result) != len(df):
             raise pd.errors.MergeError('JoinTable aggregate unexpectedly changed row count')

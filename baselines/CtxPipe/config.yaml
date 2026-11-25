@@ -9,7 +9,7 @@ finetune_eps_end: 0.05
 # Upstream CtxPipe defaults, adapted only for four DPPBench categories.
 frames: 50000
 max_steps: 8
-small_n: 1500
+small_n: 30000
 eval_full: true
 eps_start: 1.0
 eps_end: 0.2
@@ -23,6 +23,6 @@ buffer_capacity: 5000
 illegal_penalty: -1.0
 failure_reward: -1.0
 seed: 42
-fast_train: false
+fast_train: true
 gte_model_path: /mnt/sdb/dengjiale/dppbench/llm_ckpt/Qwen3-8B
 context_cache_dir: /mnt/sdb/dengjiale/dppbench/outputs/CtxPipe/context_cache

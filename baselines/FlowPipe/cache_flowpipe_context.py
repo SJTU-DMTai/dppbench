@@ -10,6 +10,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from baselines.FlowPipe.flowpipe import FlowPipe  # noqa: E402
+from baselines.FlowPipe.context import SemanticContextLoader  # noqa: E402
 
 
 def parse_args():
@@ -37,22 +38,29 @@ def main() -> int:
     args = parse_args()
     device = f"cuda:{args.gpu_id}"
     cache_dir = os.path.join(os.path.abspath(args.output_dir), "FlowPipe", "context_embeddings")
-    for data_name in [name.strip() for name in args.data_names.split(",") if name.strip()]:
-        task_dir = os.path.join(_ROOT, "dppbench", "tasks", data_name)
-        baseline = FlowPipe(
-            task_dir=task_dir, data_name=data_name,
-            data_dir=_task_data_dir(args.data_dir, data_name),
-            output_dir=os.path.join(args.output_dir, "FlowPipe", data_name),
-            context_cache_dir=cache_dir,
-            llama_model_path=args.llama_model_path,
-            llm_name=args.llm_name, ctx_dim=args.ctx_dim,
-            device=device, verbose=True,
-        )
-        path = baseline.precompute_context(
-            device=device, max_length=args.max_length,
-            overwrite=args.overwrite,
-        )
-        print(f"[{data_name}] saved: {path}")
+    with SemanticContextLoader(cache_dir, args.llm_name, args.ctx_dim, args.llama_model_path) as loader:
+        for data_name in [name.strip() for name in args.data_names.split(",") if name.strip()]:
+            task_dir = os.path.join(_ROOT, "dppbench", "tasks", data_name)
+            baseline = FlowPipe(
+                task_dir=task_dir, data_name=data_name,
+                data_dir=_task_data_dir(args.data_dir, data_name),
+                output_dir=os.path.join(args.output_dir, "FlowPipe", data_name),
+                context_cache_dir=cache_dir,
+                llama_model_path=args.llama_model_path,
+                llm_name=args.llm_name, ctx_dim=args.ctx_dim,
+                device=device, verbose=True,
+            )
+            try:
+                path = baseline.precompute_context(
+                    device=device, max_length=args.max_length,
+                    overwrite=args.overwrite, loader=loader,
+                )
+            except ValueError as exc:
+                if "graph" in str(exc).lower():
+                    print(f"[{data_name}] skipped: {exc}")
+                    continue
+                raise
+            print(f"[{data_name}] saved: {path}")
     return 0
 
 

@@ -790,7 +790,8 @@ class RecData(BaseData):
         elif "__split__" in df.columns and uses_train_history:
             reference = getattr(self, '_rec_history_reference', None)
             if op_name == 'CreateSequence' and reference is not None:
-                new_df = op.transform_with_history(df, reference)
+                from .rec_protocol import sequence_reference
+                new_df = op.transform_with_history(df, sequence_reference(self, df, op))
             else:
                 new_df = op.transform(df)
         elif "__split__" in df.columns:
@@ -864,6 +865,12 @@ class RecData(BaseData):
                 self.col_types.pop(col_name, None)
         if "__split__" in df.columns:
             self._require_training_rows(new_df, op_name)
+        imputers = list(df.attrs.get('_dppbench_history_imputers', ()))
+        if op_name == 'HandleMV' and op.action == 'impute':
+            import copy
+            imputers.append(copy.deepcopy(op))
+        if imputers:
+            new_df.attrs['_dppbench_history_imputers'] = imputers
         return new_df
 
     def _prepare_validation(self):

@@ -8,10 +8,11 @@ cd "$(dirname "$0")/../.."
 source scripts/exps/common.sh
 
 # 实验配置
-SEED_LIST="42 43 44"
-GPU_ID=0
+SEED_LIST="44"
+GPU_ID=2
 
 TASK_LIST=(
+  amazon_beauty
   kuairec
   movielens
   elliptic_bitcoin
@@ -24,12 +25,12 @@ TASK_LIST=(
   home_credit
   nyc_taxi_hourly
   polish_bankruptcy
-  yelp
 )
 
 BASELINES=(
   DeepPrep
   LLMAutoDP
+  BAT
 )
 
 HARD_MEMORY_GIB=85
@@ -39,7 +40,7 @@ FAILED=()
 for seed in $SEED_LIST; do
 
   # 日志目录随 seed 自动变化
-  LOG_DIR="logs/exp1_10_30_llm/seed${seed}"
+  LOG_DIR="logs/exp1_11_17_llm/seed${seed}"
   mkdir -p "$LOG_DIR"
 
   for task in "${TASK_LIST[@]}"; do

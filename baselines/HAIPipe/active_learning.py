@@ -77,17 +77,36 @@ class ActiveCandidateSelector:
     def _fit(model, dataset_matrix, candidate_features, ids, labels) -> None:
         if len(ids) < 2:
             return
-        model.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+        training = model.training
         device = next(model.parameters(), torch.empty(0)).device
+        dataset = torch.as_tensor(dataset_matrix[ids], dtype=torch.float32, device=device)
+        features = torch.as_tensor(candidate_features[ids], dtype=torch.long, device=device)
         targets = torch.as_tensor(labels, dtype=torch.float32, device=device)
-        for _ in range(5):
-            output = model(
-                torch.as_tensor(dataset_matrix[ids], dtype=torch.float32, device=next(model.parameters(), torch.empty(0)).device),
-                torch.as_tensor(candidate_features[ids], dtype=torch.long, device=next(model.parameters(), torch.empty(0)).device),
-            ).flatten()
-            loss = nn.functional.l1_loss(output, targets)
-            optimizer.zero_grad(); loss.backward(); optimizer.step()
+        try:
+            if not torch.isfinite(dataset).all() or not torch.isfinite(targets).all():
+                raise FloatingPointError('non-finite scorer training input')
+            model.train()
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+            for _ in range(5):
+                output = model(dataset, features).flatten()
+                loss = nn.functional.l1_loss(output, targets)
+                if not torch.isfinite(output).all() or not torch.isfinite(loss):
+                    raise FloatingPointError('non-finite scorer output or loss')
+                optimizer.zero_grad()
+                loss.backward()
+                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                if not torch.isfinite(norm):
+                    raise FloatingPointError('non-finite scorer gradient')
+                optimizer.step()
+                if any(not torch.isfinite(value).all() for value in model.state_dict().values()):
+                    raise FloatingPointError('non-finite scorer state')
+        except FloatingPointError as exc:
+            model.load_state_dict(state)
+            model.zero_grad(set_to_none=True)
+            print(f'[HAIPipe] scorer update rolled back: {exc}', flush=True)
+        finally:
+            model.train(training)
 
     def _informative(self, dataset_matrix, candidate_features, ids: list[int]) -> list[int]:
         if not ids:
@@ -100,6 +119,8 @@ class ActiveCandidateSelector:
             model.eval()
             with torch.no_grad():
                 outputs.append(model(dataset, pipeline).flatten().cpu().numpy())
+        if not all(np.isfinite(output).all() for output in outputs):
+            raise FloatingPointError('non-finite scorer committee prediction')
         base = outputs[0]
         scores = {}
         raw = np.concatenate((dataset_matrix[ids], candidate_features[ids]), axis=1)
@@ -108,10 +129,14 @@ class ActiveCandidateSelector:
                 np.linalg.norm((base[position] - prediction[position]) * raw[position])
                 for prediction in outputs[1:]
             ) / len(self.committee)
+            if not np.isfinite(change):
+                raise FloatingPointError('non-finite scorer information score')
             scores[candidate_id] = float(change)
         return sorted(ids, key=lambda i: scores[i], reverse=True)
 
     def _representatives(self, latent: np.ndarray, available: list[int], count: int) -> list[int]:
+        if not np.isfinite(latent).all():
+            raise FloatingPointError('non-finite scorer latent')
         if len(available) <= count:
             return available
         clusters = min(2 * count, len(available))
@@ -191,6 +216,8 @@ class ActiveCandidateSelector:
                 torch.as_tensor(candidate_features, dtype=torch.long, device=next(self.model.parameters(), torch.empty(0)).device),
             ).flatten().cpu().numpy()
         final_count = max(1, self.k_total - batch * self.iterations)
+        if not np.isfinite(predictions).all():
+            raise FloatingPointError('non-finite scorer final prediction')
         ranked = sorted(range(len(candidates)), key=lambda i: float(predictions[i]), reverse=True)
         for index in ranked:
             if len([r for r in records if r.get("final")]) >= final_count:

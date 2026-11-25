@@ -19,9 +19,15 @@ class TargetSchema:
     required_columns: tuple[str, ...] = ()
     required_tables: tuple[str, ...] = ()
     constraints: tuple[str, ...] = field(default_factory=tuple)
+    attention_sequences: dict[str, str] = field(default_factory=dict)
+    seq_max_len: int = 20
 
     @classmethod
-    def from_context(cls, ctx: DataContext) -> "TargetSchema":
+    def from_context(cls, ctx: DataContext, model_config: dict | None = None) -> "TargetSchema":
+        config = model_config or {}
+        feature = config.get('feature', {})
+        attention_sequences = (dict(feature.get('seq_cols', {}))
+                               if str(config.get('model', '')).upper() in ('DIN', 'DIEN', 'SIM') else {})
         if ctx.task_type == "rec":
             required = tuple(c for c in (ctx.user_col, ctx.item_col, ctx.target_col) if c)
             tables = tuple(ctx.source_tables())
@@ -30,6 +36,13 @@ class TargetSchema:
                 "preserve user, item, and label identifiers",
                 "produce model-consumable feature dtypes",
             )
+        elif ctx.task_type == 'graph':
+            required = tuple(c for c in (ctx.id_col, ctx.time_col, ctx.target_col) if c)
+            tables = (ctx.primary_table,)
+            constraints = ('preserve node IDs, event times, labels, and node alignment',
+                           'keep unknown-label nodes; exclude them from supervised loss',
+                           'preserve topology and frozen-test isolation; do not resample graph nodes',
+                           'satisfy mandatory DPPBench operators')
         else:
             required = tuple(c for c in (ctx.target_col,) if c)
             tables = (ctx.primary_table,)
@@ -45,6 +58,8 @@ class TargetSchema:
             required_columns=required,
             required_tables=tables,
             constraints=constraints,
+            attention_sequences=attention_sequences,
+            seq_max_len=int(feature.get('seq_max_len', 20)),
         )
 
     def render(self) -> str:
@@ -54,9 +69,16 @@ class TargetSchema:
             f"target_col: {self.target_col}",
             f"required_tables: {list(self.required_tables)}",
             f"required_columns: {list(self.required_columns)}",
+            "required_columns is a minimum inclusion requirement, NOT a whitelist or column-order constraint.",
+            "Keep useful side-table and engineered features. Delete features only as a validation-scored hypothesis, not to match this list.",
             "constraints:",
         ]
         lines.extend(f"  - {item}" for item in self.constraints)
+        if self.attention_sequences:
+            lines.append(f"attention_sequences (sequence column -> categorical query column): {self.attention_sequences}")
+            lines.append(f"seq_max_len: {self.seq_max_len}")
+            lines.append("The primary table must contain at least one valid attention sequence and its query column. "
+                         "Use these exact sequence names; an alias such as item_history does not satisfy this contract.")
         return "\n".join(lines)
 
     def validate_observation(self, obs) -> list[str]:
@@ -66,14 +88,24 @@ class TargetSchema:
         for name in self.required_tables:
             if name not in available_tables:
                 errors.append(f"required table {name!r} is missing")
-        all_columns = {
-            str(col)
-            for table in tables.values()
-            for col in table.get("columns", [])
-        }
+        columns = set(getattr(obs, 'columns', []))
         for col in self.required_columns:
-            if col not in all_columns:
-                errors.append(f"required column {col!r} is missing")
+            if col not in columns:
+                errors.append(f"required column {col!r} is missing from primary table")
+        if self.attention_sequences:
+            col_types = getattr(obs, 'col_types', {})
+            valid = []
+            for sequence, query in self.attention_sequences.items():
+                if sequence not in columns:
+                    continue
+                if col_types.get(sequence) != 'categorical_list' or col_types.get(query) != 'categorical' or query not in columns:
+                    errors.append(f"attention sequence {sequence!r} must be categorical_list and reference "
+                                  f"categorical query column {query!r} in the primary table")
+                else:
+                    valid.append(sequence)
+            if not valid:
+                errors.append(f"No valid attention sequence in primary table. Required mapping: {self.attention_sequences}. "
+                              "Revise CreateSequence using an exact configured seq_col and item_col; do not use an alias.")
         return errors
 
 

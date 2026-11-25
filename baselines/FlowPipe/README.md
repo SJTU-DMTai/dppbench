@@ -94,24 +94,3 @@ a warning. Set `none` to disable quantization or `fp8` to require it strictly.
 CPU loading uses FP32; this does not imply an 8B model fits available memory.
 Quantization is optional; install compatible torchao/transformers on the GPU
 server if required. Model choices and downstream-feedback defaults are retained.
-
-
-## Graph node-table tasks
-
-The DPPBench adapter accepts Elliptic's node-feature table with `task_type: graph`.
-The same GFlowNet state, global action IDs, FiLM context and training loss are
-retained. Task masks use the shared graph operator whitelist. Nodes retain
-`txId`, `time_step` and labels; the separately maintained edge table is consumed
-by the configured GraphSAGE/GCN/GAT evaluator. Graph validation fitness supplies
-the reward; this does not substitute a tabular classifier for the GNN.
-
-Graph tasks work with context precomputation, source pretraining, and
-scratch/pretrained/finetune target modes. Generate the Elliptic semantic cache
-and a matching downstream-model policy checkpoint (for example
-`FlowPipe/GraphSAGE/checkpoint.pt`). A LightGBM policy checkpoint is not a
-GraphSAGE checkpoint: the existing metadata check remains enforced. Normal
-inference loads the cached embedding, without loading the 8B encoder.
-
-Search uses the frozen training pool and never reads `std_test.parquet`.
-Graph support is a DPPBench adapter extension; it does not claim that the
-original upstream FlowPipe implementation evaluated graph benchmarks.

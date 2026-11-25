@@ -103,6 +103,35 @@ def remap_training_categories(data):
     data.rec_protocol_version = VERSION
 
 
+def sequence_reference(data, frame, op):
+    """Enrich fixed training events with static side features, never query events."""
+    reference = data._rec_history_reference
+    if op.item_col in reference:
+        return reference
+    for table, key in ((getattr(data, 'item_df', None), data._item_id_col),
+                       (getattr(data, 'user_df', None), data._user_id_col)):
+        if table is None or op.item_col not in table or key not in reference:
+            continue
+        lookup = table[[key, op.item_col]].copy()
+        lookup[key] = lookup[key].map(token)
+        if lookup[key].isna().any() or not lookup[key].is_unique:
+            raise ValueError(f'Sequence history lookup requires unique nonmissing {key!r}')
+        mapping = lookup.set_index(key)[op.item_col]
+        enriched = reference.copy()
+        enriched[op.item_col] = reference[key].map(token).map(mapping)
+        for fitted in frame.attrs.get('_dppbench_history_imputers', ()):
+            if op.item_col in fitted.cols_:
+                if fitted.method in ('knn', 'iterative'):
+                    raise ValueError('Sequence side history cannot replay a multivariate imputer without its full feature context')
+                import copy
+                replay = copy.deepcopy(fitted)
+                replay.cols_ = [op.item_col]
+                replay.fill_values_ = {op.item_col: fitted.fill_values_[op.item_col]}
+                enriched = replay.transform(enriched)
+        return enriched
+    raise ValueError(f'Sequence history feature {op.item_col!r} is unavailable in fixed training events or static side tables')
+
+
 def assert_disjoint(train, heldout, user='user_id', item='item_id', time='timestamp'):
     """Audit identities only; held-out labels are never needed for this check."""
     cols = [c for c in (user, item, time) if c in train and c in heldout]

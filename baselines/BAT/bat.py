@@ -15,8 +15,6 @@ Mirrors the structure of :class:`baselines.DeepPrep.deepprep.DeepPrep`:
 """
 from __future__ import annotations
 
-from baselines.DeepPrep.candidate_contracts import assign_dag_structure, check_pipeline
-
 import json
 import os
 import time
@@ -29,7 +27,7 @@ from baselines.common.config import (
     resolve_config_value,
 )
 from baselines.common.data_ctx import DataContext
-from baselines.common.pipeline import Pipeline
+from baselines.common.pipeline import Pipeline, assign_dag_structure, check_pipeline
 from baselines.common.utils import get_data_ctx
 
 from baselines.DeepPrep.llm_client import LLMClient
@@ -115,7 +113,9 @@ class BAT:
         fast_train: Optional[bool] = None,
         model_name: Optional[str] = None,
         config_path: Optional[str] = None,
+        shared_repair: bool = True,
     ) -> None:
+        self.shared_repair = shared_repair
         cfg = load_baseline_config(
             config_path or default_config_path(__file__), CONFIG_KEYS
         )
@@ -281,6 +281,9 @@ class BAT:
                       f"downstream_eval_n={self.downstream_eval_n or 'OFF'}")
                 print("=" * 60)
 
+            ctx.shared_repair = self.shared_repair
+            ctx.repair_seed = self.seed
+            ctx.repair_max_len = self.max_chain_len
             # 3. LLM + reward + MCTS.
             llm = self._build_llm()
             reward_model = BATReward(
@@ -314,13 +317,13 @@ class BAT:
                     print("[BAT] no terminal candidate; returning an empty failure candidate.")
                 pipeline = Pipeline()
             else:
-                pipeline = Pipeline(steps=list(best_node.final_pipeline_steps))
+                pipeline = (best_node.effective_pipeline.copy() if self.shared_repair
+                            else Pipeline(steps=list(best_node.final_pipeline_steps)))
 
-            # 4. Attach deterministic DAG metadata and hard-validate the exact
-            # candidate. Never insert operators or repair BAT's answer.
-            assign_dag_structure(pipeline, ctx)
+            if not self.shared_repair:
+                assign_dag_structure(pipeline, ctx)
             check_report = check_pipeline(pipeline, ctx)
-            legal = best_node is not None and check_report.valid
+            legal = check_report.valid
 
             if self.verbose:
                 print(f"[BAT] mcts done. rollouts={mcts_res.n_rollouts}  "
@@ -448,8 +451,6 @@ class BAT:
             print("=" * 60)
 
         result_dict = {
-            "no_valid_scored_candidate": best_node is None,
-            "candidate_errors": [n.exec_error or n.downstream_error for n in mcts_res.end_nodes if n.exec_error or n.downstream_error],
             "best_pipeline_yaml": yaml_text,
             "best_pipeline_path": out_yaml_path,
             "best_fitness": reported_fitness,

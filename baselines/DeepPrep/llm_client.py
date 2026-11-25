@@ -96,7 +96,6 @@ class LLMClient:
         self._local_model = None    # transformers model
         self._local_tokenizer = None
         self.total_tokens_used = 0
-        self.last_generation = None
         self.last_response: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -115,7 +114,6 @@ class LLMClient:
         """Send a list of ``{"role", "content"}`` messages and return the
         assistant text. ``system`` is prepended to ``messages`` if provided.
         """
-        self.last_generation = None
         budget = get_active_budget()
         if budget is not None:
             budget.consume_llm_call()
@@ -159,13 +157,13 @@ class LLMClient:
             timeout=self.cfg.timeout,
         )
         usage = getattr(completion, "usage", None)
-        if usage is not None and getattr(usage, "total_tokens", None):
-            self.total_tokens_used += int(usage.total_tokens)
-        self.last_generation = {
-            "backend": "api", "finish_reason": getattr(completion.choices[0], "finish_reason", None),
-            "generated_tokens": getattr(usage, "completion_tokens", None),
-            "max_tokens": self.cfg.max_tokens if max_tokens is None else max_tokens,
-        }
+        from baselines.common.search_cost import record_work
+        values = {name: getattr(usage, name, None) for name in
+                  ("prompt_tokens", "completion_tokens", "total_tokens")}
+        counts = {name: int(value) for name, value in values.items() if value is not None}
+        if values["total_tokens"] is not None:
+            self.total_tokens_used += int(values["total_tokens"])
+        record_work("llm_tokens", calls=1, missing_usage_calls=int(len(counts) != 3), **counts)
         ans = completion.choices[0].message.content or ""
         self.last_response = ans
         return ans
@@ -181,16 +179,12 @@ class LLMClient:
         except LocalModelInitializationError:
             raise
         except Exception as exc:
-            from baselines.DeepPrep.resource_errors import raise_if_resource_error
-            raise_if_resource_error(exc)
             raise LocalModelInitializationError(
                 f"Cannot initialize local model {self.cfg.model!r}: {type(exc).__name__}: {exc}"
             ) from exc
 
     def _load_local_model(self):
-        from baselines.DeepPrep.gpu_config import llm_placement
-        placement = llm_placement(self.cfg.device_map)
-        require_accelerate(placement['device_map'])
+        require_accelerate(self.cfg.device_map)
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         except ImportError as e:
@@ -204,23 +198,19 @@ class LLMClient:
                 "The DeepPrep checkpoint tokenizer has no chat_template; "
                 "provide the official tokenizer files instead of a base model."
             )
-        target_device = "cpu" if placement["device_map"] == "cpu" else "auto"
-        quantization = fp8_quantization_config(target_device)
+        quantization = fp8_quantization_config(self.cfg.device_map)
         self._weight_quantization = "torchao_fp8_weight_only" if quantization is not None else None
         dtype = self.cfg.torch_dtype
         if dtype in ("auto", "bfloat16"):
-            dtype = local_torch_dtype(target_device)
+            dtype = local_torch_dtype(self.cfg.device_map)
         mdl = AutoModelForCausalLM.from_pretrained(
             self.cfg.model,
             trust_remote_code=True,
             **model_dtype_kwargs(dtype),
-            **placement,
+            device_map=self.cfg.device_map,
             quantization_config=quantization,
         )
         mdl.eval()
-        self._actual_device_map = getattr(mdl, 'hf_device_map', {})
-        self._placement = placement
-        print('[LLM] hf_device_map =', self._actual_device_map)
         self._local_tokenizer = tok
         self._local_model = mdl
 
@@ -257,16 +247,15 @@ class LLMClient:
                 eos_token_id=eos_ids or None,
             )
         gen_ids = out[0][inputs["input_ids"].shape[1]:]
+        from baselines.common.search_cost import record_work
+        prompt_tokens = int(inputs["attention_mask"].sum().item())
+        completion_tokens = int(gen_ids.numel())
+        self.total_tokens_used += prompt_tokens + completion_tokens
+        record_work("llm_tokens", calls=1, missing_usage_calls=0,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens)
         # DeepPrep action markers may be registered as special tokens. They
         # must survive decoding so the protocol parser can see them.
-        limit = self.cfg.max_tokens if max_tokens is None else max_tokens
-        token_count = int(gen_ids.shape[0])
-        self.last_generation = {
-            "backend": "local", "generated_tokens": token_count, "max_tokens": limit,
-            "hit_token_limit": token_count >= limit,
-            "finish_reason": "stop_token" if token_count and int(gen_ids[-1]) in eos_ids else
-                             "length" if token_count >= limit else "unknown",
-        }
         ans = tok.decode(gen_ids, skip_special_tokens=False)
         self.last_response = ans
         return ans
@@ -293,8 +282,6 @@ class LLMClient:
             "torch_dtype": self.cfg.torch_dtype,
             "weight_quantization": getattr(self, "_weight_quantization", None),
             "device_map": self.cfg.device_map,
-            "actual_device_map": getattr(self, "_actual_device_map", {}),
-            "placement": getattr(self, "_placement", {}),
             "total_tokens_used": self.total_tokens_used,
         }
         tok = self._local_tokenizer

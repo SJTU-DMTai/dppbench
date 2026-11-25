@@ -41,6 +41,7 @@ class SearchNode:
     is_terminal: bool = False
     error: Optional[str] = None
     children_ids: list[str] = field(default_factory=list)
+    repaired_from: Optional[str] = None
 
 
 class SearchTree:
@@ -50,6 +51,20 @@ class SearchTree:
         self.nodes: dict[str, SearchNode] = {}
         self.root_id: Optional[str] = None
         self.cursor_id: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    def add_repaired_candidate(self, original, steps, snapshot, obs_text):
+        """An explicit projection edge materializes an automatic DAG completion.
+
+        Preserve the raw search node for audit; continuations use this node's
+        complete path and matching snapshot, not the raw parent's state.
+        """
+        node = SearchNode(self._new_id(), original.node_id, len(steps),
+                          list(steps), snapshot, obs_text, repaired_from=original.node_id)
+        self.nodes[node.node_id] = node
+        original.children_ids.append(node.node_id)
+        self.cursor_id = node.node_id
+        return node
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -153,6 +168,7 @@ class SearchTree:
                     "is_terminal": n.is_terminal,
                     "error": n.error,
                     "children_ids": list(n.children_ids),
+                    "repaired_from": n.repaired_from,
                 }
                 for n in self.nodes.values()
             ],
